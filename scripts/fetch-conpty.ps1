@@ -11,7 +11,9 @@ $sha = @{
     "build/native/runtimes/x64/OpenConsole.exe" = "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160"
 }
 function Check($path, $want) {
-    $got = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLower()
+    # .NET, not Get-FileHash: that one fails when PowerShell 7 starts 5.1.
+    $stream = [IO.File]::OpenRead($path)
+    try { $got = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) } finally { $stream.Close() }
     if ($got -ne $want) { throw "$path`: sha256 $got, expected $want" }
 }
 $work = Join-Path ([IO.Path]::GetTempPath()) "hc-conpty-$version"
