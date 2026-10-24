@@ -32,14 +32,14 @@ fmt:
 notices:
     scripts/notices
 
-# Build and install this checkout as ~/.local/bin/hc; running terminals are kept.
+# Build and install this checkout; running terminals are kept.
 [unix]
 install:
     sh scripts/install-local.sh
 
 [windows]
 install:
-    cargo install --path crates/herdr-core --locked
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1
 
 # Bump the version, refresh the schema snapshots, commit. Tags nothing.
 [unix]

@@ -51,8 +51,12 @@ Ghostty submodule:
 ```sh
 git submodule update --init --depth 1
 just check     # format, clippy (here and for Windows), the whole suite
-just install   # this build as ~/.local/bin/hc
+just install   # install this build; running terminals keep running
 ```
+
+Windows `just install` uses `%LOCALAPPDATA%\Programs\herdr-core`, adds it to
+PATH, and updates the running core without stopping its terminals.
+`HC_INSTALL_DIR` chooses another install directory.
 
 License: Apache-2.0. `hc --licenses` prints the licenses of everything hc
 includes (regenerate with `just notices` after a dependency change).

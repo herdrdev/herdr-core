@@ -163,6 +163,53 @@ fn hc_at(s: &Session, exe: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn the_source_installer_updates_the_core_and_keeps_its_programs_running() {
+    let s = Session::new();
+    let t = s.bg(&["ping", "-n", "120", "127.0.0.1"]);
+    let before = s.json(&["get", &t]);
+    let original = s.json(&["server", "status"]);
+    let build = s.root.join("source build");
+    release(&build, "first-source-build");
+    let destination = s.root.join("local install");
+    let installer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install-local.ps1");
+    let driver = s.file(
+        "install.ps1",
+        ". $env:HC_SOURCE_INSTALLER\nInstall-HerdrCoreFiles $env:HC_TEST_BUILD $env:HC_INSTALL_DIR\n",
+    );
+    let install = |shell: &str| {
+        let out = cmd_at(Path::new(shell), &s.name, &s.root)
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &driver])
+            .env("HC_SOURCE_INSTALLER", &installer)
+            .env("HC_TEST_BUILD", &build)
+            .env("HC_INSTALL_DIR", &destination)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    install("powershell.exe");
+    let exe = destination.join("herdr-core.exe");
+    assert!(marked(&exe, "first-source-build"));
+    assert!(marked(&destination.join("hc.exe"), "first-source-build"));
+    let status = serde_json::from_slice::<Value>(&hc_at(&s, &exe, &["server", "status"]).stdout).unwrap();
+    assert_ne!(status["pid"], original["pid"], "a fresh install must activate its build too");
+    assert_eq!(s.json(&["get", &t])["pid"], before["pid"]);
+
+    release(&build, "second-source-build");
+    install("powershell.exe");
+    assert!(marked(&exe, "second-source-build"));
+    assert!(marked(&destination.join("hc.exe"), "second-source-build"));
+    assert_ne!(s.json(&["server", "status"])["pid"], status["pid"]);
+    let after = s.json(&["get", &t]);
+    assert_eq!(after["state"], "live");
+    assert_eq!(after["pid"], before["pid"]);
+}
+
+#[test]
 fn update_swaps_the_whole_release_while_its_terminals_run() {
     let s = Session::new();
     let exe = installed(&s);
