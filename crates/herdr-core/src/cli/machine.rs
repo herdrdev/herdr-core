@@ -9,7 +9,7 @@ pub(super) enum MachineCmd {
     Add(MachineAddParams),
     /// List the machines added here.
     Ls,
-    /// Log in again (a password or code) after the machine says it needs one.
+    /// Reconnect after updating SSH credentials.
     Login(MachineParams),
     /// Copy this hc there and restart hc there (its terminals keep running).
     Update(MachineParams),

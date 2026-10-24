@@ -133,6 +133,47 @@ fn alive(pid: u64) -> bool {
     String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
 }
 
+#[test]
+fn ssh_reaches_the_host_without_a_control_socket() {
+    use std::net::TcpListener;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let s = Session::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target = format!("ssh://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    listener.set_nonblocking(true).unwrap();
+    let finished = Arc::new(AtomicBool::new(false));
+    let stop = finished.clone();
+    let server = std::thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+        }
+        false
+    });
+    let output = cmd(&s.name, &s.root).env_remove("HC_SSH").args(["machine", "add", &target]).output().unwrap();
+    finished.store(true, Ordering::Relaxed);
+    assert!(server.join().unwrap(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn ssh_auth_failure_points_to_keys_instead_of_repeating_login() {
+    let s = Session::new();
+    let ssh =
+        s.file("ssh-denied.cmd", "@echo off\r\necho Permission denied (publickey,password). 1>&2\r\nexit /b 255\r\n");
+    let output = cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["machine", "add", "example"]).output().unwrap();
+    let error: Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["kind"], "needs_login", "{error}");
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(hint.contains("keys or an agent") && !hint.contains("hc machine add"), "{hint}");
+}
+
 /// A release folder like the zip: herdr-core.exe + conpty, the exe marked
 /// with `mark` at its end (a PE runs with bytes appended).
 fn release(dir: &Path, mark: &str) -> PathBuf {

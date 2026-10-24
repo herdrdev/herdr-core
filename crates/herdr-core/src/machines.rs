@@ -117,6 +117,7 @@ pub fn check_target(to: Reach) -> Result<(), RpcError> {
 
 /// One login per target, shared: a person logs in once in a terminal (codes,
 /// passwords), and the core's connections ride that login. Short, private path.
+#[cfg(unix)]
 fn control_path(paths: &crate::paths::Paths, target: &str) -> std::path::PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -133,9 +134,14 @@ fn ssh(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> std::proces
     if let Some(fake) = std::env::var_os("HC_SSH") {
         return std::process::Command::new(fake);
     }
-    let master = if extra.iter().any(|o| o.starts_with("ControlPersist")) { "auto" } else { "no" };
     let mut ssh = std::process::Command::new("ssh");
-    ssh.arg("-S").arg(control_path(paths, target)).args(["-o", &format!("ControlMaster={master}")]);
+    #[cfg(unix)]
+    {
+        let master = if extra.iter().any(|o| o.starts_with("ControlPersist")) { "auto" } else { "no" };
+        ssh.arg("-S").arg(control_path(paths, target)).args(["-o", &format!("ControlMaster={master}")]);
+    }
+    #[cfg(windows)]
+    let _ = (paths, target); // Windows OpenSSH has no ControlMaster support.
     for option in extra {
         ssh.args(["-o", option]);
     }
@@ -148,7 +154,7 @@ fn ssh(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> std::proces
 pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
     check_target(to)?;
     let target = to.target;
-    if to.via {
+    if to.via || cfg!(windows) {
         return Ok(());
     }
     paths.create_dirs().map_err(|e| RpcError::internal(e.to_string()))?;
@@ -164,7 +170,7 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
 /// Ends the shared login to `target`, if one is up (a forgotten machine).
 pub fn logout(paths: &crate::paths::Paths, to: Reach) {
     let target = to.target;
-    if std::env::var_os("HC_SSH").is_none() && !to.via {
+    if cfg!(unix) && std::env::var_os("HC_SSH").is_none() && !to.via {
         let mut cmd = ssh(paths, target, &[]);
         cmd.args(["-O", "exit", target])
             .stdin(std::process::Stdio::null())
@@ -319,6 +325,13 @@ async fn dial_once(
                 ));
             }
             if wants_login(&err) {
+                if cfg!(windows) && !to.via {
+                    return Err(RpcError::new(
+                        "needs_login",
+                        format!("SSH authentication to {target} failed"),
+                        format!("check that `ssh {target}` logs in without a password prompt (keys or an agent)"),
+                    ));
+                }
                 return Err(RpcError::new(
                     "needs_login",
                     format!("{target} wants a login typed by a person (a password or a code)"),
@@ -471,8 +484,12 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
         .map_err(|e| RpcError::internal(e.to_string()))?;
     std::fs::copy(&zip, scratch.0.join("hc-install.zip")).map_err(|e| RpcError::internal(e.to_string()))?;
     let mut scp = std::process::Command::new("scp");
-    scp.arg("-q").arg("-o").arg(format!("ControlPath={}", control_path(paths, target).display()));
-    scp.args(["-o", "ControlMaster=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+    scp.arg("-q");
+    #[cfg(unix)]
+    scp.arg("-o")
+        .arg(format!("ControlPath={}", control_path(paths, target).display()))
+        .args(["-o", "ControlMaster=no"]);
+    scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     scp.arg(scratch.0.join("hc-install.zip")).arg(&script).arg(format!("{target}:"));
     let to = Reach { target, via: false };
     let out = scp.output().map_err(|e| unreachable(to, &format!("cannot run scp: {e}")))?;

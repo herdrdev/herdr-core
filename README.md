@@ -40,6 +40,7 @@ hc run reviewer "review src/x.rs"  # an agent from a template, with a task
 
 People: `hc --help`. Agents: `hc --agent-help` (everything in one read).
 Other machines: `hc machine add <ssh-target>`, then `hc run --on <name> …`.
+On Windows, use SSH keys or an SSH agent: shared password/code logins are not available.
 App builders: `hc schema` (OpenRPC), and `schema/README.md` for streams and
 events.
 
