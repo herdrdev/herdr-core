@@ -1,13 +1,16 @@
-[windows]
-set shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # Format, clippy here and for Windows, the whole suite: what CI runs on Linux.
 check: lint test
 
-build:
-    cargo build --locked
-
+[unix]
 test:
+    cargo test --locked
+
+# Windows' own ConPTY swallows answers to programs: hc's tests need the one it ships.
+[windows]
+test:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-conpty.ps1 -Dest target/debug
     cargo test --locked
 
 # Format and clippy only (seconds once built). Windows is type-checked with zig stubbed.

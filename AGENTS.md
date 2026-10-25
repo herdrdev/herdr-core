@@ -57,12 +57,6 @@ layout or a workspace to return to, it does not belong here.
 - `rustfmt.toml` width 120 is the format and CI checks it: `just fmt`.
   `just lint` is fmt, clippy, and clippy for Windows from Linux. `just check`
   is lint plus the whole suite. Run it before proposing a commit.
-- `just build` and `just test` run Cargo with the lockfile. Windows recipes
-  use PowerShell by default; `just --shell pwsh --shell-arg -Command <recipe>`
-  uses pwsh. `just install` uses the platform's local installer; Windows
-  installs into `%LOCALAPPDATA%\Programs\herdr-core` (`HC_INSTALL_DIR`
-  overrides it) and uses `update --from` to keep running terminals alive.
-  Notices and release recipes require Unix.
 
 ## Contributing
 
