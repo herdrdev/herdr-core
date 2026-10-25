@@ -889,7 +889,11 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
         Some(LineState::NeedsLogin { .. }) => Err(RpcError::new(
             "unavailable",
             format!("{} needs a login typed by a person", m.name),
-            format!("in a terminal: hc machine login {}", m.name),
+            if cfg!(windows) {
+                format!("set up its SSH keys, then: hc machine login {}", m.name)
+            } else {
+                format!("in a terminal: hc machine login {}", m.name)
+            },
         )),
         Some(LineState::NeedsUpdate { .. }) => Err(RpcError::new(
             "needs_update",

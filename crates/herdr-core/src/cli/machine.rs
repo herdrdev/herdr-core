@@ -9,7 +9,8 @@ pub(super) enum MachineCmd {
     Add(MachineAddParams),
     /// List the machines added here.
     Ls,
-    /// Reconnect after updating SSH credentials.
+    /// Log in again (a password or code) after the machine says it needs one.
+    /// On Windows: reconnect once its SSH keys work.
     Login(MachineParams),
     /// Copy this hc there and restart hc there (its terminals keep running).
     Update(MachineParams),

@@ -239,7 +239,12 @@ pub(super) fn line_state(m: &Value) -> String {
     let why = m["why"].as_str().map(|w| format!(" ({w})")).unwrap_or_default();
     match m["state"].as_str() {
         Some("needs_login") => {
-            format!("needs login{}: hc machine login {}", since.unwrap_or_default(), m["name"].as_str().unwrap_or("?"))
+            let keys = if cfg!(windows) { "set up its SSH keys, then " } else { "" };
+            format!(
+                "needs login{}: {keys}hc machine login {}",
+                since.unwrap_or_default(),
+                m["name"].as_str().unwrap_or("?")
+            )
         }
         Some("needs_update") => format!("needs an hc update: hc machine update {}", m["name"].as_str().unwrap_or("?")),
         Some(state) => format!("{state}{}{why}", since.unwrap_or_default()),
