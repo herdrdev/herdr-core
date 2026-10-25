@@ -174,6 +174,30 @@ fn ssh_auth_failure_points_to_keys_instead_of_repeating_login() {
     assert!(hint.contains("keys or an agent") && !hint.contains("hc machine add"), "{hint}");
 }
 
+#[test]
+fn ssh_transport_has_no_console_and_keeps_its_pipes() {
+    let s = Session::new();
+    let probe = s.file(
+        "ssh-console.ps1",
+        r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ConsoleProbe {
+            [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'console-window.txt'), [ConsoleProbe]::GetConsoleWindow().ToInt64().ToString())
+$request = [Console]::ReadLine() | ConvertFrom-Json
+if ($request.method -ne 'hello') { exit 2 }
+[Console]::WriteLine('{"id":1,"error":{"code":-32000,"message":"ssh-probe","data":{"kind":"probe","hint":"done"}}}')
+"#,
+    );
+    let ssh = s.file(
+        "ssh-console.cmd",
+        &format!("@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{probe}\"\r\n"),
+    );
+    let output = cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["machine", "add", "example"]).output().unwrap();
+    let error: Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["kind"], "probe", "{error}");
+    assert_eq!(std::fs::read_to_string(s.root.join("console-window.txt")).unwrap(), "0");
+}
+
 /// A release folder like the zip: herdr-core.exe + conpty, the exe marked
 /// with `mark` at its end (a PE runs with bytes appended).
 fn release(dir: &Path, mark: &str) -> PathBuf {

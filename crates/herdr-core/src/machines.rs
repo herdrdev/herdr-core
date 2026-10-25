@@ -63,6 +63,12 @@ impl Reach<'_> {
             return cmd;
         }
         let mut cmd = ssh(paths, self.target, extra);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // A pipe from the detached core must not open a console of its own.
+            cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
         if std::env::var_os("HC_SSH").is_none() {
             cmd.arg("-T");
         }
