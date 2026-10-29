@@ -223,7 +223,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
 }
 
 async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    crate::restart::prepare(core).map_err(|e| RpcError::internal(e.to_string()))?;
+    crate::restart::prepare(core).await.map_err(|e| RpcError::internal(e.to_string()))?;
     Ok(StopResult { stopped: true })
 }
 
