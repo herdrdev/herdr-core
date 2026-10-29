@@ -205,6 +205,19 @@ impl Conn {
 /// only: macOS shows no other process's environment (`ps -E` prints none,
 /// checked on macOS 27), so there the leak check finds nothing; the ghost
 /// tests are what cover leftovers on macOS.
+#[cfg(target_os = "openbsd")]
+fn procs_with(needle: &str) -> Vec<i32> {
+    let me = std::process::id() as i32;
+    herdr_core::platform::processes()
+        .into_iter()
+        .filter_map(|(pid, ..)| {
+            let env = herdr_core::platform::process_environ(pid)?;
+            (pid != me && env.windows(needle.len()).any(|w| w == needle.as_bytes())).then_some(pid)
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "openbsd"))]
 fn procs_with(needle: &str) -> Vec<i32> {
     if cfg!(target_os = "macos") {
         return Vec::new();
@@ -237,7 +250,7 @@ pub fn fake_ssh(local: &Session, hosts: &[(&str, &Session)]) -> (String, String)
         // `<root>/fakebin` first: a test can give a machine its own `uname`.
         let bin_dir = format!("{r}/fakebin:{}", s.bin.parent().unwrap().display());
         cases.push_str(&format!(
-            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:/usr/bin:/bin HC_SESSION=test HC_SETTLE_MS=0 \
+            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:/usr/local/bin:/usr/bin:/bin HC_SESSION=test HC_SETTLE_MS=0 \
              XDG_RUNTIME_DIR={r}/run XDG_STATE_HOME={r}/state XDG_CONFIG_HOME={r}/config sh -c \"$*\" ;;\n"
         ));
     }
@@ -277,10 +290,13 @@ pub fn text(s: &Session, t: &str) -> String {
 
 /// A shell script with `r <report>` to send OSC 7501 and `w <name>` to wait for a file.
 pub fn script(s: &Session, body: &str) -> String {
-    format!(
+    let source = format!(
         "r(){{ printf '\\033]7501;%s\\033\\\\' \"$1\"; }}; w(){{ while [ ! -e {}/$1 ]; do sleep 0.02; done; }}; {body}",
         s.root.display()
-    )
+    );
+    // OpenBSD sh has a built-in alias r=fc -s. Parse the helpers only after
+    // removing it, including on shells which parse the whole -c string first.
+    format!("unalias r 2>/dev/null || :; eval '{}'", source.replace('\'', "'\\''"))
 }
 
 /// Creates the file a script's `w <name>` waits for.

@@ -7,6 +7,11 @@ mod unix;
 #[cfg(unix)]
 pub use unix::*;
 
+#[cfg(target_os = "openbsd")]
+mod openbsd;
+#[cfg(target_os = "openbsd")]
+pub use openbsd::{process_about, process_environ, processes};
+
 #[cfg(target_os = "linux")]
 pub mod systemd;
 

@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(target_os = "openbsd")]
+pub use crate::platform::process_about as about;
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct Foreground {
     /// The foreground process group's leader.

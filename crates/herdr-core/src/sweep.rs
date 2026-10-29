@@ -6,6 +6,16 @@
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "openbsd")]
+use crate::platform::{process_environ as environ, processes};
+
+// OpenBSD exposes wall-clock process starts, not the monotonic clock needed
+// for a safe age cutoff. Inspect all processes instead of filtering by age.
+#[cfg(target_os = "openbsd")]
+fn now() -> u64 {
+    0
+}
+
 pub const VAR: &str = "HC_SCOPE";
 /// Marks hc's own cores and holders: never swept, nor anything beneath them
 /// (a terminal may start another session's core, which is not its own).

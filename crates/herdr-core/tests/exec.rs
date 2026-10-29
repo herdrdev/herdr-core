@@ -29,11 +29,16 @@ fn stubborn(s: &Session, file: &str) -> String {
 }
 
 fn pid_in(s: &Session, file: &str) -> i64 {
-    wait_until("its pid", || std::fs::read_to_string(s.root.join(file)).is_ok_and(|p| !p.is_empty()));
+    wait_until(&format!("its pid file {file}"), || {
+        std::fs::read_to_string(s.root.join(file)).is_ok_and(|p| !p.is_empty())
+    });
     std::fs::read_to_string(s.root.join(file)).unwrap().trim().parse().unwrap()
 }
 
 fn running(pid: i64) -> bool {
+    #[cfg(target_os = "openbsd")]
+    return herdr_core::platform::processes().iter().any(|p| i64::from(p.0) == pid);
+    #[cfg(not(target_os = "openbsd"))]
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
         Err(_) => cfg!(target_os = "macos") && pid_alive(pid),
@@ -123,7 +128,12 @@ fn exec_ends_everything_it_started_when_it_exits_or_times_out() {
 #[test]
 fn exec_keeps_running_past_the_output_cap_and_says_it_cut() {
     let s = Session::new();
-    let r = s.json(&["exec", "sh", "-c", "head -c 9437184 /dev/zero; echo done >&2"]);
+    let r = s.json(&[
+        "exec",
+        "python3",
+        "-c",
+        "import sys; sys.stdout.buffer.write(bytes(9437184)); sys.stderr.write('done\\n')",
+    ]);
     assert_eq!((r["code"].clone(), r["truncated"].clone()), (json!(0), json!(true)), "not killed for its output");
     assert_eq!(r["stdout"].as_str().unwrap().len(), (8 << 20) / 3 * 4 + 4, "the first 8 MB");
     assert_eq!(r["stderr"], "ZG9uZQo=", "errors aren't crowded out");
@@ -179,7 +189,7 @@ fn a_client_that_stops_reading_its_replies_is_disconnected_not_kept_in_memory() 
     writeln!(stream, r#"{{"jsonrpc":"2.0","id":0,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
     for id in 1..=8 {
         let call = json!({"jsonrpc": "2.0", "id": id, "method": "machine.exec",
-            "params": {"argv": ["head", "-c", "8388608", "/dev/zero"]}});
+            "params": {"argv": ["python3", "-c", "import sys; sys.stdout.buffer.write(bytes(8388608))"]}});
         stream.write_all(&herdr_core::wire::encode(0, herdr_core::wire::DATA, call.to_string().as_bytes())).unwrap();
     }
     // 8 replies of ~11 MB, none read: past the cap it hangs up on us.
