@@ -10,9 +10,9 @@ use std::sync::atomic::Ordering;
 const ENVIRONMENT: &str = "restart-env.json";
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Environment {
+struct Environment<T> {
     machine_id: Option<String>,
-    vars: Vec<(OsString, Option<OsString>)>,
+    vars: T,
 }
 
 pub(crate) async fn prepare(core: &Core) -> io::Result<()> {
@@ -38,12 +38,13 @@ pub(crate) async fn prepare(core: &Core) -> io::Result<()> {
 }
 
 pub(crate) fn apply(paths: &Paths, cmd: &mut Command) -> io::Result<()> {
-    let env: Option<Environment> = read_state(&paths.state.join(ENVIRONMENT))?;
+    let env: Option<Environment<serde_json::Value>> = read_state(&paths.state.join(ENVIRONMENT))?;
     if let Some(env) = env {
         if env.machine_id.is_some() && crate::platform::machine_id().is_some_and(|id| Some(id) != env.machine_id) {
             return Ok(());
         }
-        crate::platform::replace_env(cmd, env.vars);
+        let vars: Vec<(OsString, Option<OsString>)> = serde_json::from_value(env.vars)?;
+        crate::platform::replace_env(cmd, vars);
     }
     Ok(())
 }

@@ -654,21 +654,12 @@ fn planned_restarts_preserve_the_environment_for_new_terminals() {
 fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
     let s = Session::new();
     let machine = herdr_core::platform::machine_id().expect("Windows machine ID");
-    let mut vars: std::collections::BTreeMap<_, _> = std::env::vars_os().collect();
-    for (key, value) in cmd(&s.name, &s.root).get_envs() {
-        match value {
-            Some(value) => {
-                vars.insert(key.to_owned(), value.to_owned());
-            }
-            None => {
-                vars.remove(key);
-            }
-        }
-    }
-    vars.insert("HC_SESSION_VALUE".into(), "copied-machine".into());
     let state = s.root.join("state/herdr-core").join(&s.name);
     std::fs::create_dir_all(&state).unwrap();
-    let snapshot = json!({"machine_id": format!("other-{machine}"), "vars": vars.into_iter().collect::<Vec<_>>()});
+    let snapshot = json!({
+        "machine_id": format!("other-{machine}"),
+        "vars": [[{"Unix": b"HC_SESSION_VALUE".to_vec()}, {"Unix": b"copied-machine".to_vec()}]],
+    });
     std::fs::write(state.join("restart-env.json"), serde_json::to_vec(&snapshot).unwrap()).unwrap();
     let out = cmd(&s.name, &s.root).env("HC_SESSION_VALUE", "new-machine").args(["server", "start"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

@@ -216,6 +216,9 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
 }
 
 async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
+    if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
+    }
     if let Err(e) = core.shutdown().await {
         eprintln!("core: shutdown registry flush failed: {}", e.message);
     }
