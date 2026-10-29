@@ -23,6 +23,7 @@ pub mod put;
 pub mod relay;
 pub mod releases;
 pub mod remote;
+mod restart;
 pub mod rpc;
 pub mod runtime;
 pub mod server;
