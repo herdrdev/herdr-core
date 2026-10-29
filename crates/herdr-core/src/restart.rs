@@ -39,11 +39,7 @@ pub(crate) fn apply(paths: &Paths, cmd: &mut Command) -> io::Result<()> {
         if env.machine_id.is_some() && crate::platform::machine_id().is_some_and(|id| Some(id) != env.machine_id) {
             return Ok(());
         }
-        // Detached launchers rebuild from get_envs(), which does not expose env_clear().
-        for (key, _) in std::env::vars_os() {
-            cmd.env_remove(key);
-        }
-        cmd.envs(env.vars);
+        crate::platform::replace_env(cmd, env.vars)?;
     }
     Ok(())
 }

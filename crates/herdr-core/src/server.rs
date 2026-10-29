@@ -65,7 +65,11 @@ pub fn serve() -> io::Result<()> {
                 _ = core.stop.notified() => break,
                 // SIGTERM is a planned restart: programs stay, screens are saved.
                 _ = &mut term => {
-                    crate::restart::prepare(&core)?;
+                    if let Err(error) = crate::restart::prepare(&core) {
+                        eprintln!("core: cannot restart: {error}");
+                        term.set(platform::termination());
+                        continue;
+                    }
                     break;
                 }
             }

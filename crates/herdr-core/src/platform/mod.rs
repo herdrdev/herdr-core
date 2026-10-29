@@ -170,6 +170,23 @@ pub fn utf8_vars() -> impl Iterator<Item = (String, String)> {
     std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
 }
 
+/// Replace all inherited values, including those a service manager would add.
+pub fn replace_env(
+    cmd: &mut std::process::Command,
+    env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> std::io::Result<()> {
+    // Detached launchers rebuild from get_envs(), which does not expose env_clear().
+    for (key, _) in std::env::vars_os() {
+        cmd.env_remove(key);
+    }
+    #[cfg(target_os = "linux")]
+    for key in systemd::inherited_env()?.keys() {
+        cmd.env_remove(key);
+    }
+    cmd.envs(env);
+    Ok(())
+}
+
 /// The core's environment as programs get it: never an ssh login's marks,
 /// and on Linux the login session as the user manager has it now.
 pub async fn program_env() -> std::collections::BTreeMap<String, String> {
