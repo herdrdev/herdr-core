@@ -1,0 +1,46 @@
+name: Bug report
+description: Something didn't work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+      description: Remove secrets from logs and examples. Report security bugs privately, not here.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hc --version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+    validations:
+      required: true
+  - type: dropdown
+    id: machine
+    attributes:
+      label: Where did it happen?
+      options:
+        - Local machine
+        - Remote machine
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A small example we can run helps.
+    validations:
+      required: true

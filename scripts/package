@@ -1,0 +1,14 @@
+#!/bin/sh
+# Package a built Unix binary with its redistribution notices.
+set -eu
+if [ "$#" -ne 2 ]; then
+    echo "usage: scripts/package <herdr-core binary> <output.tar.gz>" >&2
+    exit 2
+fi
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-package.XXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+cp "$1" "$work/herdr-core"
+cp "$root/LICENSE" "$work/LICENSE"
+cp "$root/crates/herdr-core/THIRD-PARTY-NOTICES" "$work/THIRD-PARTY-NOTICES"
+tar -czf "$2" -C "$work" herdr-core LICENSE THIRD-PARTY-NOTICES

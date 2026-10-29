@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest a change to core.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Core stays agent-neutral. Agent-specific status hooks belong in OSC 7501 integrations.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would you change?
+    validations:
+      required: true

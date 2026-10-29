@@ -112,5 +112,7 @@ just check
 `just install` installs this checkout and restarts your core. Running terminals keep running.
 `just docs` refreshes the command reference. `just docs-check` checks it and the examples; CI runs the same tests.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup and checks.
+
 License: [Apache-2.0](LICENSE). `hc --licenses` prints the included third-party licenses.
 After a dependency change, regenerate them with `just notices`.

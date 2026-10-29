@@ -185,6 +185,18 @@ fn hc_carries_the_license_of_everything_it_includes() {
     let s = Session::new();
     let notices = String::from_utf8(s.hc(&["--licenses"]).stdout).unwrap();
     assert!(notices.contains("Mitchell Hashimoto, Ghostty contributors"), "libghostty-vt's own");
+    let inputs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distribution/notices");
+    for entry in std::fs::read_dir(inputs).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "txt") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(notices.contains(&text), "{} missing or stale: run just notices", path.display());
+        }
+    }
+    for component in ["uucode", "Jacob Sandlund", "1991-2025 Unicode", "Rich Felker", "Rust 1.95.0"] {
+        assert!(notices.contains(component), "{component} missing: run just notices");
+    }
+    assert!(!notices.contains("the crate ships no license text"), "license texts must be supplied");
     // Every crate in Cargo.lock, at its locked version: `scripts/notices` after a dependency change.
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock")).unwrap();
     for package in lock.split("[[package]]").filter(|p| p.contains("source = ")) {

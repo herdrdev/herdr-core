@@ -3,7 +3,7 @@
 Core runs commands with your account's access. It is not a sandbox or a permission broker for agents.
 Anyone who can connect to its API can run commands, read and change files, and control its terminals with that access.
 
-[Back to the README](../README.md) · [API](../schema/README.md)
+[Back to the README](../README.md) · [API](../schema/README.md) · [Report a vulnerability](../SECURITY.md)
 
 ## What runs
 

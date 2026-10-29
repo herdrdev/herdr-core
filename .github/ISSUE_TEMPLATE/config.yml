@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord
+    url: https://discord.gg/PsgRfzmUDg
+    about: Questions and conversation.
+  - name: Security bug
+    url: https://github.com/herdrdev/herdr-core/security/advisories/new
+    about: Report vulnerabilities privately.

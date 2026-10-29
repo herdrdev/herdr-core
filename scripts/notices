@@ -1,32 +1,36 @@
 #!/bin/sh
-# Writes crates/herdr-core/THIRD-PARTY-NOTICES, which hc carries inside
-# (`hc --licenses`): what libghostty-vt bundles (distribution/notices/, by
-# hand), then every crate in Cargo.lock with its own license file. Run after
-# dependencies change; a test fails when a crate is missing.
+# Regenerate the notices embedded by hc and shipped beside release binaries.
 set -eu
 cd "$(dirname "$0")/.."
 out=crates/herdr-core/THIRD-PARTY-NOTICES
+work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-notices.XXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+cargo metadata --format-version 1 --locked >"$work/metadata"
+jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license)\t\(.manifest_path)"' "$work/metadata" | sort >"$work/crates"
 {
     echo "hc (herdr-core) is Apache-2.0. It includes the software below."
+    echo "Not all components are used on every platform. See distribution/notices/README.md in the source."
     for part in ghostty:"Ghostty's libghostty-vt (MIT)" simdutf:"simdutf, in libghostty-vt (MIT, or Apache-2.0)" \
         highway:"Highway, in libghostty-vt (BSD-3-Clause, or Apache-2.0)" wuffs:"Wuffs, in libghostty-vt (MIT, or Apache-2.0)" \
-        zig:"Zig's compiler_rt (MIT)"; do
+        zig:"Zig's compiler_rt (MIT)" uucode:"uucode (MIT), 9d55524551411b493cca41ca06363625d90aff1e" \
+        uucode-unicode:"uucode Unicode data (Unicode-3.0)" uucode-utf8:"uucode UTF-8 decoder (MIT)" \
+        musl:"musl 1.2.5, statically linked on Linux (MIT and BSD)" rust:"Rust 1.95.0 standard library and compiler runtime"; do
         printf '\n==== %s\n\n' "${part#*:}"
         cat "distribution/notices/${part%%:*}.txt"
     done
-    cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license)\t\(.manifest_path)"' | sort |
-        while IFS="$(printf '\t')" read -r crate license manifest; do
-            dir=$(dirname "$manifest")
-            printf '\n==== %s (%s)\n\n' "$crate" "$license"
-            file=
-            for pattern in '^license-mit' '^license(\.md|\.txt)?$' '^license'; do
-                file=$(ls "$dir" | grep -i -m1 -E "$pattern") && break
-            done
-            if [ -n "$file" ]; then cat "$dir/$file"; else echo "(the crate ships no license text; its license: $license)"; fi
-            for extra in $(ls "$dir" | grep -i -E '^license-unicode|^notice'); do
-                printf '\n'
-                cat "$dir/$extra"
-            done
-        done
-} >"$out"
+    while IFS="$(printf '\t')" read -r crate license manifest; do
+        dir=$(dirname "$manifest")
+        printf '\n==== %s (%s)\n\n' "$crate" "$license"
+        find "$dir" -maxdepth 1 -type f \( -iname 'license*' -o -iname 'notice*' -o -iname 'copying*' \) | LC_ALL=C sort >"$work/licenses"
+        if [ ! -s "$work/licenses" ]; then
+            echo "error: $crate has no license text; add an explicit notice before shipping" >&2
+            exit 1
+        fi
+        while IFS= read -r file; do
+            printf '\n--- %s\n\n' "$(basename "$file")"
+            cat "$file"
+        done <"$work/licenses"
+    done <"$work/crates"
+} >"$work/notices"
+cp "$work/notices" "$out"
 echo "wrote $out ($(wc -c <"$out") bytes)"

@@ -73,7 +73,7 @@ jobs:
           "$bin" --version # it runs on its own platform
           if [ "${{ runner.os }}" = Linux ]; then file "$bin" | grep -q 'static' || { file "$bin"; echo "not static"; exit 1; }; fi
           mkdir -p dist
-          tar -czf dist/herdr-core-${{ matrix.name }}.tar.gz -C "$(dirname "$bin")" herdr-core
+          sh scripts/package "$bin" dist/herdr-core-${{ matrix.name }}.tar.gz
       # Windows: a zip of the exe, Microsoft's ConPTY (Windows' own swallows
       # answers to programs) and its notices. Zipped by Windows' tar, which
       # is also what unpacks it.
@@ -89,9 +89,11 @@ jobs:
           foreach ($dll in "vcruntime140", "msvcp140", "api-ms-win-crt-") { if ($text.Contains($dll)) { throw "herdr-core.exe imports $dll" } }
           New-Item -ItemType Directory -Force stage/THIRD-PARTY-NOTICES, dist | Out-Null
           Copy-Item $bin stage/
+          Copy-Item LICENSE stage/
+          Copy-Item crates/herdr-core/THIRD-PARTY-NOTICES stage/THIRD-PARTY-NOTICES/herdr-core.txt
           scripts/fetch-conpty.ps1 -Dest stage
           Copy-Item distribution/windows/* stage/THIRD-PARTY-NOTICES/
-          tar -a -cf dist/herdr-core-${{ matrix.name }}.zip -C stage herdr-core.exe conpty THIRD-PARTY-NOTICES
+          tar -a -cf dist/herdr-core-${{ matrix.name }}.zip -C stage herdr-core.exe conpty LICENSE THIRD-PARTY-NOTICES
           if ($LASTEXITCODE) { throw "zip failed" }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -147,7 +149,7 @@ jobs:
           if ($sig.Status -ne 'Valid') { exit 1 }
       - run: |
           Remove-Item dist/herdr-core-windows-x86_64.zip
-          tar -a -cf dist/herdr-core-windows-x86_64.zip -C stage herdr-core.exe conpty THIRD-PARTY-NOTICES
+          tar -a -cf dist/herdr-core-windows-x86_64.zip -C stage herdr-core.exe conpty LICENSE THIRD-PARTY-NOTICES
           if ($LASTEXITCODE) { throw "zip failed" }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
