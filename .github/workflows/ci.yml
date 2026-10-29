@@ -1,12 +1,9 @@
-# Every push to master and every pull request: clippy and the whole suite
-# on Linux (real PTYs, real processes), then the upgrade test against the
-# last release: an update must never break running terminals. macOS and
-# Windows tests run only on manual dispatch.
+# Every master push and PR: native Linux x86_64/ARM64, macOS and Windows
+# clippy/tests, plus upgrade from the last release. Updates must keep terminals.
 #
-# Cache rules: one pinned toolchain so caches survive
-# stable bumps; only master pushes save, so PR caches can't evict the ones
-# everybody restores; libghostty-vt's Zig build lives in the ghostty-vt
-# crate's OUT_DIR, kept with the workspace crates.
+# Rust caches use one pinned toolchain and only master runs save, so PR
+# caches can't evict the ones everybody restores. Zig and old-release binary
+# caches save separately; libghostty-vt stays with the workspace crates.
 name: ci
 
 on:
@@ -39,9 +36,8 @@ env:
   HC_TEST_SLOW_RUNNER: "1"
 
 jobs:
-  # Cheap and on every push: formatting, and clippy for Windows from Linux
-  # (zig stubbed: type-checking needs no libghostty-vt), so Windows code is
-  # checked even when the Windows tests aren't run.
+  # Fast formatting/advisory checks and Windows clippy from Linux
+  # (zig stubbed: type-checking needs no libghostty-vt).
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -77,7 +73,11 @@ jobs:
       # their timing. Windows: Unix tests skip themselves; tests/windows.rs
       # runs instead.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"linux","runner":"ubuntu-latest","target":"x86_64-unknown-linux-musl","threads":2},{"os":"macos","runner":"macos-15","target":"aarch64-apple-darwin","threads":2},{"os":"windows","runner":"windows-2025","target":"x86_64-pc-windows-msvc","threads":2}]' || '[{"os":"linux","runner":"ubuntu-latest","target":"x86_64-unknown-linux-musl","threads":2}]') }}
+        include:
+          - { os: linux, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, threads: 2 }
+          - { os: linux, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl, threads: 2 }
+          - { os: macos, runner: macos-15, target: aarch64-apple-darwin, threads: 2 }
+          - { os: windows, runner: windows-2025, target: x86_64-pc-windows-msvc, threads: 2 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -95,7 +95,7 @@ jobs:
           version: 0.16.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.os }}-dev
+          key: ${{ matrix.target }}-dev
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHES }}
@@ -139,10 +139,11 @@ jobs:
           version: 0.16.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: linux-dev # the test job's cache: same build
+          # Upgrade builds native GNU, unlike the musl test jobs.
+          key: linux-upgrade-dev
           cache-workspace-crates: true
           cache-bin: false
-          save-if: false
+          save-if: ${{ env.SAVE_CACHES }}
       - name: The last release
         id: last
         run: |
@@ -164,12 +165,11 @@ jobs:
           if [ -z "$tag" ]; then echo "no release yet: nothing to upgrade from"; exit 0; fi
           scripts/upgrade-test.sh "$tag"
 
-  # The one check master's ruleset requires: the matrix's check names change
-  # with the event.
+  # Keep the required check name stable; every platform and upgrade must pass.
   ci-ok:
-    needs: [lint, test]
+    needs: [lint, test, upgrade]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: '[ "${{ needs.lint.result }}" = success ] && [ "${{ needs.test.result }}" = success ]'
+      - run: '[ "${{ needs.lint.result }}" = success ] && [ "${{ needs.test.result }}" = success ] && [ "${{ needs.upgrade.result }}" = success ]'
