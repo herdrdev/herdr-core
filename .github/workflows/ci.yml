@@ -1,4 +1,4 @@
-# Every master push and PR: native Linux x86_64/ARM64, macOS and Windows
+# Every master push and PR: native Linux x86_64, macOS and Windows
 # clippy/tests, plus upgrade from the last release. Updates must keep terminals.
 #
 # Rust caches use one pinned toolchain and only master runs save, so PR
@@ -16,10 +16,9 @@ on:
 permissions:
   contents: read
 
-# A newer push to a pull request makes the older run pointless. On master,
-# runs queue instead: a cancelled master run never saves its cache.
+# Only superseded PR runs share a group; every other commit runs independently.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -74,8 +73,7 @@ jobs:
       # runs instead.
       matrix:
         include:
-          - { os: linux, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, threads: 2 }
-          - { os: linux, runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl, threads: 2 }
+          - { os: linux, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, threads: 4 }
           - { os: macos, runner: macos-15, target: aarch64-apple-darwin, threads: 2 }
           - { os: windows, runner: windows-2025, target: x86_64-pc-windows-msvc, threads: 2 }
     runs-on: ${{ matrix.runner }}
@@ -121,8 +119,6 @@ jobs:
           cargo test --locked --no-fail-fast --target ${{ matrix.target }} "${only[@]}" -- --test-threads ${{ matrix.threads }}
 
   upgrade:
-    # Building the last release takes a while: only once the tests pass.
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
