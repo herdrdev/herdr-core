@@ -30,6 +30,18 @@ fn reach_of(m: &Value) -> crate::machines::Reach<'_> {
     crate::machines::Reach { target: m["target"].as_str().unwrap_or_default(), via: m["via"] == true }
 }
 
+/// `--install` copies this hc there whatever is already there: a remote whose hc
+/// can start no core on its own host (an old release, a stricter systemd)
+/// answers as unreachable, not incompatible, so waiting for that kind would
+/// leave the machine broken. The bootstrap reports an unreachable host itself,
+/// so nothing is hidden by trying.
+///
+/// Without the flag, a terminal offers it for the two answers that mean the
+/// machine has no usable hc.
+fn offers_install(kind: &str, at_terminal: bool) -> bool {
+    at_terminal && matches!(kind, "hc_missing" | "incompatible")
+}
+
 pub(super) fn machine(
     paths: &Paths,
     action: MachineCmd,
@@ -43,16 +55,18 @@ pub(super) fn machine(
             if at_terminal() {
                 crate::machines::login(paths, reach)?;
             }
+            if p.install {
+                let version = crate::machines::install(paths, reach, p.session.as_deref())?;
+                eprintln!("{target} now has {version}");
+            }
             let m = match call("machine.add", to(&p)) {
-                Err(e) if (p.install || at_terminal()) && matches!(e.kind.as_str(), "hc_missing" | "incompatible") => {
+                Err(e) if !p.install && offers_install(&e.kind, at_terminal()) => {
                     let what = if e.kind == "hc_missing" { "has no hc" } else { "has an hc too old to talk to" };
-                    if !p.install {
-                        eprint!("{target} {what}. Copy this hc ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
-                        let mut answer = String::new();
-                        std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
-                        if answer.trim().to_lowercase().starts_with('n') {
-                            return Err(e);
-                        }
+                    eprint!("{target} {what}. Copy this hc ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
+                    let mut answer = String::new();
+                    std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
+                    if answer.trim().to_lowercase().starts_with('n') {
+                        return Err(e);
                     }
                     let version = crate::machines::install(paths, reach, p.session.as_deref())?;
                     eprintln!("{target} now has {version}");
@@ -132,4 +146,24 @@ pub(super) fn machine(
             Out { json: r, human }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::offers_install;
+
+    #[test]
+    fn a_terminal_offers_hc_for_a_machine_without_one() {
+        assert!(offers_install("hc_missing", true));
+        assert!(offers_install("incompatible", true));
+    }
+
+    #[test]
+    fn a_terminal_says_nothing_about_a_machine_it_cannot_explain() {
+        assert!(
+            !offers_install("unreachable", true),
+            "no hc here can start no core there either: only --install should try"
+        );
+        assert!(!offers_install("hc_missing", false), "piped output never prompts");
+    }
 }
