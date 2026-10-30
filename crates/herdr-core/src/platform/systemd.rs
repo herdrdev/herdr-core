@@ -88,7 +88,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     env.insert("XDG_RUNTIME_DIR".into(), run.display().to_string());
     let args: Vec<&OsStr> = cmd.get_args().collect();
     let name = format!("hc-{}-{}", args.first().and_then(|a| a.to_str()).unwrap_or("run"), &super::random_hex()[..8]);
-    let here = std::env::current_dir().is_ok_and(|d| d.is_dir());
+    let here = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from("/"));
     let dir = match write_environment(&run, &name, &env) {
         Ok(dir) => dir,
         Err(e) => return Some(Err(e)),
@@ -96,7 +96,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let out = Command::new("systemd-run")
         .env_clear()
         .envs(&env)
-        .args(unit_args(&name, cmd.get_program(), &args, &dir.join("environment"), &unset, log, here))
+        .args(unit_args(&name, cmd.get_program(), &args, &dir.join("environment"), &unset, log, &here, version()))
         .stdin(Stdio::null())
         .output();
     let started = match out {
@@ -169,12 +169,27 @@ fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
     env
 }
 
+/// The systemd-run here, e.g. 239 on EL8. None: it didn't say.
+fn version() -> Option<u32> {
+    let out = Command::new("systemd-run").arg("--version").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    parse_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_version(out: &str) -> Option<u32> {
+    let n = out.lines().next()?.strip_prefix("systemd ")?;
+    n.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
 /// systemd-run's arguments for one hc service, without environment values.
+/// WorkingDirectory as a property: systemd-run's own --same-dir and
+/// --working-directory are 240+ (EL8 has 239).
 /// OOMPolicy: a program killed for memory must not stop the whole service.
+/// Before 243 it is an unknown assignment and that is already what happens.
 /// No ManagedOOMPreference: systemd rewrites its cgroup xattr on every property
 /// change, and uresourced < 0.5.5 answers each rewrite with another change,
 /// flooding the user manager until it starts nothing. KillMode: when the core
 /// or holder exits, nothing else goes with it.
+#[allow(clippy::too_many_arguments)]
 fn unit_args(
     name: &str,
     program: &OsStr,
@@ -182,22 +197,26 @@ fn unit_args(
     environment: &Path,
     unset: &[&str],
     log: &Path,
-    here: bool,
+    here: &Path,
+    version: Option<u32>,
 ) -> Vec<OsString> {
     let mut out: Vec<OsString> = ["--user", "--quiet", "--collect", "--service-type=exec"].map(OsString::from).into();
-    out.push(if here { "--same-dir" } else { "--working-directory=/" }.into());
+    let oom = version.is_none_or(|v| v >= 243).then(|| "OOMPolicy=continue".to_string());
     for p in [
         format!("--unit={name}"),
         format!("EnvironmentFile={}", environment.display()),
         format!("RuntimeDirectory={name}"),
         "RuntimeDirectoryMode=0700".into(),
         "RuntimeDirectoryPreserve=restart".into(),
-        "OOMPolicy=continue".into(),
+        format!("WorkingDirectory={}", here.display()),
         "KillMode=process".into(),
         "StandardOutput=null".into(),
         format!("StandardError=append:{}", log.display()),
         format!("UnsetEnvironment={}", unset.join(" ")),
-    ] {
+    ]
+    .into_iter()
+    .chain(oom)
+    {
         if !p.starts_with("--") {
             out.push("-p".into());
         }
@@ -300,7 +319,8 @@ mod tests {
             Path::new("/run/user/1/hc-hold-1/environment"),
             &["HC_SCOPE"],
             Path::new("/s/x.log"),
-            false,
+            Path::new("/"),
+            None,
         );
         let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(!args.iter().any(|a| a.contains("secret-canary")), "{args:?}");
@@ -311,12 +331,43 @@ mod tests {
             "RuntimeDirectoryPreserve=restart",
             "UnsetEnvironment=HC_SCOPE",
             "OOMPolicy=continue",
-            "--working-directory=/",
+            "WorkingDirectory=/",
         ] {
             assert!(args.iter().any(|a| a == want), "{want} missing from {args:?}");
         }
         assert_eq!(&args[args.len() - 3..], ["/bin/hc", "hold", "/run/$${USER}.sock"]);
         assert!(!args.iter().any(|a| a.starts_with("ManagedOOM")), "uresourced loops on oomd's xattr: {args:?}");
+    }
+
+    #[test]
+    fn a_service_starts_on_systemd_239() {
+        // EL8: systemd-run has no --same-dir or --working-directory (240), and
+        // OOMPolicy (243) is an unknown assignment that fails the whole start.
+        let args = super::unit_args(
+            "hc-serve-1",
+            OsStr::new("/bin/hc"),
+            &[OsStr::new("serve")],
+            Path::new("/run/user/0/hc-serve-1/environment"),
+            &[],
+            Path::new("/s/x.log"),
+            Path::new("/root/my dir"),
+            Some(239),
+        );
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "WorkingDirectory=/root/my dir"), "{args:?}");
+        for refused in ["--same-dir", "--working-directory", "OOMPolicy"] {
+            assert!(!args.iter().any(|a| a.starts_with(refused)), "239 refuses {refused}: {args:?}");
+        }
+    }
+
+    #[test]
+    fn systemd_version_comes_from_the_first_line() {
+        assert_eq!(super::parse_version("systemd 239 (239-82.el8_10.16)\n+PAM +AUDIT"), Some(239));
+        assert_eq!(super::parse_version("systemd 256 (256.7-1-arch)"), Some(256));
+        assert_eq!(super::parse_version("systemd 252 (252.33-1~deb12u1)"), Some(252));
+        assert_eq!(super::parse_version("systemd 255 (255.4-1ubuntu8.4)"), Some(255));
+        assert_eq!(super::parse_version("systemd 256~rc3 (256~rc3-1)"), Some(256));
+        assert_eq!(super::parse_version("not systemd"), None);
     }
 
     #[test]
