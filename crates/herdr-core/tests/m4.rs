@@ -5,6 +5,7 @@ mod common;
 use common::framed::Viewer;
 use common::*;
 use serde_json::{Value, json};
+use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
 fn session() -> Session {
@@ -92,6 +93,93 @@ fn send_pastes_submits_and_reports_whether_work_started() {
     assert_eq!(s.json(&["send", &lazy, "x"])["started"], false);
     let silent = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
     assert!(s.json(&["send", &silent, "x"])["started"].is_null());
+}
+
+#[test]
+fn send_can_follow_up_on_done_through_the_cli_and_api() {
+    let s = session();
+    let agent =
+        run(&s, "stty -echo; r state=idle; while read -r l; do r state=working; echo got:$l; r state=done; done");
+    wait_until("idle", || status(&s, &agent) == "idle");
+    s.json(&["send", "--if", "idle", &agent, "first"]);
+    wait_until("done", || status(&s, &agent) == "done");
+
+    let sent = s.json(&["send", "--if", "done", &agent, "second"]);
+    assert_eq!(
+        (sent["status"].as_str(), sent["turn"].as_u64(), sent["started"].as_bool()),
+        (Some("done"), Some(1), Some(true))
+    );
+    shows(&s, &agent, "got:second");
+    wait_until("turn 2", || s.json(&["get", &agent])["turn"] == 2);
+
+    let sent = s.connect().call(1, "terminal.send", json!({"terminal": agent, "text": "third", "if": "done"}));
+    assert_eq!(sent["result"]["status"], "done", "{sent}");
+    assert_eq!(sent["result"]["started"], true, "{sent}");
+    shows(&s, &agent, "got:third");
+    wait_until("turn 3", || s.json(&["get", &agent])["turn"] == 3);
+}
+
+#[test]
+fn a_done_guard_refuses_other_states_without_typing() {
+    let s = session();
+    for state in ["idle", "working", "blocked", "error", "silent"] {
+        let report = if state == "silent" { String::new() } else { format!("r state={state};") };
+        let agent = run(&s, &format!("stty -echo; {report} echo ready; while read -r l; do echo got:$l; done"));
+        shows(&s, &agent, "ready");
+        if state != "silent" {
+            wait_until(state, || status(&s, &agent) == state);
+        }
+        let (code, err) = s.err(&["send", "--if", "done", &agent, "refused"]);
+        let expected = if state == "blocked" { (9, "blocked") } else { (10, "status_mismatch") };
+        assert_eq!((code, err["error"]["kind"].as_str().unwrap()), expected, "{state}: {err}");
+
+        // A later allowed send proves the refused text was not buffered as input.
+        s.json(&["send", "--force", &agent, "after"]);
+        shows(&s, &agent, "got:after");
+        assert!(!text(&s, &agent).contains("refused"), "{state}: nothing typed for a refused send");
+    }
+    let exited = run(&s, "r state=done; exit 0");
+    wait_until("finished", || s.json(&["get", &exited])["state"] == "finished");
+    let (code, err) = s.err(&["send", "--if", "done", &exited, "refused"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (11, Some("finished")));
+}
+
+#[test]
+fn a_done_guard_is_rechecked_after_human_typing_pauses() {
+    let mut s = session();
+    s.env.push(("HC_QUIET_MS".into(), "3000".into()));
+    for state in ["working", "blocked"] {
+        let gate = s.root.join(format!("switch-{state}"));
+        assert!(s.program("mkfifo").arg(&gate).status().unwrap().success());
+        let agent = run(
+            &s,
+            &format!(
+                "stty raw -echo; r state=done; dd bs=1 count=1 >/dev/null 2>&1; echo human; \
+                 stty sane -echo; read -r state < '{}'; r state=$state; \
+                 while read -r l; do echo got:$l; done",
+                gate.display()
+            ),
+        );
+        wait_until("done", || status(&s, &agent) == "done");
+        let mut person = Viewer::attach(&s, &agent, 80, 24, json!({}));
+        person.typed(b"h");
+        shows(&s, &agent, "human");
+
+        let mut sender = s.connect();
+        let request = json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.send", "params": {"terminal": agent, "text": "refused", "if": "done"}});
+        writeln!(sender.writer, "{request}").unwrap();
+        std::fs::write(&gate, format!("{state}\n")).unwrap();
+        wait_until(state, || status(&s, &agent) == state);
+
+        let mut line = String::new();
+        sender.reader.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        let expected = if state == "blocked" { "blocked" } else { "status_mismatch" };
+        assert_eq!(reply["error"]["data"]["kind"], expected, "{reply}");
+        s.json(&["send", "--force", &agent, "after"]);
+        shows(&s, &agent, "got:after");
+        assert!(!text(&s, &agent).contains("refused"), "{state}: nothing typed after the status changed");
+    }
 }
 
 #[test]

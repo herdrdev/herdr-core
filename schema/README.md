@@ -187,3 +187,9 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+`terminal.send` can require an exact reported status with `if: "idle"`,
+`if: "working"`, or `if: "done"`.
+The condition is checked immediately before typing, after waiting for human input to pause.
+A mismatch returns `status_mismatch` without typing anything.
+Use `done` for a follow-up only when that program's reported state is an appropriate input boundary; it does not certify the program's result.

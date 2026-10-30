@@ -65,9 +65,10 @@ pub fn word<T: clap::ValueEnum>(v: &T) -> String {
 
 #[derive(Clone, Copy, PartialEq, Debug, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum IdleOrWorking {
+pub enum SendStatus {
     Idle,
     Working,
+    Done,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
@@ -437,7 +438,7 @@ pub struct SendParams {
     /// Only type if the status is exactly this.
     #[arg(long = "if", value_name = "STATUS")]
     #[serde(rename = "if")]
-    pub only_if: Option<IdleOrWorking>,
+    pub only_if: Option<SendStatus>,
     /// Then wait for the turn this send started.
     #[arg(long)]
     #[serde(default)]

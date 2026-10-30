@@ -528,7 +528,7 @@ Arguments:
 Options:
       --force              Type even if the program is blocked (it may answer its dialog)
       --json               JSON output even in a terminal
-      --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]
+      --if <STATUS>        Only type if the status is exactly this [possible values: idle, working, done]
       --wait               Then wait for the turn this send started
       --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)
   -h, --help               Print help

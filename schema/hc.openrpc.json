@@ -361,13 +361,6 @@
         ],
         "type": "object"
       },
-      "IdleOrWorking": {
-        "enum": [
-          "idle",
-          "working"
-        ],
-        "type": "string"
-      },
       "InterruptResult": {
         "properties": {
           "key": {
@@ -911,6 +904,14 @@
           "turn"
         ],
         "type": "object"
+      },
+      "SendStatus": {
+        "enum": [
+          "idle",
+          "working",
+          "done"
+        ],
+        "type": "string"
       },
       "Status": {
         "description": "One 7501 record. Words are the program's own; nothing is translated.",
@@ -2374,7 +2375,7 @@
           "schema": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/IdleOrWorking"
+                "$ref": "#/components/schemas/SendStatus"
               },
               {
                 "type": "null"

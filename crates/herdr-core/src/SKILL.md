@@ -61,6 +61,12 @@ hc read --lines 100 review          # screen plus history; waits return status o
 hc interrupt review                # stop its current turn, not the process
 ```
 
+`hc send --if idle <t> <text>` only types when the program reports `idle`.
+For programs that remain `done` after a turn, use `--if done` for a follow-up.
+`--if working` is also supported.
+The condition is checked at input time; a mismatch types nothing.
+These are reported program states, not proof that its work is correct.
+
 Keep doing useful work while children work. When you need their results:
 
 ```sh
