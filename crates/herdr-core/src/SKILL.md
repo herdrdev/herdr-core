@@ -19,6 +19,8 @@ First check `hc templates`: ready-made roles may include `reviewer`,
 `simplifier`, or implementers. Use one that fits. Templates are Markdown
 files in `~/.config/herdr-core/templates/<name>.md`: frontmatter has `name`,
 `description`, `command` (including model); the body supplies instructions.
+The command uses the running machine's shell line: `sh -c` on Linux/macOS,
+cmd on Windows. For a Windows script, use `command: pwsh -NoProfile -File C:\agents\codex.ps1`.
 
 ```sh
 hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Read-only; no subagents. Report findings with hc send $HC_TERMINAL_ID when done or stuck."

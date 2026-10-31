@@ -36,6 +36,7 @@ fn a_template_starts_its_command_and_sends_body_and_prompt_first() {
     let r = s.json(&["run", "--bg", "reviewer", "review src/relay.rs"]);
     let t = r["address"].as_str().unwrap().to_string();
     assert_eq!(r["template"], "reviewer");
+    assert_eq!(s.json(&["get", &t])["argv"], serde_json::json!(["sh", "-c", ECHO_AGENT]));
     assert_eq!(
         (r["first_message"]["sent"].as_bool(), r["first_message"]["started"].as_bool()),
         (Some(true), Some(true))
