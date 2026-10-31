@@ -118,7 +118,7 @@ pub struct Terminal {
     /// The holder (its instance) that runs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
-    /// Template overrides: the key that submits a message, the stop key, the pause
+    /// Template overrides: the keys that submit a message, the stop key, the pause
     /// between paste and submit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit: Option<String>,

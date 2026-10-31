@@ -49,7 +49,7 @@ The header is a small line-based format, not full YAML:
 | `command` | Required shell command that starts the agent. |
 | `description` | Short text shown in the template list. |
 | `ready` | Default: wait for an OSC 7501 status report. The value `quiet` waits for output to settle instead. |
-| `submit` | Override the key sequence used to submit text. |
+| `submit` | Keys to submit text, separated by single spaces (default: `enter`). Each key uses the program's live keyboard mode. |
 | `stop` | Override the key sequence used to interrupt a turn. |
 | `paste_gap_ms` | Override the pause before submitting pasted text, in milliseconds. |
 
@@ -83,6 +83,13 @@ Stay within the assigned files. Ask when blocked.
 Quiet output is not proof that an agent is ready. Use this only when you know its startup flow.
 It does not give the program an agent status; core still never guesses status from the screen.
 See `hc keys --help` for key notation and `hc --skill` for the delegation workflow.
+
+For a Windows console client that buffers pasted characters and absorbs Enter into
+the paste, use `submit: right enter`. The Right key ends the buffered paste before
+Enter submits it, even when the client reads all queued input together.
+This is opt-in: choose keys appropriate for that program. Increasing `paste_gap_ms`
+alone cannot separate events that a paused reader consumes together. Core sends
+the sequence once and reports whether it observed work start; it never retries it.
 
 When a terminal is launched on another machine, that machine resolves the template and runs its command.
 Put the template and agent there first.

@@ -180,3 +180,20 @@ fn a_template_can_override_how_messages_are_submitted() {
     assert_eq!((code, err["error"]["kind"].as_str()), (1, Some("spawn_failed")));
     let _: Value = s.json(&["templates"]);
 }
+
+#[test]
+fn a_template_can_submit_with_multiple_keys() {
+    let s = session();
+    template(
+        &s,
+        "sequence",
+        &format!("---\nsubmit: right enter\ncommand: stty raw -echo; printf '\\033[?1hREADY'; {BYTES}\n---\n"),
+    );
+    let t = s.json(&["run", "--bg", "sequence"])["address"].as_str().unwrap().to_string();
+    wait_until("raw input ready", || text(&s, &t).contains("READY"));
+    s.json(&["send", &t, "x"]);
+    wait_until("submitted after the boundary key", || {
+        let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
+        bytes.ends_with(&["78", "1b", "4f", "43", "0d"].map(String::from))
+    });
+}
