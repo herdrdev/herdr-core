@@ -43,6 +43,28 @@ For a terminal you want to keep even if its program is lost, use `hc run --keep`
 Recovery starts a fresh shell, never reruns the task.
 A normal exit or an explicit kill still ends it.
 
+## Default shell
+
+With no program, `hc run --bg` starts the machine's shell: `$SHELL` (or
+`/bin/sh`) on Unix, PowerShell 7 on Windows if available, else Windows PowerShell.
+Override it in `~/.config/herdr-core/config.toml` (Windows:
+`%APPDATA%\herdr-core\config.toml`, or `$XDG_CONFIG_HOME/herdr-core/config.toml`
+when set):
+
+```toml
+shell = ["nu"]
+# Windows Git Bash (literal strings keep backslashes):
+# shell = ['C:\Program Files\Git\bin\bash.exe', '--login', '-i']
+```
+
+The list is an executable followed by separate arguments, without extra path
+quoting. It must contain a nonempty executable. Changes apply to the next new
+shell or `keep` recovery, including recovery after a restart; no restart is
+needed. Running terminals, explicit programs, and quoted command lines keep
+their behavior. A bad setting reports a config error; a shell that cannot start
+reports `spawn_failed`. Recovery stays pending and retries, with errors in
+`core.log` (config) or `holder.log` (spawn); it never silently falls back to another shell.
+
 ## Agents run agents
 
 Give an agent `hc --skill`. It prints the agent docs in one read, including how to delegate, wait, report back, and clean up.

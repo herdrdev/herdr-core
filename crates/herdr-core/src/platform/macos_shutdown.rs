@@ -3,12 +3,13 @@
 
 use std::ffi::{CString, c_char, c_int, c_ulong, c_void};
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const PREFIX: &str = "com.apple.system.loginwindow.";
 const INTENT_LIFETIME_NS: u64 = 2 * 60 * 60 * 1_000_000_000;
-static SHUTDOWN: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+const SHUTDOWN_LIFETIME_NS: u64 = 5 * 60 * 1_000_000_000;
+static SHUTDOWN: OnceLock<Arc<AtomicU64>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
@@ -53,7 +54,7 @@ fn now_ns() -> u64 {
 
 struct Watcher {
     intent: Mutex<Option<u64>>,
-    requested: Arc<AtomicBool>,
+    requested: Arc<AtomicU64>,
     #[cfg(test)]
     seen: std::sync::atomic::AtomicUsize,
 }
@@ -62,7 +63,7 @@ impl Watcher {
     fn handle(&self, event: Event) {
         let mut intent = self.intent.lock().unwrap_or_else(|p| p.into_inner());
         if observe(&mut intent, event, now_ns()) {
-            self.requested.store(true, Ordering::Release);
+            self.requested.store(now_ns(), Ordering::Release);
         }
         #[cfg(test)]
         self.seen.fetch_add(1, Ordering::Release);
@@ -70,7 +71,11 @@ impl Watcher {
 }
 
 pub fn in_progress() -> bool {
-    SHUTDOWN.get().is_some_and(|s| s.load(Ordering::Acquire))
+    SHUTDOWN.get().is_some_and(|s| requested_recently(s.load(Ordering::Acquire), now_ns()))
+}
+
+fn requested_recently(at: u64, now_ns: u64) -> bool {
+    at != 0 && now_ns.checked_sub(at).is_some_and(|age| age <= SHUTDOWN_LIFETIME_NS)
 }
 
 pub fn monitor() -> Option<Registration> {
@@ -208,6 +213,15 @@ mod tests {
         assert!(!observe(&mut intent, Event::NoReturn, 6 + INTENT_LIFETIME_NS), "intent consumed");
     }
 
+    #[test]
+    fn abandoned_shutdown_requests_expire() {
+        assert!(!requested_recently(0, 1));
+        assert!(requested_recently(1, 1));
+        assert!(requested_recently(1, 1 + SHUTDOWN_LIFETIME_NS));
+        assert!(!requested_recently(1, 2 + SHUTDOWN_LIFETIME_NS));
+        assert!(!requested_recently(2, 1));
+    }
+
     unsafe extern "C" {
         fn notify_post(name: *const c_char) -> u32;
     }
@@ -223,8 +237,7 @@ mod tests {
             return;
         }
         let requested = SHUTDOWN.get_or_init(Default::default).clone();
-        let watcher =
-            Arc::new(Watcher { intent: Mutex::new(None), requested: requested.clone(), seen: Default::default() });
+        let watcher = Arc::new(Watcher { intent: Mutex::new(None), requested, seen: Default::default() });
         let prefix = format!("dev.herdr.test.{}.", super::super::random_hex());
         let registration = Registration::new(&prefix, watcher.clone()).unwrap();
         for (index, key) in
@@ -239,7 +252,7 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline, "notification not delivered");
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            assert_eq!(requested.load(Ordering::Acquire), index == 4);
+            assert_eq!(in_progress(), index == 4);
         }
         use crate::{api::CoreInfo, holder_proto::Exit, paths::Paths, runtime::Core, terminals::NewTerminal};
         use std::io::{BufRead, BufReader};
@@ -285,7 +298,7 @@ mod tests {
         }
         drop(core);
         drop(registration);
-        SHUTDOWN.get().unwrap().store(false, Ordering::Release);
+        SHUTDOWN.get().unwrap().store(0, Ordering::Release);
         let restarted = Core::start(paths(), info()).unwrap();
         assert!(restarted.lock().reg.terminals[&1].is_live());
         assert!(!restarted.lock().reg.terminals[&2].is_live());

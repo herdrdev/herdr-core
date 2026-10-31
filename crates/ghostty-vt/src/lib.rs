@@ -52,6 +52,9 @@ mod ffi {
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
     pub const DATA_SCROLLBAR: i32 = 9;
     pub const DATA_TITLE: i32 = 12;
+    pub const DATA_COLOR_FOREGROUND_DEFAULT: i32 = 22;
+    pub const DATA_COLOR_BACKGROUND_DEFAULT: i32 = 23;
+    pub const DATA_COLOR_CURSOR_DEFAULT: i32 = 24;
     pub const DATA_MODE: i32 = 37;
     pub const FORMAT_PLAIN: i32 = 0;
     pub const FORMAT_VT: i32 = 1;
@@ -186,6 +189,7 @@ mod ffi {
         pub fn ghostty_terminal_set(t: Terminal, opt: i32, value: *const c_void) -> i32;
         pub fn ghostty_terminal_get(t: Terminal, data: i32, out: *mut c_void) -> i32;
         pub fn ghostty_terminal_vt_write(t: Terminal, data: *const u8, len: usize);
+        pub fn ghostty_color_scheme_report_encode(scheme: i32, buf: *mut u8, cap: usize, len: *mut usize) -> i32;
         pub fn ghostty_terminal_resize(t: Terminal, cols: u16, rows: u16, cw: u32, ch: u32) -> i32;
         pub fn ghostty_terminal_grid_ref(t: Terminal, point: Point, out: *mut GridRef) -> i32;
         pub fn ghostty_formatter_terminal_new(
@@ -411,7 +415,7 @@ impl Terminal {
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
     }
 
-    /// Replies to queries the program asked since the last call, for its PTY.
+    /// Query replies and subscribed notifications since the last call, for the program's PTY.
     pub fn take_responses(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.hooks.responses)
     }
@@ -526,21 +530,37 @@ impl Terminal {
     }
 
     /// Display facts from a viewer: default colors and cell size in pixels.
-    /// `None` keeps what was known before.
+    /// `None` keeps what was known before. Changed colors queue a mode 2031 report
+    /// for subscribers, even within the same light/dark scheme (they may re-query).
     pub fn set_display(&mut self, fg: Option<Rgb>, bg: Option<Rgb>, cursor: Option<Rgb>, cell: Option<(u32, u32)>) {
-        let color = |opt, rgb: Option<Rgb>| {
+        let mut changed = false;
+        for (opt, data, rgb) in [
+            (ffi::OPT_COLOR_FOREGROUND, ffi::DATA_COLOR_FOREGROUND_DEFAULT, fg),
+            (ffi::OPT_COLOR_BACKGROUND, ffi::DATA_COLOR_BACKGROUND_DEFAULT, bg),
+            (ffi::OPT_COLOR_CURSOR, ffi::DATA_COLOR_CURSOR_DEFAULT, cursor),
+        ] {
             if let Some(c) = rgb {
+                let mut old: Rgb = [0; 3];
+                let rc = unsafe { ffi::ghostty_terminal_get(self.raw, data, old.as_mut_ptr().cast()) };
+                changed |= rc != ffi::SUCCESS || old != c;
                 unsafe { ffi::ghostty_terminal_set(self.raw, opt, c.as_ptr().cast()) };
             }
-        };
-        color(ffi::OPT_COLOR_FOREGROUND, fg);
-        color(ffi::OPT_COLOR_BACKGROUND, bg);
-        color(ffi::OPT_COLOR_CURSOR, cursor);
+        }
         if let Some([r, g, b]) = bg {
             self.hooks.dark = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 128;
         }
         if let Some(cell) = cell {
             self.hooks.cell = cell;
+        }
+        if changed && self.dec_mode(2031) {
+            let mut buf = [0u8; 16];
+            let mut len = 0;
+            let rc = unsafe {
+                ffi::ghostty_color_scheme_report_encode(self.hooks.dark as i32, buf.as_mut_ptr(), buf.len(), &mut len)
+            };
+            if rc == ffi::SUCCESS {
+                self.hooks.responses.extend_from_slice(&buf[..len]);
+            }
         }
     }
 
@@ -744,168 +764,4 @@ fn alloc_call(f: impl FnOnce(*mut *mut u8, *mut usize) -> i32) -> Option<Vec<u8>
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_repaint_into_a_dirty_viewer_turns_off_modes_the_screen_no_longer_has() {
-        let mut viewer = Terminal::new(40, 10, 0);
-        viewer.write(b"\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?1004h");
-        let screen = Terminal::new(40, 10, 0);
-        viewer.write(&screen.paint(0));
-        for mode in [1000, 1006, 2004, 1004] {
-            assert!(!viewer.dec_mode(mode), "mode {mode} left on");
-        }
-        let mut mouse = Terminal::new(40, 10, 0);
-        mouse.write(b"\x1b[?1000h");
-        viewer.write(&mouse.paint(0));
-        assert!(viewer.dec_mode(1000), "and the screen's own modes come back");
-    }
-
-    #[test]
-    fn parses_reads_and_round_trips_a_snapshot() {
-        let mut t = Terminal::new(20, 3, 1 << 20);
-        for i in 0..10 {
-            t.write(format!("line {i}\r\n").as_bytes());
-        }
-        let text = t.plain_text();
-        assert!(text.contains("line 0") && text.contains("line 9"), "{text:?}");
-
-        // Snapshot taken in the middle of an escape sequence finishes it after restore.
-        t.write(b"\x1b[3");
-        let snap = t.snapshot().unwrap();
-        let mut back = Terminal::restore(&snap, 1 << 20).unwrap();
-        back.write(b"1mred\x1b[0m");
-        assert_eq!(back.size(), (20, 3));
-        let text = back.plain_text();
-        assert!(text.contains("line 0") && text.contains("red"), "{text:?}");
-        assert!(!text.contains("1mred"), "{text:?}");
-
-        t.write(b"m\x1b[?1049h");
-        assert!(t.alt_screen());
-        assert!(Terminal::restore(b"garbage", 1 << 20).is_none());
-    }
-
-    #[test]
-    fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
-        let mut t = Terminal::new(30, 4, 1 << 20);
-        for i in 0..8 {
-            t.write(format!("\x1b[31mline {i}\x1b[0m\r\n").as_bytes());
-        }
-        t.write(b"\x1b]2;my title\x07\x1b[?2026h\x1b[?1004hprompt> ");
-        let mut fresh = Terminal::new(30, 4, 1 << 20);
-        fresh.write(&t.paint(3));
-        let screen = |t: &Terminal| t.plain_text().lines().rev().take(4).map(String::from).collect::<Vec<_>>();
-        assert_eq!(screen(&fresh), screen(&t));
-        assert!(fresh.plain_text().contains("line 2"), "{:?}", fresh.plain_text());
-        assert!(!fresh.plain_text().contains("line 1\n"), "history beyond 3 lines");
-        assert_eq!(fresh.title(), "my title");
-        assert!(fresh.dec_mode(1004));
-        assert!(!fresh.dec_mode(2026), "synchronized output must not be replayed");
-
-        let mut alt = Terminal::new(30, 4, 1 << 20);
-        alt.write(b"main\r\n\x1b[?1049h\x1b[2;3Hfull screen");
-        let mut fresh = Terminal::new(30, 4, 1 << 20);
-        fresh.write(&alt.paint(10));
-        assert!(fresh.alt_screen());
-        assert!(fresh.plain_text().contains("full screen"));
-    }
-
-    #[test]
-    fn repaint_uses_the_active_screen_not_stale_alternate_screen_modes() {
-        let mut t = Terminal::new(30, 4, 1 << 20);
-        t.write(b"main\r\n\x1b[?47h\x1b[?1049hALT\x1b[?1049lDONE");
-        assert!(!t.alt_screen());
-        let mut fresh = Terminal::new(30, 4, 1 << 20);
-        fresh.write(&t.paint(10));
-        assert!(!fresh.alt_screen());
-        assert_eq!(fresh.screen_rows(), t.screen_rows());
-
-        for enter in [47, 1047, 1049] {
-            for exit in [None, Some(47), Some(1047), Some(1049)] {
-                let mut t = Terminal::new(30, 4, 1 << 20);
-                t.write(format!("main\r\n\x1b[?{enter}h\x1b[2;3HALT").as_bytes());
-                if let Some(exit) = exit {
-                    t.write(format!("\x1b[?{exit}lDONE").as_bytes());
-                }
-                let paint = t.paint(10);
-                for viewer_mode in [None, Some(47), Some(1047), Some(1049)] {
-                    let mut viewer = Terminal::new(30, 4, 1 << 20);
-                    if let Some(mode) = viewer_mode {
-                        viewer.write(format!("old main\x1b[?{mode}hOLD ALT").as_bytes());
-                    }
-                    viewer.write(&paint);
-                    let case = (enter, exit, viewer_mode);
-                    assert_eq!(viewer.alt_screen(), t.alt_screen(), "{case:?}");
-                    assert_eq!(viewer.screen_rows(), t.screen_rows(), "{case:?}");
-                    assert!(!viewer.dec_mode(47), "{case:?}");
-                    assert!(!viewer.dec_mode(1047), "{case:?}");
-                    assert_eq!(viewer.dec_mode(1049), t.alt_screen(), "{case:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn program_status_reports_and_title_changes_reach_us() {
-        let mut t = Terminal::new(80, 24, 1 << 20);
-        t.write(b"\x1b]7501;state=working:app=claude-code:progress=40\x1b\\");
-        t.write(b"\x1b]7501;state=blocked:kind=permission:id=a/b:msg=QXBwbHk/\x07");
-        t.write(b"\x1b]7501;state=clear\x1b\\\x1b]7501;state=bogus\x1b\\");
-        let reports = t.take_status_reports();
-        assert_eq!(reports.len(), 3, "{reports:?}");
-        assert_eq!(
-            (reports[0].state, reports[0].progress, reports[0].app.as_str()),
-            ("working", Some(40), "claude-code")
-        );
-        assert_eq!(
-            (reports[1].kind, reports[1].id.as_str(), reports[1].message.as_str()),
-            (Some("permission"), "a/b", "Apply?")
-        );
-        assert_eq!(reports[2].state, "clear");
-        // A program asking whether we support the protocol gets an answer.
-        t.write(b"\x1b]7501;?\x1b\\");
-        assert!(String::from_utf8_lossy(&t.take_responses()).starts_with("\x1b]7501;?"));
-
-        assert!(!t.take_title_changed());
-        t.write(b"\x1b]2;hi\x07");
-        assert!(t.take_title_changed());
-    }
-
-    #[test]
-    fn wheel_notches_follow_the_programs_mouse_mode_and_rows_keep_their_width() {
-        let mut t = Terminal::new(20, 4, 1 << 20);
-        assert!(t.wheel(true).is_empty(), "no mouse reports asked for");
-        t.write(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
-        assert_eq!(String::from_utf8_lossy(&t.wheel(true)), "\x1b[<64;11;3M");
-        assert_eq!(String::from_utf8_lossy(&t.wheel(false)), "\x1b[<65;11;3M");
-        t.write(b"hello\r\nworld  \x1b[2;19H\xe2\x94\x82");
-        let rows = t.screen_rows();
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0], format!("{:<20}", "hello"));
-        assert!(rows[1].starts_with("world") && rows[1].chars().nth(18) == Some('│'), "{:?}", rows[1]);
-        assert!(rows.iter().all(|r| r.chars().count() == 20));
-    }
-
-    #[test]
-    fn answers_queries_like_ghostty_with_viewer_facts() {
-        let mut t = Terminal::new(80, 24, 1 << 20);
-        t.set_xtversion("WezTerm 20240203");
-        t.set_display(Some([1, 2, 3]), Some([0xff, 0xff, 0xff]), None, Some((9, 18)));
-        let ask = |t: &mut Terminal, q: &[u8]| {
-            t.write(q);
-            String::from_utf8_lossy(&t.take_responses()).into_owned()
-        };
-        assert_eq!(ask(&mut t, b"\x1b[c"), "\x1b[?62;22c");
-        assert_eq!(ask(&mut t, b"\x1b[>c"), "\x1b[>1;10;0c");
-        assert!(ask(&mut t, b"\x1b[>q").contains("WezTerm 20240203"));
-        assert_eq!(ask(&mut t, b"\x1b[3;5H\x1b[6n"), "\x1b[3;5R");
-        assert!(ask(&mut t, b"\x1b]11;?\x07").contains("rgb:ffff/ffff/ffff"));
-        assert!(ask(&mut t, b"\x1b]10;?\x07").contains("rgb:0101/0202/0303"));
-        assert_eq!(ask(&mut t, b"\x1b[?996n"), "\x1b[?997;2n", "light background");
-        assert_eq!(ask(&mut t, b"\x1b[16t"), "\x1b[6;18;9t");
-        assert_eq!(ask(&mut t, b"\x1b[18t"), "\x1b[8;24;80t");
-        assert_eq!(ask(&mut t, b"\x1b[?2004$p"), "\x1b[?2004;2$y");
-        assert_eq!(ask(&mut t, b"\x1b[?u"), "\x1b[?0u");
-    }
-}
+mod tests;

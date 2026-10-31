@@ -62,7 +62,7 @@ fn an_up_to_date_binary_restarts_only_an_older_running_core() {
 }
 
 #[test]
-fn an_install_in_a_read_only_folder_is_managed_by_the_system_package_manager() {
+fn an_install_in_a_read_only_folder_explains_how_to_update_it() {
     use std::os::unix::fs::PermissionsExt;
     if unsafe { libc::geteuid() } == 0 {
         return; // Root can replace files in read-only directories.
@@ -82,7 +82,8 @@ fn an_install_in_a_read_only_folder_is_managed_by_the_system_package_manager() {
     let error: Value = serde_json::from_slice(&update.stderr).unwrap();
     assert!(!update.status.success());
     assert_eq!(error["error"]["kind"], "refused", "{error}");
-    assert_eq!(error["error"]["hint"], "update herdr-core with your system's package manager");
+    assert_eq!(error["error"]["message"], format!("{} isn't writable by you", dir.canonicalize().unwrap().display()));
+    assert_eq!(error["error"]["hint"], "update herdr-core the way it was installed (package manager, or sudo)");
 }
 
 #[test]

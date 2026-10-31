@@ -980,7 +980,7 @@
             "type": "array"
           },
           "installed_by": {
-            "description": "The package manager this hc came from (homebrew, nix, mise): it\nupdates hc, `hc update` won't. Null for a plain install.",
+            "description": "The package manager this hc came from (homebrew, nix, mise, or\nsystem package manager): it updates hc, `hc update` won't.\nNull for a replaceable plain install.",
             "type": [
               "string",
               "null"
@@ -1389,7 +1389,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.14"
+    "version": "0.1.15"
   },
   "methods": [
     {

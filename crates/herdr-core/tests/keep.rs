@@ -63,6 +63,9 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
 fn kept_terminal_survives_core_crash_and_recovers_if_its_holder_is_also_lost() {
     let s = Session::new();
     let t = run(&s, &["--keep", "sleep", "100"]);
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, r#"shell = ["/bin/sh", "-c", "echo configured-restore; exec /bin/sh"]"#).unwrap();
     let old = get(&s, &t)["pid"].as_i64().unwrap();
     let status = s.json(&["server", "status"]);
     unsafe {
@@ -78,6 +81,7 @@ fn kept_terminal_survives_core_crash_and_recovers_if_its_holder_is_also_lost() {
     wait_until("core gone again", || !s.connect_ok());
     wait_until("replacement on start", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
     assert_eq!(get(&s, &t)["state"], "live");
+    wait_until("configured restored shell", || text(&s, &t).contains("configured-restore"));
     assert!(!pid_alive(old));
 }
 

@@ -59,7 +59,12 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
             "homebrew" => "brew upgrade herdr-core",
             "nix" => "update it in your Nix configuration",
             "mise" => "mise upgrade herdr-core",
-            _ => "update herdr-core with your system's package manager",
+            _ => {
+                return Err(refused(
+                    format!("{} isn't writable by you", dest.parent().unwrap().display()),
+                    "update herdr-core the way it was installed (package manager, or sudo)",
+                ));
+            }
         };
         return Err(refused(format!("{shown} belongs to {manager}"), how));
     }

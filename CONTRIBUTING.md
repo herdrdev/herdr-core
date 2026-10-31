@@ -35,3 +35,4 @@ Keep OS-specific code behind `platform/` and its shared interface, without `cfg`
 After changing dependencies, run `just notices` (Unix; needs `jq`) and review the generated licenses. Keep the [non-Cargo notices](distribution/notices/README.md) current too. `hc --licenses` and every release archive carry these texts.
 
 PRs target `master`. Only the maintainer publishes releases.
+At release time, write what users will notice in CHANGELOG.md under the version being released.

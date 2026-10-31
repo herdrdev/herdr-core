@@ -429,12 +429,13 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
 /// A machine's terminals now (after a connect, or after it says we missed
 /// some): subscribers here hear what appeared, changed or went.
 fn mirror_replace(core: &Core, m: &Machine, terminals: Vec<Value>) {
+    let mut st = core.lock();
+    let Some(name) = st.machines.iter().find(|current| current.id == m.id).map(|m| m.name.clone()) else { return };
     let fresh: std::collections::BTreeMap<String, Value> = terminals
         .into_iter()
-        .map(|t| localize(core, &m.name, &[], t))
+        .map(|t| localize_in(core, &st, &name, &[], t))
         .map(|t| (t["address"].as_str().unwrap_or_default().to_string(), t))
         .collect();
-    let mut st = core.lock();
     let old = st.mirrors.remove(&m.id).unwrap_or_default();
     for (address, record) in old.iter().filter(|(a, _)| !fresh.contains_key(*a)) {
         core.deliver(&mut st, "removed", address, json!({}), record, Some(record));
@@ -443,6 +444,27 @@ fn mirror_replace(core: &Core, m: &Machine, terminals: Vec<Value>) {
         core.deliver(&mut st, "created", address, record.clone(), record, None);
     }
     st.mirrors.insert(m.id.clone(), fresh);
+}
+
+pub fn rename_mirror(core: &Core, st: &mut State, id: &str, old: &str, new: &str) {
+    let Some(records) = st.mirrors.remove(id) else { return };
+    let mut renamed = std::collections::BTreeMap::new();
+    for record in records.values() {
+        let mut record = record.clone();
+        map_addresses(&mut record, &|s| match s.split_once('/') {
+            Some((prefix, rest)) if prefix == old => format!("{new}/{rest}"),
+            _ => s.to_owned(),
+        });
+        let address = record["address"].as_str().unwrap_or_default().to_owned();
+        renamed.insert(address, record);
+    }
+    st.mirrors.insert(id.to_owned(), renamed.clone());
+    for (address, record) in records {
+        core.deliver(st, "removed", &address, json!({}), &record, Some(&record));
+    }
+    for (address, record) in renamed {
+        core.deliver(st, "created", &address, record.clone(), &record, None);
+    }
 }
 
 /// Event lines from a machine: applied to its mirror, passed on as seen from here.
@@ -457,7 +479,7 @@ fn mirror_events(core: &Core, m: &Machine, line: &Line, payload: &[u8]) {
     for l in lines {
         let Ok(msg) = serde_json::from_slice::<Value>(&l) else { continue };
         match msg["method"].as_str() {
-            Some("event") => mirror_event(core, m, localize(core, &m.name, &[], msg["params"].clone())),
+            Some("event") => mirror_event(core, m, msg["params"].clone()),
             Some("missed") => {
                 mirror_replace(core, m, msg["params"]["terminals"].as_array().cloned().unwrap_or_default());
                 core.documents_missed(&mut core.lock());
@@ -468,15 +490,14 @@ fn mirror_events(core: &Core, m: &Machine, line: &Line, payload: &[u8]) {
 }
 
 fn mirror_event(core: &Core, m: &Machine, p: Value) {
+    let mut st = core.lock();
+    let Some(name) = st.machines.iter().find(|current| current.id == m.id).map(|m| m.name.clone()) else { return };
+    let p = localize_in(core, &st, &name, &[], p);
     let (kind, address, data) =
         (p["type"].as_str().unwrap_or_default(), p["terminal"].as_str().unwrap_or_default(), p["data"].clone());
-    let mut st = core.lock();
     if kind == "doc" {
         // Only this machine, not docs it in turn watches on a third core.
-        if p.get("machine").is_none()
-            && let Some(name) =
-                st.machines.iter().find(|current| current.id == m.id).map(|current| current.name.clone())
-        {
+        if p.get("machine").is_none() {
             core.doc_event(&mut st, data, Some(&name));
         }
         return;
@@ -1056,36 +1077,38 @@ pub async fn forward_to(core: &Core, to: &To, method: &str, params: Value) -> Re
 
 /// Addresses from the core called `name`: its `t7` is `name/t7` here; ours
 /// (by our id, our name, or an `alias` it calls us) are bare again.
-pub fn localize(core: &Core, name: &str, aliases: &[&str], mut v: Value) -> Value {
-    fn walk(v: &mut Value, map: &dyn Fn(&str) -> String) {
-        match v {
-            Value::Object(o) => {
-                for (k, v) in o.iter_mut() {
-                    match v {
-                        Value::String(s)
-                            if ["address", "parent", "terminal", "from", "removed"].contains(&k.as_str()) =>
-                        {
-                            *s = map(s)
-                        }
-                        _ => walk(v, map),
+pub fn localize(core: &Core, name: &str, aliases: &[&str], v: Value) -> Value {
+    localize_in(core, &core.lock(), name, aliases, v)
+}
+
+fn map_addresses(v: &mut Value, map: &dyn Fn(&str) -> String) {
+    match v {
+        Value::Object(o) => {
+            for (k, v) in o.iter_mut() {
+                match v {
+                    Value::String(s) if ["address", "parent", "terminal", "from", "removed"].contains(&k.as_str()) => {
+                        *s = map(s)
                     }
+                    _ => map_addresses(v, map),
                 }
             }
-            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, map)),
-            _ => {}
         }
+        Value::Array(a) => a.iter_mut().for_each(|v| map_addresses(v, map)),
+        _ => {}
     }
-    let machines: Vec<(String, String)> = core.lock().machines.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
+}
+
+fn localize_in(core: &Core, st: &State, name: &str, aliases: &[&str], mut v: Value) -> Value {
     let map = |s: &str| match s.split_once('/') {
         None => format!("{name}/{s}"),
         Some((prefix, rest)) if prefix == core.info.id || prefix == core.info.name || aliases.contains(&prefix) => {
             rest.to_string()
         }
-        Some((prefix, rest)) => match machines.iter().find(|(id, _)| id == prefix) {
-            Some((_, name)) => format!("{name}/{rest}"),
+        Some((prefix, rest)) => match st.machines.iter().find(|m| m.id == prefix) {
+            Some(m) => format!("{}/{rest}", m.name),
             None => s.to_string(),
         },
     };
-    walk(&mut v, &map);
+    map_addresses(&mut v, &map);
     v
 }

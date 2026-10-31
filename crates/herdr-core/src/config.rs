@@ -6,6 +6,8 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Executable and arguments for new shells (default: this machine's shell).
+    pub shell: Option<Vec<String>>,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.
     pub detach_key: Option<String>,
     /// Seconds a `wait` runs before it checks in (default 180).
@@ -28,6 +30,14 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn shell(&self) -> Result<Vec<String>, RpcError> {
+        match &self.shell {
+            None => Ok(crate::platform::own_shell()),
+            Some(argv) if argv.first().is_some_and(|exe| !exe.is_empty()) => Ok(argv.clone()),
+            Some(_) => Err(invalid("shell: give an executable and optional arguments, like [\"nu\"]".into())),
+        }
+    }
+
     pub fn headless(&self) -> Result<(u16, u16), RpcError> {
         let Some(spec) = &self.headless else { return Ok((200, 120)) };
         spec.split_once('x')

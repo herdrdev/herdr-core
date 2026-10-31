@@ -14,7 +14,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
         (Some(t), None, _) => p.argv = vec!["sh".into(), "-c".into(), t.command.clone()],
         // The shell is this machine's: the caller may be on another kind.
         (None, Some(line), true) => p.argv = crate::platform::shell_line(&line),
-        (None, None, true) => p.argv = crate::platform::own_shell(),
+        (None, None, true) => p.argv = crate::config::load(&core.paths.config)?.shell()?,
         (None, None, false) => {}
         _ => return Err(RpcError::invalid_params("give argv or line, not both")),
     }

@@ -81,6 +81,7 @@ pre-release: check docs-check
 [unix]
 release-prepare version:
     @printf '%s\n' "{{version}}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "error: version must look like 0.1.5, no v"; exit 1; }
+    @awk 'index($0, "## [{{version}}] - ") == 1 { found = 1 } END { exit !found }' CHANGELOG.md || { echo "error: write release notes in CHANGELOG.md under ## [{{version}}] - YYYY-MM-DD first"; exit 1; }
     @[ -z "$(git status --porcelain)" ] || { echo "error: working tree must be clean"; exit 1; }
     @[ "$(git branch --show-current)" = master ] || { echo "error: release from master"; exit 1; }
     git fetch origin master --tags

@@ -167,7 +167,8 @@ pub fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
 
 /// This machine's own shell, as a person here gets it.
 pub fn own_shell() -> Vec<String> {
-    vec![std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())]
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
+    if cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
 }
 
 /// A shell line as this machine runs one.

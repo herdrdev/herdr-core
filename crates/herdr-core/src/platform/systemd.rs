@@ -72,13 +72,13 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
             return None;
         }
     };
-    if let Err(e) = ensure_shutdown_guard(&run, log) {
-        if e.kind() == io::ErrorKind::NotFound {
-            eprintln!("{NO_MANAGER} (no systemd-run on PATH)");
-            return None;
+    let guarded = match ensure_shutdown_guard(&run, log) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("hc: {e}; starting without shutdown ordering");
+            false
         }
-        return Some(Err(e));
-    }
+    };
     let mut caller: BTreeMap<String, String> = super::utf8_vars().collect();
     let mut unset: Vec<&str> = super::SSH_LOGIN.to_vec();
     for (k, v) in cmd.get_envs() {
@@ -112,7 +112,10 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let out = Command::new("systemd-run")
         .env_clear()
         .envs(&env)
-        .args(unit_args(&name, cmd, &dir.join("environment"), &unset, log, &here, version))
+        .args(unit_args(&name, &dir.join("environment"), &unset, log, &here, version))
+        .args(guarded.then(|| shutdown_order(cmd, log)).into_iter().flat_map(|order| [OsString::from("-p"), order]))
+        .arg(literal(cmd.get_program()))
+        .args(cmd.get_args().map(literal))
         .stdin(Stdio::null())
         .output();
     let started = match out {
@@ -164,7 +167,7 @@ fn ensure_shutdown_guard(run: &Path, log: &Path) -> io::Result<()> {
     let out = Command::new("systemd-run")
         .env("XDG_RUNTIME_DIR", run)
         .args(["--user", "--quiet", "--collect", "--service-type=oneshot", "--unit", &name])
-        .args(["-p", "RemainAfterExit=yes", "/usr/bin/true"])
+        .args(["-p", "RemainAfterExit=yes", "/bin/sh", "-c", ":"])
         .stdin(Stdio::null())
         .output()?;
     if out.status.success() || start() {
@@ -232,15 +235,7 @@ fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
 /// change, and uresourced < 0.5.5 answers each rewrite with another change,
 /// flooding the user manager until it starts nothing. KillMode: when the core
 /// or holder exits, nothing else goes with it.
-fn unit_args(
-    name: &str,
-    cmd: &Command,
-    environment: &Path,
-    unset: &[&str],
-    log: &Path,
-    here: &Path,
-    version: u32,
-) -> Vec<OsString> {
+fn unit_args(name: &str, environment: &Path, unset: &[&str], log: &Path, here: &Path, version: u32) -> Vec<OsString> {
     let mut out: Vec<OsString> = ["--user", "--quiet", "--collect", "--service-type=exec"].map(OsString::from).into();
     if version >= 243 {
         out.extend([OsString::from("-p"), OsString::from("OOMPolicy=continue")]);
@@ -262,13 +257,17 @@ fn unit_args(
         }
         out.push(p.into());
     }
-    let order = if cmd.get_args().next().is_some_and(|arg| arg == "hold") { "Before" } else { "After" };
-    out.extend(["-p".into(), format!("{order}={}", shutdown_guard(log)).into()]);
-    // systemd expands $ in a service's command line; $$ is a plain $.
-    let literal = |a: &OsStr| OsString::from(a.to_string_lossy().replace('$', "$$"));
-    out.push(literal(cmd.get_program()));
-    out.extend(cmd.get_args().map(literal));
     out
+}
+
+fn shutdown_order(cmd: &Command, log: &Path) -> OsString {
+    let order = if cmd.get_args().next().is_some_and(|arg| arg == "hold") { "Before" } else { "After" };
+    format!("{order}={}", shutdown_guard(log)).into()
+}
+
+// systemd expands $ in a service's command line; $$ is a plain $.
+fn literal(arg: &OsStr) -> OsString {
+    arg.to_string_lossy().replace('$', "$$").into()
 }
 
 /// Without linger the user manager, and every hc service with it, stops when
@@ -357,7 +356,6 @@ mod tests {
         let socket = OsStr::new("/run/${USER}.sock");
         let args = super::unit_args(
             "hc-hold-1",
-            Command::new("/bin/hc").args([OsStr::new("hold"), socket]),
             Path::new("/run/user/1/hc-hold-1/environment"),
             &["HC_SCOPE"],
             Path::new("/s/x.log"),
@@ -377,7 +375,7 @@ mod tests {
         ] {
             assert!(args.iter().any(|a| a == want), "{want} missing from {args:?}");
         }
-        assert_eq!(&args[args.len() - 3..], ["/bin/hc", "hold", "/run/$${USER}.sock"]);
+        assert_eq!(super::literal(socket), "/run/$${USER}.sock");
         assert!(!args.iter().any(|a| a.starts_with("ManagedOOM")), "uresourced loops on oomd's xattr: {args:?}");
     }
 
@@ -385,7 +383,6 @@ mod tests {
     fn el8_services_keep_the_callers_directory_without_newer_options() {
         let args = super::unit_args(
             "hc-serve-1",
-            Command::new("/bin/hc").arg("serve"),
             Path::new("/run/user/1/hc-serve-1/environment"),
             &[],
             Path::new("/s/x.log"),
@@ -399,32 +396,15 @@ mod tests {
 
     #[test]
     fn shutdown_stops_every_core_before_its_holders_even_after_a_restart() {
-        let args = |name: &str, command: &str, log: &str| {
-            super::unit_args(
-                name,
-                Command::new("/bin/hc").arg(command),
-                Path::new("/run/environment"),
-                &[],
-                Path::new(log),
-                Path::new("/"),
-                259,
-            )
-        };
-        let first = args("hc-serve-first", "serve", "/state/session/core.log");
-        let next = args("hc-serve-next", "serve", "/state/session/core.log");
-        let holder = args("hc-hold-first", "hold", "/state/session/holder.log");
         let order =
-            first.iter().find_map(|p| p.to_str()?.strip_prefix("After=hc-shutdown-")).expect("core after guard");
-        assert!(
-            next.iter().any(|p| p == OsStr::new(&format!("After=hc-shutdown-{order}"))),
-            "new cores reuse the guard"
-        );
-        assert!(holder.iter().any(|p| p == OsStr::new(&format!("Before=hc-shutdown-{order}"))), "holder stops last");
-        let other = args("hc-serve-other", "serve", "/state/other/core.log");
-        assert!(
-            !other.iter().any(|p| p == OsStr::new(&format!("After=hc-shutdown-{order}"))),
-            "sessions stay separate"
-        );
+            |command: &str, log: &str| super::shutdown_order(Command::new("/bin/hc").arg(command), Path::new(log));
+        let first = order("serve", "/state/session/core.log");
+        let next = order("serve", "/state/session/core.log");
+        let holder = order("hold", "/state/session/holder.log");
+        let guard = first.to_str().unwrap().strip_prefix("After=hc-shutdown-").expect("core after guard");
+        assert_eq!(next, first, "new cores reuse the guard");
+        assert_eq!(holder, OsStr::new(&format!("Before=hc-shutdown-{guard}")), "holder stops last");
+        assert_ne!(order("serve", "/state/other/core.log"), first, "sessions stay separate");
     }
 
     #[test]
