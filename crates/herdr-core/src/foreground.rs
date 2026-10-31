@@ -30,76 +30,9 @@ pub fn about(pid: i32) -> Option<Foreground> {
     Some(Foreground { pid, name, argv, cwd })
 }
 
-/// A pseudo console has no foreground group: this is the terminal's first
-/// process, with the folder and command line Windows keeps in its memory.
-/// None for a 32-bit process, whose own copy of them lives elsewhere.
 #[cfg(windows)]
 pub fn about(pid: i32) -> Option<Foreground> {
-    use std::ffi::c_void;
-    use std::mem::{MaybeUninit, size_of};
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
-    use windows_sys::Win32::Foundation::{HANDLE, LocalFree, UNICODE_STRING};
-    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-    use windows_sys::Win32::System::Threading::*;
-    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
-
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid as u32) };
-    if raw.is_null() {
-        return None;
-    }
-    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let h = process.as_raw_handle() as HANDLE;
-    let mut wow64 = 0;
-    if unsafe { IsWow64Process(h, &mut wow64) } == 0 || wow64 != 0 {
-        return None;
-    }
-    let read = |at: *const c_void, into: *mut c_void, len: usize| {
-        let mut n = 0;
-        unsafe { ReadProcessMemory(h, at, into, len, &mut n) != 0 && n == len }
-    };
-    fn value<T>(read: impl Fn(*const c_void, *mut c_void, usize) -> bool, at: *const c_void) -> Option<T> {
-        let mut v = MaybeUninit::<T>::uninit();
-        read(at, v.as_mut_ptr().cast(), size_of::<T>()).then(|| unsafe { v.assume_init() })
-    }
-    let text = |s: UNICODE_STRING| -> Option<Vec<u16>> {
-        let mut buf = vec![0u16; s.Length as usize / 2];
-        read(s.Buffer.cast(), buf.as_mut_ptr().cast(), buf.len() * 2).then_some(buf)
-    };
-
-    let mut basic: PROCESS_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-    let size = size_of::<PROCESS_BASIC_INFORMATION>() as u32;
-    let status =
-        unsafe { NtQueryInformationProcess(h, ProcessBasicInformation, (&raw mut basic).cast(), size, &mut 0) };
-    if status != 0 || basic.PebBaseAddress.is_null() {
-        return None;
-    }
-    let peb: PEB = value(read, basic.PebBaseAddress.cast())?;
-    let params: RTL_USER_PROCESS_PARAMETERS = value(read, peb.ProcessParameters.cast())?;
-    // CurrentDirectory.DosPath: right after the standard handles, in what the SDK calls Reserved2.
-    let dir: UNICODE_STRING = value(read, peb.ProcessParameters.cast::<u8>().wrapping_add(0x38).cast())?;
-    let mut cwd = String::from_utf16(&text(dir)?).ok()?;
-    if cwd.len() > 3 && cwd.ends_with('\\') {
-        cwd.pop(); // Windows keeps C:\dir\; only a drive's root has one
-    }
-    let image = String::from_utf16(&text(params.ImagePathName)?).ok()?;
-    let name = image.rsplit('\\').next().unwrap_or(&image).to_string();
-
-    let mut line = text(params.CommandLine)?;
-    line.push(0);
-    let mut argc = 0;
-    let list = unsafe { CommandLineToArgvW(line.as_ptr(), &mut argc) };
-    if list.is_null() {
-        return None;
-    }
-    let argv = (0..argc as usize)
-        .map(|i| unsafe {
-            let arg = *list.add(i);
-            String::from_utf16_lossy(std::slice::from_raw_parts(arg, (0..).take_while(|&n| *arg.add(n) != 0).count()))
-        })
-        .collect();
-    unsafe { LocalFree(list.cast()) };
-    Some(Foreground { pid, name, argv, cwd })
+    crate::platform::windows_process::about(pid)
 }
 
 #[cfg(target_os = "macos")]
