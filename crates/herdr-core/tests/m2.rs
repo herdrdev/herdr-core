@@ -99,6 +99,43 @@ fn queries_are_answered_once_by_the_core_with_the_viewers_colors() {
 }
 
 #[test]
+fn display_changes_notify_an_idle_subscribed_program() {
+    let s = Session::new();
+    let received = s.root.join("replies");
+    let probe = script(
+        &s,
+        &format!(
+            "w go; stty raw -echo; (w query; printf '\\033]10;?\\007\\033]11;?\\007\\033[?996n') & \
+             printf '\\033[?2031h'; echo READY; cat > {}",
+            received.display()
+        ),
+    );
+    let t = run(&s, &["sh", "-c", &probe]);
+    let mut v = Viewer::attach(&s, &t, 80, 24, json!({"display": {"fg": "#eeeeee", "bg": "#000000", "cell": [9, 18]}}));
+    go(&s);
+    v.shows("READY");
+    let replies = || std::fs::read(&received).unwrap_or_default();
+    // Do not print anything from the program to flush the notification.
+    v.conn.send(v.channel, wire::FACTS, br##"{"fg":"#010203","bg":"#ffffff"}"##);
+    wait_until("light notification at the PTY", || replies() == b"\x1b[?997;2n");
+    v.conn.send(v.channel, wire::FACTS, br##"{"bg":"#000000"}"##);
+    wait_until("dark notification at the PTY", || replies() == b"\x1b[?997;2n\x1b[?997;1n");
+
+    v.conn.send(v.channel, wire::FACTS, br##"{"bg":"#000000"}"##);
+    v.conn.send(v.channel, wire::FACTS, b"{}");
+    v.conn.call("terminal.get", json!({"terminal": t}));
+
+    // Omitted foreground facts survive both the update and a leadership change.
+    let other = Viewer::attach(&s, &t, 80, 24, json!({"display": {"fg": "#abcdef"}}));
+    v.conn.send(v.channel, wire::FOCUS, &[1]);
+    v.conn.call("terminal.get", json!({"terminal": t}));
+    touch(&s, "query");
+    let expected = b"\x1b[?997;2n\x1b[?997;1n\x1b[?997;1n\x1b[?997;1n\x1b]10;rgb:0101/0202/0303\x07\x1b]11;rgb:0000/0000/0000\x07\x1b[?997;1n";
+    wait_until("queries answered at the PTY without extra notifications", || replies() == expected);
+    drop(other);
+}
+
+#[test]
 fn in_band_resize_reports_belong_to_the_viewer_not_the_core() {
     let s = Session::new();
     let probe = script(
