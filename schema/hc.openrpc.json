@@ -592,7 +592,7 @@
             "type": "boolean"
           },
           "how": {
-            "description": "\"screen\", \"history\", or \"stitched\" (a full-screen app, read by scrolling it).",
+            "description": "\"screen\", \"history\", \"stitched\" (a full-screen app, read by scrolling it),\nor \"ansi\" (the screen with SGR styles).",
             "type": "string"
           },
           "text": {
@@ -2102,6 +2102,16 @@
       "name": "terminal.read",
       "paramStructure": "by-name",
       "params": [
+        {
+          "description": "The screen with its colors and styles as SGR sequences, for a viewer\nthat draws them. Only the screen: `lines` is ignored (read history\nwithout it). A finished terminal reads as plain text.",
+          "name": "ansi",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "The screen with its colors and styles as SGR sequences, for a viewer\nthat draws them. Only the screen: `lines` is ignored (read history\nwithout it). A finished terminal reads as plain text.",
+            "type": "boolean"
+          }
+        },
         {
           "name": "caller",
           "required": false,

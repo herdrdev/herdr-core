@@ -120,6 +120,20 @@ fn read_prints_plain_text_even_when_piped() {
     assert!(out.starts_with("say \"hi\"\nsecond\n"), "{out:?}");
 }
 
+#[test]
+fn an_ansi_read_keeps_the_colors_of_the_screen() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "printf 'plain \\033[41mred\\033[0m\\n'; sleep 100"]);
+    wait_text(&s, &t, "red");
+    let r = s.json(&["read", &t, "--ansi", "--json"]);
+    let text = r["text"].as_str().unwrap();
+    assert_eq!(r["how"], "ansi");
+    assert!(text.contains("\x1b[48;5;1mred"), "the red background stays: {text:?}");
+    assert!(text.lines().all(|l| l.starts_with("\x1b[0m")), "each row starts from default style: {text:?}");
+    let plain = s.json(&["read", &t, "--json"]);
+    assert!(!plain["text"].as_str().unwrap().contains('\x1b'), "a plain read stays plain");
+}
+
 fn wait_text(s: &Session, t: &str, needle: &str) {
     wait_until(&format!("{needle:?} in {t}"), || text(s, t).contains(needle));
 }

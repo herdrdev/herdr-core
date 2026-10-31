@@ -334,6 +334,12 @@ pub struct ReadParams {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub lines: usize,
+    /// The screen with its colors and styles as SGR sequences, for a viewer
+    /// that draws them. Only the screen: `lines` is ignored (read history
+    /// without it). A finished terminal reads as plain text.
+    #[arg(long)]
+    #[serde(default)]
+    pub ansi: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -341,7 +347,8 @@ pub struct ReadResult {
     pub text: String,
     /// False when part of what was asked for may be missing.
     pub complete: bool,
-    /// "screen", "history", or "stitched" (a full-screen app, read by scrolling it).
+    /// "screen", "history", "stitched" (a full-screen app, read by scrolling it),
+    /// or "ansi" (the screen with SGR styles).
     pub how: String,
     /// Why only the screen: "working" (a full-screen app isn't scrolled while
     /// it works; read again once it stops).
