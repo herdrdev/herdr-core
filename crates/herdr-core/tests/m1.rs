@@ -17,6 +17,21 @@ fn wait_finished(s: &Session, t: &str) -> Value {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn default_shells_load_the_login_environment_but_explicit_programs_do_not() {
+    let mut s = Session::new();
+    s.env.push(("SHELL".into(), "/bin/zsh".into()));
+    std::fs::write(s.root.join(".zprofile"), "export HC_LOGIN_TEST=loaded\n").unwrap();
+    let t = run(&s, &[]);
+    s.json(&["send", &t, "print -r -- login=$options[login] profile=$HC_LOGIN_TEST"]);
+    wait_text(&s, &t, "login=on profile=loaded");
+
+    let t = run(&s, &["/bin/zsh", "-c", "print -r -- login=$options[login] profile=$HC_LOGIN_TEST"]);
+    wait_finished(&s, &t);
+    assert!(text(&s, &t).contains("login=off profile="), "explicit argv stays unchanged");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn programs_get_a_utf8_language_when_the_core_has_none() {
     // A core the app starts from Finder has no LANG: shells would run in "C".
     let lang = |s: &Session| {

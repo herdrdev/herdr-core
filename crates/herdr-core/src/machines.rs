@@ -95,14 +95,25 @@ pub fn save(state: &Path, machines: &[Machine]) {
     }
 }
 
-/// A name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay whole.
-pub fn default_name(target: &str) -> Option<String> {
+/// A free name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay whole.
+pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
     let t = target.strip_prefix("ssh://").unwrap_or(target);
     let host = t.rsplit_once('@').map_or(t, |(_, host)| host);
     let host = host.split(':').next()?.to_ascii_lowercase();
     let ip = host.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
-    let name = if ip { host } else { host.split('.').next()?.to_string() };
-    check_name(&name).ok().map(|_| name)
+    let mut name = if ip { host } else { host.split('.').next()?.to_string() };
+    if name.len() > 32 {
+        name = name.chars().take(32).collect::<String>().trim_end_matches('-').into();
+    }
+    check_name(&name).ok()?;
+    let base = name.clone();
+    let mut number = 1;
+    while taken(&name) {
+        number += 1;
+        let suffix = format!("-{number}");
+        name = format!("{}{}", base[..base.len().min(32 - suffix.len())].trim_end_matches('-'), suffix);
+    }
+    Some(name)
 }
 
 /// An ssh target goes to ssh as one argument: never an option, never two
@@ -263,21 +274,15 @@ pub async fn dial(
     session: Option<&str>,
     hello: Value,
 ) -> Result<Dialed, RpcError> {
-    match dial_once(paths, to, session, hello.clone(), is_windows(to.target)).await {
+    let mut probe_windows = false;
+    match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
         Err(e) if e.kind == "windows" => {
             WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-            dial_once(paths, to, session, hello, true).await
+            dial_once(paths, to, session, hello, true, &mut probe_windows).await
         }
-        Err(e) if e.kind == "windows_probe" => match dial_once(paths, to, session, hello, true).await {
-            Ok(dialed) => {
-                WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-                Ok(dialed)
-            }
-            Err(e) if e.kind == "incompatible" => {
-                WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-                Err(e)
-            }
-            Err(_) => Err(unreachable(to, "the connection closed")),
+        Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
+            Err(_) if !is_windows(to.target) => Err(e),
+            result => result,
         },
         other => other,
     }
@@ -289,6 +294,7 @@ async fn dial_once(
     session: Option<&str>,
     hello: Value,
     windows: bool,
+    probe_windows: &mut bool,
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
     let mut child =
@@ -333,15 +339,16 @@ async fn dial_once(
                 if no_sh(&err) {
                     return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
                 }
-                // cmd can find Git's sh but consumes the script's || itself,
-                // leaving a successful assignment and no protocol reply.
-                if status == Some(0) && err.is_empty() {
-                    return Err(RpcError::new("windows_probe", "", ""));
-                }
+                // Windows may find Git's sh but fail in its shim or mangle
+                // the script's quoting. Only our marker proves the script ran.
+                *probe_windows = !err.contains(NOT_HERE) && !wants_login(&err);
             }
             // cmd and PowerShell, when hc isn't where install.ps1 puts it.
             let missing_windows =
                 windows && (err.contains("is not recognized") || err.contains("cannot find the path"));
+            if missing_windows && !is_windows(target) {
+                WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
+            }
             // Some connection wrappers collapse all remote failures to exit code 1.
             if status == Some(127) || err.contains(NOT_HERE) || missing_windows {
                 return Err(RpcError::new(
@@ -368,6 +375,9 @@ async fn dial_once(
             return Err(unreachable(to, why.trim()));
         }
     };
+    if windows && !is_windows(target) {
+        WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
+    }
     match reply.get("error") {
         Some(e) if e["data"]["kind"] == "unsupported_generation" => Err(RpcError::new(
             "incompatible",
@@ -385,6 +395,7 @@ fn platform(uname: &str) -> String {
     let os = match words.next() {
         Some("Linux") => "linux",
         Some("Darwin") => "macos",
+        Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") => "windows",
         other => other.unwrap_or("?"),
     };
     let arch = match words.next() {
@@ -444,7 +455,11 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     let here = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     let probe = run_raw(paths, to, "uname -sm", b"")?;
     let err = String::from_utf8_lossy(&probe.stderr);
-    if err.contains("'uname' is not recognized") || err.contains("The term 'uname' is not recognized") {
+    let there = platform(&last_line(&probe.stdout));
+    if err.contains("'uname' is not recognized")
+        || err.contains("The term 'uname' is not recognized")
+        || (probe.status.success() && there.starts_with("windows "))
+    {
         if to.via {
             return Err(RpcError::new("install_failed", format!("{target} runs Windows"), "install hc there yourself"));
         }
@@ -458,7 +473,6 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
             "nothing was changed there",
         ));
     }
-    let there = platform(&last_line(&probe.stdout));
     // Same OS and CPU: this very hc. Else this version's released build for it.
     let exe = if there == here {
         std::env::current_exe()
@@ -543,16 +557,21 @@ mod tests {
 
     #[test]
     fn a_name_comes_from_the_target_host() {
+        let default_name = |target| super::default_name(target, |_| false);
         assert_eq!(default_name("rohan").as_deref(), Some("rohan"));
         assert_eq!(default_name("can@Rohan.lan").as_deref(), Some("rohan"));
         assert_eq!(default_name("ssh://can@rohan:2222").as_deref(), Some("rohan"));
         assert_eq!(default_name("root@10.0.0.7").as_deref(), Some("10.0.0.7"));
         assert_eq!(default_name("[::1]"), None);
+        assert_eq!(default_name(&format!("{}-extra.example.com", "a".repeat(31))), Some("a".repeat(31)));
+        assert_eq!(super::default_name("rohan", |name| name == "rohan"), Some("rohan-2".into()));
         let ssh = |target| Reach { target, via: false };
         assert!(check_target(ssh("-oProxyCommand=x")).is_err() && check_target(ssh("a b")).is_err());
         assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok() || cfg!(windows));
         assert_eq!(platform("Darwin arm64"), "macos aarch64");
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
+        assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
+        assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
     }
 
     #[test]

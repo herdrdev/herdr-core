@@ -187,7 +187,10 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Manifest
-        run: scripts/manifest dist > dist/manifest.json && cat dist/manifest.json
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          export NOTES="$(awk -v heading="## [$version] - " 'index($0, heading) == 1 { found = 1; next } found && /^## / { exit } found && /^- / { sub(/^- /, ""); print; exit }' CHANGELOG.md)"
+          scripts/manifest dist > dist/manifest.json && cat dist/manifest.json
       - name: Upload
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/herdr-core/Cargo.toml | head -1)

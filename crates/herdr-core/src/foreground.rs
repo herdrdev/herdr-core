@@ -164,25 +164,11 @@ impl Core {
                 let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
                     continue;
                 };
-                let returned_to_shell = t.reported
-                    && now.as_ref().is_some_and(|f| Some(f.pid as u32) == t.pid)
-                    && t.foreground.as_ref().is_some_and(|f| Some(f.pid as u32) != t.pid);
-                let reset = returned_to_shell.then(|| {
-                    let mut change = crate::status::reset(t);
-                    t.reported = false;
-                    change.status = true;
-                    change
-                });
                 if let Some(f) = &now {
                     t.last_cwd = Some(f.cwd.clone());
                 }
                 t.foreground = now.clone();
-                if let Some(change) = reset {
-                    self.status_changed(&mut st, id, change);
-                    self.save(&st);
-                } else {
-                    self.save_soon();
-                }
+                self.save_soon();
                 self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
             }
         }

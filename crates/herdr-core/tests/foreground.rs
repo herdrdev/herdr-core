@@ -7,44 +7,6 @@ use serde_json::{Value, json};
 use std::io::BufRead;
 
 #[test]
-fn returning_to_the_shell_ends_the_foreground_programs_status() {
-    for menu in [false, true] {
-        let mut s = Session::new();
-        s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));
-        let reporter = s.root.join("reporter.sh");
-        std::fs::write(&reporter, script(&s, "r state=working:app=fake; r state=idle:id=child:app=fake; w quit"))
-            .unwrap();
-        let t = if menu {
-            run(&s, &["bash", "-ic", "\"$@\"; exec \"$0\" -i", "bash", "sh", reporter.to_str().unwrap()])
-        } else {
-            let t = run(&s, &["bash", "--noprofile", "--norc", "-i"]);
-            s.json(&["send", &t, &format!("sh {}", reporter.display())]);
-            t
-        };
-        wait_until("reporter in front with root and child status", || {
-            let rec = get(&s, &t);
-            rec["foreground"]["pid"].is_i64()
-                && rec["foreground"]["pid"] != rec["pid"]
-                && rec["status"]["app"] == "fake"
-                && rec["records"]["child"]["app"] == "fake"
-        });
-        let mut conn = s.connect();
-        conn.call(1, "events.subscribe", json!({"terminal": t}));
-        touch(&s, "quit");
-        wait_until(&format!("shell in front without stale status (menu={menu})"), || {
-            let rec = get(&s, &t);
-            rec["foreground"]["pid"] == rec["pid"] && rec["status"].is_null() && rec["reported"] == false
-        });
-        let rec = get(&s, &t);
-        assert!(rec["records"].as_object().is_none_or(|r| r.is_empty()), "{rec}");
-        assert_eq!(rec["turn"], 1);
-        let event = next_event(&mut conn, |m| m["params"]["type"] == "status");
-        assert!(event["params"]["data"]["status"].is_null(), "{event}");
-        assert_eq!(event["params"]["data"]["reported"], false);
-    }
-}
-
-#[test]
 fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
     let mut s = Session::new();
     s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));

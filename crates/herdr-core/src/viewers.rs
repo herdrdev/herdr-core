@@ -212,7 +212,12 @@ impl Core {
 
     pub fn viewer_facts(&self, conn: &Arc<Conn>, channel: u32, display: Display) {
         let mut st = self.lock();
-        self.touch(&mut st, conn, channel, |v| v.display = display);
+        self.touch(&mut st, conn, channel, |v| {
+            v.display.fg = display.fg.or(v.display.fg.take());
+            v.display.bg = display.bg.or(v.display.bg.take());
+            v.display.cursor = display.cursor.or(v.display.cursor.take());
+            v.display.cell = display.cell.or(v.display.cell);
+        });
     }
 
     /// Focus changes count as activity, and reach programs that asked for them.
@@ -259,11 +264,16 @@ impl Core {
         if let Some(d) = display {
             screen.set_display(rgb(&d.fg), rgb(&d.bg), rgb(&d.cursor), d.cell.map(|[w, h]| (w, h)));
         }
+        // Display changes can notify an idle program, even without a resize or output.
+        let replies = Relay::take_responses(screen);
+        if let Some(link) = st.link(id) {
+            link.input(id, &replies);
+        }
         let rec = st.reg.terminals.get_mut(&id).expect("live terminal");
         if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
             return;
         }
-        screen.resize(cols, rows);
+        st.screens.get_mut(&id).expect("live screen").resize(cols, rows);
         rec.cols = cols;
         rec.rows = rows;
         if let Some(link) = st.link(id) {

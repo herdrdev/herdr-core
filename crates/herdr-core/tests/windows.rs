@@ -744,3 +744,40 @@ fn attach_types_into_the_program_and_detaches_on_its_key() {
     assert!(!screen.contains("[6;") && !screen.contains("^["), "a reply reached the program: {screen}");
     assert_eq!(s.json(&["get", &inner])["state"], "live");
 }
+
+#[test]
+fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals() {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let exe = s.root.join("shell with spaces.exe");
+    std::fs::copy(std::env::var("COMSPEC").unwrap(), &exe).unwrap();
+    let set_shell = |marker: &str| {
+        let argv = serde_json::json!([exe, "/d", "/k", format!("echo {marker}")]);
+        std::fs::write(&config, format!("shell = {argv}\n")).unwrap();
+    };
+    s.json(&["server", "start"]);
+    set_shell("configured-first");
+    let t = s.bg(&["--keep"]);
+    s.shows(&t, "configured-first");
+    let explicit = s.bg(&["cmd.exe", "/d", "/k", "echo explicit-program"]);
+    s.shows(&explicit, "explicit-program");
+    assert!(!s.read(&explicit).contains("configured-first"));
+    let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    set_shell("configured-recovery");
+    s.json(&["server", "stop"]);
+    wait_until("configured shell restored", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != old));
+    s.shows(&t, "configured-recovery");
+    let pid = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+    wait_until("configured keep replacement", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != pid));
+    s.shows(&t, "configured-recovery");
+    for (value, kind) in [("[]", "config"), (r#"["hc-missing-shell-24"]"#, "spawn_failed")] {
+        std::fs::write(&config, format!("shell = {value}\n")).unwrap();
+        let out = cmd(&s.name, &s.root).args(["run", "--bg"]).output().unwrap();
+        assert!(!out.status.success());
+        let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(err["error"]["kind"], kind, "{err}");
+    }
+}

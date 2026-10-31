@@ -580,17 +580,21 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
     if let Some(session) = &p.session {
         crate::addr::check_name(session)?;
     }
-    let name = match p.name {
-        Some(name) => name,
-        None => (!via).then(|| crate::machines::default_name(&target)).flatten().ok_or_else(|| {
-            RpcError::invalid_params(format!("can't make a name from {target:?}")).with_hint("give one with --name")
-        })?,
+    let name = |st: &crate::runtime::State| match &p.name {
+        Some(name) => free_name(core, st, name).map(|_| name.clone()),
+        None => (!via)
+            .then(|| crate::machines::default_name(&target, |name| free_name(core, st, name).is_err()))
+            .flatten()
+            .ok_or_else(|| {
+                RpcError::invalid_params(format!("can't make a name from {target:?}")).with_hint("give one with --name")
+            }),
     };
-    free_name(core, &core.lock(), &name)?;
+    name(&core.lock())?;
     let hello = crate::machines::hello(&core.paths, to, p.session.as_deref()).await?;
     let text = |k: &str| hello["core"][k].as_str().unwrap_or_default().to_string();
+    let mut st = core.lock();
     let machine = crate::machines::Machine {
-        name,
+        name: name(&st)?,
         target,
         via,
         temporary: p.temporary,
@@ -603,8 +607,6 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
         return Err(RpcError::invalid_params(format!("{} is this core", machine.target))
             .with_hint("add another machine, or another --session"));
     }
-    let mut st = core.lock();
-    free_name(core, &st, &machine.name)?;
     if let Some(m) = st.machines.iter().find(|m| m.id == machine.id) {
         // Reached another way yet the same core: a copy of that machine's disk
         // whose system kept its machine id (some container images).
@@ -660,7 +662,11 @@ async fn machine_rename(core: Ctx<'_>, p: MachineRenameParams) -> Result<crate::
     if p.new_name != p.machine {
         free_name(core, &st, &p.new_name)?;
     }
-    st.machines[i].name = p.new_name;
+    let id = st.machines[i].id.clone();
+    st.machines[i].name = p.new_name.clone();
+    if p.new_name != p.machine {
+        crate::remote::rename_mirror(core, &mut st, &id, &p.machine, &p.new_name);
+    }
     crate::machines::save(&core.paths.state, &st.machines);
     Ok(st.machines[i].clone())
 }

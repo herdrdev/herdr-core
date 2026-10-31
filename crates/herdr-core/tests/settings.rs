@@ -144,3 +144,22 @@ fn events_can_follow_one_parents_children() {
     events.wait().unwrap();
     assert_eq!(e["params"]["terminal"], kid.as_str());
 }
+
+#[test]
+fn configured_shell_runs_its_arguments_and_leaves_explicit_programs_alone() {
+    let mut s = Session::new();
+    s.env.push(("SHELL".into(), "/bin/sh".into()));
+    let t = run(&s, &[]);
+    s.json(&["send", &t, "echo default-shell-works"]);
+    wait_until("default shell", || text(&s, &t).contains("default-shell-works"));
+    config(&s, r#"shell = ["/bin/sh", "-c", "echo configured-shell; exec /bin/sh"]"#);
+    let t = run(&s, &[]);
+    wait_until("configured shell", || text(&s, &t).contains("configured-shell"));
+    let t = run(&s, &["sh", "-c", "echo explicit-program"]);
+    wait_until("explicit program", || text(&s, &t).contains("explicit-program"));
+    assert!(!text(&s, &t).contains("configured-shell"));
+    for (value, kind) in [("[]", "config"), (r#"[""]"#, "config"), (r#"["hc-missing-shell-24"]"#, "spawn_failed")] {
+        config(&s, &format!("shell = {value}"));
+        assert_eq!(s.err(&["run", "--bg"]).1["error"]["kind"], kind);
+    }
+}

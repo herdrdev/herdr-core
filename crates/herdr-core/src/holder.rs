@@ -271,6 +271,7 @@ impl Holder {
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));
+                eprintln!("holder: {}: {error}", crate::terminals::address(id));
                 proto::json_frame(proto::SPAWN_FAILED, id, &proto::SpawnFailed { error })
             }
             Ok((reader, mut writer, pty, child)) => {
