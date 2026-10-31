@@ -46,6 +46,10 @@ pub fn merge_env(
     env.extend(extra);
 }
 
+pub fn validate_env(_env: &std::collections::BTreeMap<String, String>) -> Result<(), crate::rpc::RpcError> {
+    Ok(())
+}
+
 pub fn listen(path: &Path) -> io::Result<Listener> {
     Listener::bind(path)
 }

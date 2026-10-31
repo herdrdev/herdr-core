@@ -265,6 +265,7 @@ pub fn connect_error(error: &io::Error, existing_only: bool) -> Option<crate::rp
 pub fn merge_env(env: &mut BTreeMap<String, String>, extra: BTreeMap<String, String>) {
     env.retain(|key, _| !extra.keys().any(|other| key.eq_ignore_ascii_case(other)));
     env.extend(extra);
+    env.retain(|key, _| !key.eq_ignore_ascii_case("WT_SESSION") && !key.eq_ignore_ascii_case("WT_PROFILE_ID"));
 }
 
 pub fn listen(path: &Path) -> io::Result<Listener> {

@@ -85,6 +85,7 @@ pub(super) async fn start(
     p: RunParams,
     template: Option<crate::templates::Template>,
 ) -> Result<Terminal, RpcError> {
+    crate::platform::validate_env(&p.env)?;
     not_stopping(&core.lock())?;
     core.ensure_holder().await.map_err(|e| {
         RpcError::new(

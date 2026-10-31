@@ -127,6 +127,8 @@ would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.
 Headless Windows machines can still start their core over SSH.
 New Windows terminals refresh user/system environment settings, including PATH.
+They clear the outer Windows Terminal's WT_SESSION and WT_PROFILE_ID. API environment
+entries with empty names, NULs, or '=' after the first name character are rejected.
 
 ```sh
 hc run --on vps --cwd /srv/app cargo test    # returns vps/t3; use that full address

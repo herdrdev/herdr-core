@@ -400,6 +400,78 @@ fn new_terminals_refresh_windows_settings_without_losing_runtime_variables() {
 }
 
 #[test]
+fn terminals_do_not_inherit_the_outer_windows_terminal_identity() {
+    let s = Session::new();
+    let out = cmd(&s.name, &s.root)
+        .env("WT_SESSION", "outer-session")
+        .env("WT_PROFILE_ID", "outer-profile")
+        .args(["server", "start"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let (code, output) = s.out(&["run", "--timeout", "20", "cmd", "/c", "set WT_"]);
+    assert_eq!(code, 1, "{output}");
+    assert!(!output.contains("outer-"), "{output}");
+}
+
+fn rpc(s: &Session, method: &str, params: Value) -> Value {
+    let mut conn = cmd(&s.name, &s.root)
+        .arg("connect")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (mut input, output) = (conn.stdin.take().unwrap(), conn.stdout.take().unwrap());
+    let request = serde_json::json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params});
+    std::io::Write::write_all(&mut input, format!("{request}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(output), &mut reply).unwrap();
+    drop(input);
+    conn.wait().unwrap();
+    serde_json::from_str(&reply).unwrap()
+}
+
+#[test]
+fn malformed_terminal_environment_is_rejected_before_spawning() {
+    let s = Session::new();
+    for (key, value) in
+        [("BAD", "before\0HC_INJECTED=after"), ("BAD\0HC_INJECTED", "after"), ("BAD=KEY", "after"), ("", "after")]
+    {
+        let reply = rpc(
+            &s,
+            "terminal.run",
+            serde_json::json!({
+                "argv":["cmd", "/c", "set HC_INJECTED"], "wait":true, "timeout":20,
+                "env":{key:value}
+            }),
+        );
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(reply["error"]["message"].as_str().unwrap().contains("environment"), "{reply}");
+    }
+    let probe = s.file(
+        "environment.ps1",
+        r#"$vars = [Environment]::GetEnvironmentVariables()
+Write-Output "value=[$($vars['HC_VALUE'])]"
+Write-Output "empty=$($vars.Contains('HC_EMPTY')):[$($vars['HC_EMPTY'])]"
+Write-Output "unicode=[$($vars[[string][char]0x540d])]"
+Write-Output "drive=[$([Environment]::GetEnvironmentVariable('=C:'))]"
+"#,
+    );
+    let reply = rpc(
+        &s,
+        "terminal.run",
+        serde_json::json!({
+            "argv":["powershell", "-NoProfile", "-File", probe], "wait":true, "timeout":20,
+            "env":{"HC_VALUE":"left=right", "HC_EMPTY":"", "名":"unicode", "=C:":"C:\\Windows"}
+        }),
+    );
+    let output = reply["result"]["output"].as_str().unwrap();
+    for expected in ["value=[left=right]", "empty=True:[]", "unicode=[unicode]", r"drive=[C:\Windows]"] {
+        assert!(output.contains(expected), "{reply}");
+    }
+}
+
+#[test]
 fn an_ssh_client_uses_an_existing_core_instead_of_starting_another() {
     let s = Session::new();
     let first = s.json(&["server", "start"]);
@@ -510,23 +582,7 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let out = cmd(&s.name, &s.root).args(["exec", r"echo %OS% a^^b C:\dir\"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "Windows_NT a^b C:\\dir\\\r\n", "cmd's own rules");
 
-    let mut conn = cmd(&s.name, &s.root)
-        .arg("connect")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let (mut input, output) = (conn.stdin.take().unwrap(), conn.stdout.take().unwrap());
-    std::io::Write::write_all(
-        &mut input,
-        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"terminal.run\",\"params\":{}}\n",
-    )
-    .unwrap();
-    let mut reply = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(output), &mut reply).unwrap();
-    drop(input);
-    let _ = conn.wait();
-    let reply: Value = serde_json::from_str(&reply).unwrap();
+    let reply = rpc(&s, "terminal.run", serde_json::json!({}));
     let shell = reply["result"]["argv"][0].as_str().unwrap_or_default().to_string();
     assert!(shell == "pwsh.exe" || shell == "powershell.exe", "{reply}");
 }

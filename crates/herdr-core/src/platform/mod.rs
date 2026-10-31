@@ -32,6 +32,8 @@ pub use windows_exec::*;
 #[cfg(windows)]
 mod windows_env;
 #[cfg(windows)]
+pub use windows_env::validate_env;
+#[cfg(windows)]
 mod windows_session;
 
 /// Whether the host is shutting down (Windows also includes logout).
