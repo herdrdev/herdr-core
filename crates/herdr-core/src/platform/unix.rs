@@ -110,6 +110,12 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
 }
 
+/// A new file only this user can read or write, even in an existing directory.
+pub fn private_file(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
+}
+
 /// Takes the lock on `file` unless someone else holds it.
 pub fn try_lock(file: &File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }

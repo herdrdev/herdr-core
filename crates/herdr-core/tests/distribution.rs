@@ -26,9 +26,25 @@ struct Releases {
 impl Releases {
     fn new(s: &Session, version: &str, targets: &[&str]) -> Releases {
         let root = s.root.join("releases");
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{port}");
-        let dir = root.join("core").join(version);
+        std::fs::create_dir_all(&root).unwrap();
+        let ready = root.join("server-port");
+        let server = Command::new("python3")
+            .arg(format!("{ROOT}/tests/releases_server.py"))
+            .arg(&ready)
+            .current_dir(&root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut r = Releases { root, url: String::new(), server };
+        let mut port = None;
+        wait_until("the releases site", || {
+            assert!(r.server.try_wait().unwrap().is_none(), "the releases site exited before becoming ready");
+            port = std::fs::read_to_string(&ready).ok().and_then(|text| text.parse::<u16>().ok());
+            port.is_some()
+        });
+        r.url = format!("http://127.0.0.1:{}", port.unwrap());
+        let dir = r.root.join("core").join(version);
         std::fs::create_dir_all(&dir).unwrap();
         let bin_dir = Path::new(BIN).parent().unwrap();
         for t in targets {
@@ -47,7 +63,7 @@ impl Releases {
         }
         let out = Command::new(format!("{ROOT}/../../scripts/manifest"))
             .arg(&dir)
-            .env("RELEASES_URL", &url)
+            .env("RELEASES_URL", &r.url)
             .output()
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -57,16 +73,7 @@ impl Releases {
             .replace(&format!("\"version\": \"{THIS}\""), &format!("\"version\": \"{version}\""))
             .replace(&format!("/core/{THIS}/"), &format!("/core/{version}/"));
         std::fs::write(dir.join("manifest.json"), &manifest).unwrap();
-        std::fs::write(root.join("core/latest.json"), &manifest).unwrap();
-        let server = Command::new("python3")
-            .args(["-m", "http.server", "--bind", "127.0.0.1", &port.to_string()])
-            .current_dir(&root)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let r = Releases { root, url, server };
-        wait_until("the releases site", || std::net::TcpStream::connect(r.url.trim_start_matches("http://")).is_ok());
+        std::fs::write(r.root.join("core/latest.json"), &manifest).unwrap();
         r
     }
 }

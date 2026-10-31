@@ -175,6 +175,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   is already current. JSON reports `restarted: true`; terminals keep running.
   Managed installs must be updated with their package manager instead, and
   one in a folder you can't write (Unix) the way it was installed.
+- Planned restarts and updates preserve the core's launch environment for new
+  terminals; per-terminal API `env` overrides still apply. A stop followed by a
+  fresh start uses the new launcher's environment.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

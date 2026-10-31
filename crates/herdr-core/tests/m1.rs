@@ -309,7 +309,19 @@ fn planned_restart_restores_the_exact_screen() {
     assert!(text.contains("one\ntwo\nthree"), "{text:?}");
     assert_eq!(text.matches("one").count(), 1, "replayed twice: {text:?}");
 
-    // SIGTERM (e.g. a service manager) is the same planned restart.
+    // An unsavable handoff refuses SIGTERM without losing the core or its screen.
+    let blocked = s.root.join("state/herdr-core/test/restart-env.json");
+    std::fs::create_dir(&blocked).unwrap();
+    unsafe { libc::kill(new as i32, libc::SIGTERM) };
+    wait_until("SIGTERM handoff refused", || {
+        std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log"))
+            .is_ok_and(|log| log.contains("core: cannot restart:"))
+    });
+    assert_eq!(status(&s)["pid"].as_i64(), Some(new));
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    std::fs::remove_dir(blocked).unwrap();
+
+    // SIGTERM (e.g. a service manager) can be retried after the failure.
     unsafe { libc::kill(new as i32, libc::SIGTERM) };
     wait_until("core exit", || !pid_alive(new));
     assert_eq!(get(&s, &t)["screen"], "exact");

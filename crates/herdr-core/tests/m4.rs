@@ -166,16 +166,16 @@ fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
 
     // Keys pressed while a paste is going in are held until it's done.
-    std::thread::sleep(Duration::from_millis(700));
+    person.shows("0d");
     let sender = {
         let mut cmd = s.cmd();
         cmd.args(["send", &t, "abc"]);
         std::thread::spawn(move || cmd.output().unwrap())
     };
     // Inside the paste: "abc" is in, its Enter (the second 0d) is not.
-    let tokens = || text(&s, &t).split_whitespace().map(String::from).collect::<Vec<_>>();
-    wait_until("paste in", || tokens().contains(&"63".to_string()));
-    assert_eq!(tokens().iter().filter(|b| *b == "0d").count(), 1, "the paste ended already: tests nothing");
+    person.shows("63");
+    let tokens: Vec<_> = person.text().split_whitespace().map(String::from).collect();
+    assert_eq!(tokens.iter().filter(|b| *b == "0d").count(), 1, "the paste ended already: tests nothing");
     person.typed(b"Z");
     assert!(sender.join().unwrap().status.success());
     wait_until("Z delivered", || text(&s, &t).contains("5a"));

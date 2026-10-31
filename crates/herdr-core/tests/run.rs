@@ -56,7 +56,7 @@ fn a_program_that_says_it_stopped_working_returns_and_a_slow_one_keeps_running()
     let s = Session::new();
     let (code, out) = hc(
         &s,
-        &["run", "sh", "-c", &script(&s, "r state=working; echo busy; sleep 0.4; r state=idle; echo ready; cat")],
+        &["run", "sh", "-c", &script(&s, "r state=working; echo busy; sleep 0.4; echo ready; r state=idle; cat")],
     );
     assert_eq!(code, 0);
     assert!(out.contains("ready") && out.contains("idle"), "back once idle, not at working: {out:?}");

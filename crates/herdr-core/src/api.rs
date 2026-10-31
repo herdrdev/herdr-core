@@ -215,12 +215,15 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
 }
 
 async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
+    if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
+    }
     core.shutdown().await;
     Ok(StopResult { stopped: true })
 }
 
 async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    core.restart.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::restart::prepare(core).await.map_err(|e| RpcError::internal(e.to_string()))?;
     Ok(StopResult { stopped: true })
 }
 

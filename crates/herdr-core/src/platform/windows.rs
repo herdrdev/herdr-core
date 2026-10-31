@@ -359,6 +359,11 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+/// A new file with the user state directory's inherited permissions.
+pub fn private_file(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+}
+
 pub fn try_lock(file: &File) -> bool {
     unsafe {
         let mut ov: OVERLAPPED = zeroed();

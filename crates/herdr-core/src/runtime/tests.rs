@@ -1,5 +1,29 @@
 use super::*;
 
+#[tokio::test]
+async fn a_stop_cannot_interrupt_a_prepared_restart() {
+    let root = std::env::temp_dir().join(format!("hc-restart-stop-{}", platform::random_hex()));
+    let paths = Paths {
+        state: root.join("state"),
+        config: root.join("config.toml"),
+        socket: root.join("run/core.sock"),
+        holder_socket: root.join("run/core.holder.sock"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    crate::restart::prepare(&core).await.unwrap();
+    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let error = crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap_err();
+    assert_eq!(error.kind, "unavailable");
+    assert!(!core.lock().stopping, "a prepared handoff keeps its holders");
+    crate::restart::consumed(&core.paths).unwrap();
+    core.restart.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap();
+    assert!(crate::restart::prepare(&core).await.is_err(), "a stop already in progress wins");
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn host_shutdown_is_lost_without_overriding_explicit_actions() {
     for (killed, stopping, shutdown, expected) in [

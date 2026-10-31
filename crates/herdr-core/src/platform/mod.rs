@@ -60,6 +60,35 @@ pub fn utf8_vars() -> impl Iterator<Item = (String, String)> {
     std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
 }
 
+/// Capture values and explicit absences before the retiring core stops.
+pub fn restart_env() -> std::io::Result<Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>> {
+    #[allow(unused_mut)]
+    let mut env: std::collections::BTreeMap<_, _> =
+        std::env::vars_os().map(|(key, value)| (key, Some(value))).collect();
+    #[cfg(target_os = "linux")]
+    for key in systemd::inherited_env()?.into_keys() {
+        env.entry(key.into()).or_insert(None);
+    }
+    Ok(env.into_iter().collect())
+}
+
+/// Replace inherited values with the saved values and absences.
+pub fn replace_env(
+    cmd: &mut std::process::Command,
+    env: impl IntoIterator<Item = (std::ffi::OsString, Option<std::ffi::OsString>)>,
+) {
+    // Detached launchers rebuild from get_envs(), which does not expose env_clear().
+    for (key, _) in std::env::vars_os() {
+        cmd.env_remove(key);
+    }
+    for (key, value) in env {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        };
+    }
+}
+
 /// The core's environment as programs get it: never an ssh login's marks,
 /// and on Linux the login session as the user manager has it now.
 pub async fn program_env() -> std::collections::BTreeMap<String, String> {
@@ -102,3 +131,7 @@ pub mod signal {
     pub const KILL: i32 = 9;
     pub const TERM: i32 = 15;
 }
+
+#[cfg(test)]
+#[path = "environment_tests.rs"]
+mod environment_tests;
