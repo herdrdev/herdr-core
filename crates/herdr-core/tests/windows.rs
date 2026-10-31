@@ -219,7 +219,7 @@ if ($request.method -ne 'hello') { exit 2 }
 /// with `mark` at its end (a PE runs with bytes appended).
 fn release(dir: &Path, mark: &str) -> PathBuf {
     let built = Path::new(BIN).parent().unwrap();
-    for rel in [r"conpty\conpty.dll", r"conpty\x64\OpenConsole.exe"] {
+    for rel in [r"conpty\conpty.dll", r"conpty\x64\OpenConsole.exe", r"conpty\arm64\OpenConsole.exe"] {
         std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
         std::fs::copy(built.join(rel), dir.join(rel)).expect("run scripts\\fetch-conpty.ps1 first");
     }
