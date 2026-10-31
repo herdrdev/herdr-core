@@ -191,16 +191,19 @@ impl Core {
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
                 // A template may supply a paste boundary key before submitting (default: Enter after 200 ms).
                 let submit = match &t.submit {
-                    Some(keys) => keys
-                        .split(' ')
-                        .map(|key| crate::keys::encode(screen, key))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .concat(),
-                    None => b"\r".to_vec(),
+                    Some(keys) => {
+                        keys.split(' ').map(|key| crate::keys::encode(screen, key)).collect::<Result<Vec<_>, _>>()?
+                    }
+                    None => vec![b"\r".to_vec()],
                 };
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
-                let steps =
-                    vec![Step::Write(paste(screen.dec_mode(2004), text)), Step::Pause(gap), Step::Write(submit)];
+                let mut steps = vec![Step::Write(paste(screen.dec_mode(2004), text)), Step::Pause(gap)];
+                for (i, key) in submit.into_iter().enumerate() {
+                    if i > 0 {
+                        steps.push(Step::Pause(KEY_GAP));
+                    }
+                    steps.push(Step::Write(key));
+                }
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
