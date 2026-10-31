@@ -515,6 +515,21 @@ impl Terminal {
         out
     }
 
+    /// The visible screen with its colors and styles as SGR sequences, one
+    /// row per line. Each row starts from default style.
+    pub fn screen_vt(&self) -> String {
+        let (cols, rows) = self.size();
+        let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
+        let Some(sel) = self.select(ffi::POINT_ACTIVE, (0, 0), last) else { return String::new() };
+        let text = String::from_utf8_lossy(&self.format_with(ffi::FORMAT_VT, Some(&sel), false, false)).into_owned();
+        text.replace("\r\n", "\n")
+            .split('\n')
+            .take(rows as usize)
+            .map(|r| format!("\x1b[0m{}\x1b[0m", r.trim_end_matches('\r')))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Bytes of replies waiting in `take_responses`.
     pub fn pending_responses(&self) -> usize {
         self.hooks.responses.len()
