@@ -67,7 +67,10 @@ command: pwsh -NoProfile -File "C:\agents\code reviewer.ps1"
 Review the assigned code.
 ```
 
-Existing Windows templates using sh syntax can keep it with `command: sh -c "<old command>"`.
+For existing Windows templates using sh syntax, move the old command into a `.sh` file
+and use `command: sh "C:\agents\reviewer.sh"` (sh must be on PATH).
+An inline `sh -c "..."` command needs escaping for both cmd and sh: for example,
+cmd expands `%OS%` even inside sh single quotes before sh receives it.
 
 ## Readiness and input
 
