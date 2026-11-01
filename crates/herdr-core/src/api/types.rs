@@ -507,6 +507,12 @@ pub struct KeysResult {
     pub turn: u64,
 }
 
+#[derive(Serialize, JsonSchema)]
+pub struct EncodeResult {
+    /// One entry per key, in order: the bytes it sends now.
+    pub bytes: Vec<String>,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct InterruptParams {
     /// The terminal: `t7`, a name, or `machine/t7`.
