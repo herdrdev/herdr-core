@@ -42,6 +42,14 @@ hc machine add --name sandbox --temp --via 'fly ssh console -a my-app --pty=fals
 
 The command runs on your local machine. The shell line runs on the destination and connects to hc there.
 Log in with that tool first if it needs credentials.
+
+On Windows there is no shell to read the command: it is a program and its arguments, split on spaces
+(double quotes keep a path with spaces whole), run without a console window.
+A WSL distro is reached this way, with no ssh server in it:
+
+```sh
+hc machine add --name wsl --install --via "wsl.exe -d Ubuntu -e sh -c"
+```
 The temporary marker only helps clients show short-lived machines apart; it does not delete anything for you.
 
 ### Vercel Sandbox

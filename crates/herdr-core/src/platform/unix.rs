@@ -176,6 +176,13 @@ pub fn shell_line(line: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), line.into()]
 }
 
+/// A machine's `--via` command: a shell line here, given `line` as its last argument.
+pub fn via_command(target: &str, line: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(format!("{target} \"$1\"")).arg("sh").arg(line);
+    cmd
+}
+
 /// Returns once the child exited, leaving it unreaped: until it is reaped
 /// its pid, and so its group id, can't go to another process.
 pub async fn exited(child: &mut tokio::process::Child) {

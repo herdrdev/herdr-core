@@ -34,6 +34,41 @@ pub fn shell_line(line: &str) -> Vec<String> {
     vec![cmd, "/d".into(), "/s".into(), "/c".into(), line.into()]
 }
 
+/// A machine's `--via` command. There is no sh here to read it as a line, and
+/// cmd would read the line's quotes and `|`: it is a program and its arguments,
+/// split on spaces (double quotes keep a path with spaces whole), given `line`
+/// as its last argument. No console of its own: the core runs detached.
+pub fn via_command(target: &str, line: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let words = via_words(target);
+    let mut cmd = std::process::Command::new(words.first().map_or("", String::as_str));
+    cmd.args(words.iter().skip(1)).arg(line).creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+fn via_words(target: &str) -> Vec<String> {
+    let (mut words, mut word, mut quoted, mut started) = (Vec::new(), String::new(), false, false);
+    for c in target.chars() {
+        match c {
+            '"' => (quoted, started) = (!quoted, true),
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
 /// Whether `argv` is a `shell_line`: cmd itself, which never reads the
 /// usual argument quoting, so its line must go raw.
 pub fn is_shell_line(argv: &[String]) -> bool {
@@ -124,4 +159,15 @@ unsafe fn resume(pid: u32) -> usize {
         }
     }
     resumed
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_via_command_is_its_words_then_the_line_as_one_argument() {
+        let cmd = super::via_command(r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu  -e sh -c"#, "sh -c 'a \"$1\" | b'");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(cmd.get_program(), r"C:\Program Files\WSL\wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "sh", "-c", "sh -c 'a \"$1\" | b'"]);
+    }
 }

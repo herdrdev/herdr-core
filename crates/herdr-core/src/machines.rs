@@ -58,9 +58,7 @@ impl Reach<'_> {
     /// The command that runs `line` there.
     fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
         if self.via {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
-            return cmd;
+            return crate::platform::via_command(self.target, line);
         }
         let mut cmd = ssh(paths, self.target, extra);
         #[cfg(windows)]
@@ -117,12 +115,12 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
 }
 
 /// An ssh target goes to ssh as one argument: never an option, never two
-/// words. A command (`via`) is a shell line here, on one line.
+/// words. A command (`via`) is one line, run here (see `platform::via_command`).
 pub fn check_target(to: Reach) -> Result<(), RpcError> {
     let target = to.target;
     if to.via {
-        if cfg!(windows) || target.trim().is_empty() || target.chars().any(char::is_control) {
-            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, run by sh here")));
+        if target.trim().is_empty() || target.chars().any(char::is_control) {
+            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line")));
         }
         return Ok(());
     }
@@ -558,7 +556,7 @@ mod tests {
         assert_eq!(super::default_name("rohan", |name| name == "rohan"), Some("rohan-2".into()));
         let ssh = |target| Reach { target, via: false };
         assert!(check_target(ssh("-oProxyCommand=x")).is_err() && check_target(ssh("a b")).is_err());
-        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok() || cfg!(windows));
+        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok());
         assert_eq!(platform("Darwin arm64"), "macos aarch64");
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
