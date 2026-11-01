@@ -931,7 +931,7 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
 
 /// Sends a call to `m` and returns the reply with addresses as this core sees them.
 /// How long a call there may take: `machine_timeout`, plus the wait it asks
-/// for when it waits (`wait`, a waited `run` or `send`).
+/// for when it waits (`wait`, a waited `run` or `send`), and template readiness.
 fn deadline_for(core: &Core, method: &str, params: &Value) -> Duration {
     let config = crate::config::load(&core.paths.config).unwrap_or_default();
     if method == "machine.exec" {
@@ -945,7 +945,11 @@ fn deadline_for(core: &Core, method: &str, params: &Value) -> Duration {
         Some(secs) => secs,
         None => config.wait_timeout.unwrap_or(180.0),
     };
-    config.machine_timeout() + if waits { Duration::from_secs_f64(wait.clamp(0.0, 86_400.0)) } else { Duration::ZERO }
+    // Only the remote core knows whether argv names one of its templates.
+    let ready = if method == "terminal.run" { crate::templates::ready_timeout() } else { Duration::ZERO };
+    config.machine_timeout()
+        + ready
+        + if waits { Duration::from_secs_f64(wait.clamp(0.0, 86_400.0)) } else { Duration::ZERO }
 }
 
 fn waits(method: &str, params: &Value) -> bool {

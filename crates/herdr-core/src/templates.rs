@@ -123,7 +123,7 @@ pub struct FirstMessage {
     pub turn: Option<u64>,
 }
 
-fn ready_timeout() -> Duration {
+pub(crate) fn ready_timeout() -> Duration {
     let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     Duration::from_millis(ms)
 }

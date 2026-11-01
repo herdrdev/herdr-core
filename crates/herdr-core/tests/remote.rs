@@ -204,6 +204,55 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
+    let mut rohan = Session::new();
+    rohan.env.extend(
+        [("HC_READY_MS", "1500"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
+    );
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    s.env.extend(
+        [("HC_READY_MS", "1500"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+    );
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    let templates = rohan.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&templates).unwrap();
+    rohan.json(&["server", "start"]);
+    s.json(&["machine", "add", "rohan"]);
+    let parent = run(&s, &["sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("parent reported", || get(&s, &parent)["reported"] == true);
+
+    for (name, command, sent) in [
+        ("mute", "stty -echo; cat", false),
+        ("slow", "stty -echo; sleep 1; printf \"\\033]7501;state=idle\\033\\\\\"; cat", true),
+    ] {
+        std::fs::write(templates.join(format!("{name}.md")), format!("---\ncommand: sh -c '{command}'\n---\nhello\n"))
+            .unwrap();
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--bg", "--on", "rohan", name, "task"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let started: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(started["first_message"]["sent"], sent, "{started}");
+        if !sent {
+            assert!(started["first_message"]["reason"].as_str().unwrap().contains("never reported"), "{started}");
+        }
+        let child = started["address"].as_str().unwrap();
+        let local = child.strip_prefix("rohan/").unwrap();
+        let parent_there = get(&rohan, local)["parent"].as_str().unwrap().to_string();
+        let said = rohan.cmd().env("HC_TERMINAL_ID", local).args(["send", &parent_there, name]).output().unwrap();
+        assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stderr));
+        wait_until("child reports back", || text(&s, &parent).contains(&format!("<hc from=\"{child}\">{name}</hc>")));
+    }
+}
+
+#[test]
 fn waiting_on_children_counts_the_ones_on_other_machines() {
     let (_rohan, s) = with_rohan();
     let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; r state=idle; sleep 100"));
