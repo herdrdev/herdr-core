@@ -95,6 +95,23 @@ pub fn save(state: &Path, machines: &[Machine]) {
     }
 }
 
+/// `can@rohan:2222`, as people write a port, in the form ssh takes it
+/// (`ssh://can@rohan:2222`): ssh reads a plain `rohan:2222` as a host name.
+pub fn ssh_target(target: String) -> String {
+    let host = target.rsplit_once('@').map_or(target.as_str(), |(_, host)| host);
+    match host.split_once(':') {
+        Some((h, port))
+            if !target.starts_with("ssh://")
+                && !h.is_empty()
+                && !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            format!("ssh://{target}")
+        }
+        _ => target,
+    }
+}
+
 /// A free name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay whole.
 pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
     let t = target.strip_prefix("ssh://").unwrap_or(target);
@@ -552,6 +569,11 @@ mod tests {
         assert_eq!(default_name("rohan").as_deref(), Some("rohan"));
         assert_eq!(default_name("can@Rohan.lan").as_deref(), Some("rohan"));
         assert_eq!(default_name("ssh://can@rohan:2222").as_deref(), Some("rohan"));
+        assert_eq!(ssh_target("can@10.0.0.7:4396".into()), "ssh://can@10.0.0.7:4396");
+        assert_eq!(ssh_target("rohan:2222".into()), "ssh://rohan:2222");
+        for unchanged in ["rohan", "can@rohan", "ssh://can@rohan:2222", "can@fe80::1", "[::1]:22x", "can@rohan:"] {
+            assert_eq!(ssh_target(unchanged.into()), unchanged);
+        }
         assert_eq!(default_name("root@10.0.0.7").as_deref(), Some("10.0.0.7"));
         assert_eq!(default_name("[::1]"), None);
         assert_eq!(default_name(&format!("{}-extra.example.com", "a".repeat(31))), Some("a".repeat(31)));

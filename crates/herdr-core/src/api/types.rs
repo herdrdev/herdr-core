@@ -692,7 +692,7 @@ pub struct FileResult {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineAddParams {
-    /// How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.
+    /// How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.
     #[arg(required_unless_present = "via", conflicts_with = "via")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
