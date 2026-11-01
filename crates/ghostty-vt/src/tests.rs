@@ -93,6 +93,23 @@ fn parses_reads_and_round_trips_a_snapshot() {
 }
 
 #[test]
+fn styled_text_is_the_plain_text_with_its_colors() {
+    let mut t = Terminal::new(10, 4, 1 << 20);
+    t.write(b"\x1b[1;31mred\x1b[0m plain\r\n\r\n\x1b[2mdim and wrapped\x1b[0m\r\n");
+    let styled = t.styled_text();
+    assert_eq!(styled, "\x1b[0m\x1b[1m\x1b[38;5;1mred\x1b[0m plain\n\n\x1b[0m\x1b[2mdim and wrapped\x1b[0m");
+    let mut stripped = String::new();
+    let mut rest = styled.as_str();
+    while let Some(at) = rest.find("\x1b[") {
+        stripped.push_str(&rest[..at]);
+        let end = rest[at..].find('m').expect("an SGR sequence");
+        rest = &rest[at + end + 1..];
+    }
+    stripped.push_str(rest);
+    assert_eq!(stripped, t.plain_text(), "line for line: {styled:?}");
+}
+
+#[test]
 fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
     let mut t = Terminal::new(30, 4, 1 << 20);
     for i in 0..8 {

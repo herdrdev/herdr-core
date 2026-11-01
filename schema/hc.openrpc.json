@@ -1318,6 +1318,13 @@
         ],
         "type": "object"
       },
+      "TextFormat": {
+        "enum": [
+          "plain",
+          "ansi"
+        ],
+        "type": "string"
+      },
       "WaitResult": {
         "properties": {
           "children": {
@@ -2110,6 +2117,15 @@
               "string",
               "null"
             ]
+          }
+        },
+        {
+          "description": "`ansi`: each line keeps its colors and text styles as SGR sequences (a\nfull-screen app is not scrolled for history: its screen only).",
+          "name": "format",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/TextFormat",
+            "description": "`ansi`: each line keeps its colors and text styles as SGR sequences (a\nfull-screen app is not scrolled for history: its screen only)."
           }
         },
         {

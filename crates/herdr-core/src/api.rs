@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell"];
+pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell", "ansi"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -352,9 +352,11 @@ async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcErro
 async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcError> {
     let id = resolve(core, &p.terminal)?;
     core.saw(p.caller.as_deref(), id);
-    // A full-screen app keeps its history to itself: scroll it to read it.
+    // A full-screen app keeps its history to itself: scroll it to read it
+    // (as text only: what scrolling shows comes back without its colors).
     let full_screen = core.lock().screens.get(&id).is_some_and(|s| s.alt_screen());
-    if full_screen && p.lines > 0 {
+    let styled = p.format == TextFormat::Ansi;
+    if full_screen && p.lines > 0 && !styled {
         let lines = p.lines.min(FINISHED_LINES);
         let result = match core.stitch(id, lines).await {
             Some((text, complete)) => ReadResult { text, complete, how: "stitched".into(), why: None },
@@ -380,7 +382,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         let lines = if t.is_live() { p.lines } else { p.lines.min(FINISHED_LINES) };
         let rows = t.rows as usize;
         let exact = t.screen == "exact";
-        let text = core.screen_text(&st, id);
+        let text = core.screen_text(&st, id, styled);
         let mut complete = exact && text.is_some();
         let text = text.unwrap_or_default();
         let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
@@ -390,7 +392,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         if p.lines > kept && t.printed > (kept + rows) as u64 {
             complete = false;
         }
-        if p.lines > 0 && !t.is_live() && t.full_screen {
+        if p.lines > 0 && (full_screen || !t.is_live() && t.full_screen) {
             complete = false;
         }
         ReadResult {

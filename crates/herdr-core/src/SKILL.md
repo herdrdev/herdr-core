@@ -65,6 +65,8 @@ hc interrupt review                # stop its current turn, not the process
 full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,
 marked incomplete with `why` set to that status; no scroll input is sent.
+`read --format ansi` keeps colors and styles as SGR sequences (to tell a
+selected option by its color); it reads a full-screen app's screen only.
 
 Keep doing useful work while children work. When you need their results:
 
