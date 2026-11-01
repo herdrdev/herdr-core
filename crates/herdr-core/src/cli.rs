@@ -138,17 +138,17 @@ pub fn command_names() -> Vec<String> {
 
 pub fn main() -> i32 {
     client::remember_exe();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["--help" | "-h" | "help"] => {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    match args.iter().map(|a| a.to_str()).collect::<Vec<_>>().as_slice() {
+        [Some("--help" | "-h" | "help")] => {
             print!("{HELP}");
             return 0;
         }
-        ["--skill"] => {
+        [Some("--skill")] => {
             print!("{SKILL}");
             return 0;
         }
-        ["--licenses"] => {
+        [Some("--licenses")] => {
             print!("{}", include_str!("../THIRD-PARTY-NOTICES"));
             return 0;
         }
@@ -158,7 +158,7 @@ pub fn main() -> i32 {
     let piped = !std::io::stdout().is_terminal();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(e) if !e.use_stderr() || !(piped || std::env::args().any(|a| a == "--json")) => e.exit(),
+        Err(e) if !e.use_stderr() || !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
         Err(e) => return fail(&RpcError::new("usage", usage_message(&e), "see `hc --help`"), true),
     };
     // A template's trailing flags may include --json: parse them before choosing how to print.

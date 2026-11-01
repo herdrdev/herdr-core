@@ -9,6 +9,22 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 
 #[test]
+fn invalid_utf8_arguments_are_usage_errors_not_panics() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let s = Session::new();
+    run(&s, &["--name", "inbox", "sh", "-c", "sleep 300"]);
+    for args in [&["send", "inbox"][..], &["--json", "send", "inbox"], &["run", "echo"]] {
+        let out = s.cmd().args(args).arg(OsString::from_vec(vec![0xe2, 0x94])).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let err: Value = serde_json::from_slice(&out.stderr).expect("structured usage error, not a panic");
+        assert_eq!(err["error"]["kind"], "usage");
+        assert!(err["error"]["message"].as_str().unwrap().contains("UTF-8"), "{err}");
+    }
+}
+
+#[test]
 fn autostarts_and_keeps_its_identity_across_restarts() {
     let s = Session::new();
     let first = s.json(&["server", "status"]);
