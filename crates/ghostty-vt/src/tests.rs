@@ -211,3 +211,14 @@ fn answers_queries_like_ghostty_with_viewer_facts() {
     assert_eq!(ask(&mut t, b"\x1b[?2004$p"), "\x1b[?2004;2$y");
     assert_eq!(ask(&mut t, b"\x1b[?u"), "\x1b[?0u");
 }
+
+#[test]
+fn grapheme_clustering_is_on_like_ghostty() {
+    let mut t = Terminal::new(10, 2, 0);
+    t.write(b"\x1b[?2027$p");
+    assert_eq!(String::from_utf8_lossy(&t.take_responses()), "\x1b[?2027;1$y");
+    t.write("\u{270d}\u{fe0f}!".as_bytes());
+    assert_eq!(t.plain_text().trim_end(), "\u{270d}\u{fe0f}!");
+    t.write(b"\x1bc");
+    assert!(t.dec_mode(2027), "a reset keeps it on");
+}
