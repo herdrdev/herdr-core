@@ -107,6 +107,27 @@ hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
 
+### Slow commands: don't block yourself
+
+Your own shell tool holds you until its command ends: no messages, no
+children's reports, no other work. Run anything slow (builds, test suites,
+CI, deploys, installs) in an hc terminal instead and wait with hc. You stay
+reachable, and you can keep working or start more.
+
+```sh
+hc run --bg --rm --no-notify --name build cargo build --release
+hc wait build                      # its exit code; --rm then removes it
+hc run --bg --name tests cargo test
+hc wait tests; hc read tests --lines 40; hc rm tests
+hc run --bg --rm --no-notify --name ci -- gh run watch 123 --exit-status
+hc wait --children any             # several at once: the next one to finish
+```
+
+`--rm` removes a terminal once it exits and you have its exit code (keep it
+when you still want to `read` its output). `--no-notify` keeps its exit note
+out of your input when you wait for it anyway. Kill and remove helpers you
+started once you have their results: `hc kill <t>; hc rm <t>`.
+
 `run` times out after 180 seconds by default (`--timeout S`): it prints
 `[hc] still running as t3` and exits 124, but the program keeps running.
 Use the returned address to wait/read it; don't launch a duplicate.
