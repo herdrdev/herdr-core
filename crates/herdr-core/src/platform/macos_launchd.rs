@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -96,16 +97,21 @@ impl Inherited {
 
 /// Detach only the internal launchd sentinel before any CLI/runtime setup.
 pub fn startup() -> bool {
-    if std::env::args_os().nth(1).as_deref() == Some(OsStr::new(SENTINEL))
-        && let Some(socket) = std::env::var_os(DETACH)
-    {
-        if let Err(error) = detach(Path::new(&socket)) {
-            eprintln!("hc: launchd detach failed: {error}");
-            std::process::exit(1);
-        }
-        return true;
+    if std::env::args_os().nth(1).as_deref() != Some(OsStr::new(SENTINEL)) {
+        return false;
     }
-    false
+    let result = if let Some(socket) = std::env::var_os(DETACH) {
+        detach(Path::new(&socket))
+    } else if let Some(socket) = std::env::args_os().nth(2) {
+        receive(Path::new(&socket))
+    } else {
+        return false;
+    };
+    if let Err(error) = result {
+        eprintln!("hc: launchd detach failed: {error}");
+        std::process::exit(1);
+    }
+    true
 }
 
 /// Called only after parsing a real Cmd::Serve, so help/errors never launch.
@@ -236,6 +242,8 @@ fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
 }
 
 fn detach(socket: &Path) -> io::Result<()> {
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.arg(SENTINEL).arg(socket).env_remove(DETACH);
     match unsafe { libc::fork() } {
         -1 => return Err(io::Error::last_os_error()),
         0 => {}
@@ -244,6 +252,12 @@ fn detach(socket: &Path) -> io::Result<()> {
     if unsafe { libc::setsid() } < 0 {
         return Err(io::Error::last_os_error());
     }
+    // libSystem can initialize libnotify before main. fork disables it in the
+    // child; exec gives the detached core fresh libnotify/libdispatch state.
+    Err(cmd.exec())
+}
+
+fn receive(socket: &Path) -> io::Result<()> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     while unsafe { libc::getppid() } != 1 {
         if Instant::now() >= deadline {

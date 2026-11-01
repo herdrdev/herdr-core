@@ -84,6 +84,20 @@ fn launchd_core_and_program_survive_the_launcher_and_leave_no_job() {
 }
 
 #[test]
+fn launchd_core_registers_the_host_shutdown_watch() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
+    assert!(!log.contains("cannot watch host shutdown"), "{log}");
+}
+
+#[test]
 fn a_direct_serve_from_an_old_launcher_relaunches_before_taking_the_lock() {
     if !gui() {
         return;
