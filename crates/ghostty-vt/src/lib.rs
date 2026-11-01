@@ -47,6 +47,7 @@ mod ffi {
     pub const OPT_COLOR_CURSOR: i32 = 13;
     pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 27;
     pub const OPT_CONTINUATION_MAX_BYTES: i32 = 31;
+    pub const OPT_MODE_DEFAULT: i32 = 33;
     pub const DATA_COLS: i32 = 1;
     pub const DATA_ROWS: i32 = 2;
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
@@ -409,6 +410,9 @@ impl Terminal {
             let set = |opt, value: *const c_void| ffi::ghostty_terminal_set(raw, opt, value);
             set(ffi::OPT_SCROLLBACK_MAX_BYTES, (&raw const scrollback_bytes).cast());
             set(ffi::OPT_CONTINUATION_MAX_BYTES, (&raw const continuation).cast());
+            // On from the start, as in Ghostty and the app: VS16 makes ✍️ two cells wide.
+            let cluster = ffi::ModeConfig { mode: 2027, value: true };
+            set(ffi::OPT_MODE_DEFAULT, (&raw const cluster).cast());
             set(ffi::OPT_USERDATA, ud.cast());
             set(ffi::OPT_WRITE_PTY, on_write_pty as *const c_void);
             set(ffi::OPT_XTVERSION, on_xtversion as *const c_void);
