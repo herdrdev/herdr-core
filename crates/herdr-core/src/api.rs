@@ -89,6 +89,9 @@ methods! { Ctx<'_>;
     "terminal.label" => terminal_label, LabelParams => Public,
         "Set or remove labels (free-form `key=value`, never interpreted).",
         errors ["not_found", "machine_unknown", "invalid_params"];
+    "terminal.report" => terminal_report, ReportParams => Public,
+        "Apply one OSC 7501 report to a live terminal as if its program had written it: for a process with no terminal to write to (an agent's hook). The body is the report as the program would send it, e.g. `state=working:id=bg`; it is parsed and stored exactly like screen output.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params"];
     "terminal.read" => terminal_read, ReadParams => ReadResult,
         "The screen plus `lines` of history as text, live or finished.",
         errors ["not_found", "machine_unknown"];
@@ -348,6 +351,41 @@ async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcErro
     let result = record(core, id).map(Public);
     core.flush_saved().await?;
     result
+}
+
+async fn terminal_report(core: Ctx<'_>, p: ReportParams) -> Result<Public, RpcError> {
+    let id = resolve(core, &p.terminal)?;
+    let reports = parse_report(&p.body)?;
+    {
+        let mut st = core.lock();
+        if !st.reg.terminals.get(&id).is_some_and(|t| t.is_live()) {
+            let at = crate::terminals::address(id);
+            return Err(RpcError::new("finished", format!("{at} has finished"), format!("hc read {at}")));
+        }
+        core.report_status(&mut st, id, &reports);
+        core.relay_report(&mut st, id, &p.body);
+        // Saved now, not soon: unlike screen output, a crash has no tail to replay this from.
+        core.save(&st);
+    }
+    let result = record(core, id).map(Public);
+    core.flush_saved().await?;
+    result
+}
+
+/// One 7501 body, read by the same parser as screen output so both accept exactly the same reports.
+fn parse_report(body: &str) -> Result<Vec<ghostty_vt::StatusReport>, RpcError> {
+    let hint = "e.g. state=working:id=bg, or state=clear:id=bg";
+    if body.contains(['\x1b', '\x07']) {
+        return Err(RpcError::invalid_params("the body is the report alone, without ESC ] 7501 ; or a terminator")
+            .with_hint(hint));
+    }
+    let mut screen = ghostty_vt::Terminal::new(1, 1, 0);
+    screen.write(format!("\x1b]7501;{body}\x1b\\").as_bytes());
+    let reports = screen.take_status_reports();
+    if reports.len() != 1 {
+        return Err(RpcError::invalid_params(format!("not an OSC 7501 report: {body:?}")).with_hint(hint));
+    }
+    Ok(reports)
 }
 
 async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcError> {

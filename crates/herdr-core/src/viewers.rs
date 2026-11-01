@@ -164,18 +164,7 @@ impl Core {
                 }
             });
         }
-        if !behind.is_empty() {
-            let paint = first_paint(st, id, 0);
-            let recovering = st.screens[&id].continuation().is_none();
-            let viewers = st.viewers.get_mut(&id).expect("viewers with queued output");
-            for index in behind {
-                let v = &mut viewers[index];
-                v.recovering = recovering;
-                v.conn.with(|ob| {
-                    ob.data(v.channel, &paint);
-                });
-            }
-        }
+        repaint_behind(st, id, behind);
         if full_screen && let Some(t) = st.reg.terminals.get_mut(&id) {
             t.full_screen = true;
         }
@@ -187,6 +176,37 @@ impl Core {
             self.save_soon();
             self.emit(st, "title", id, serde_json::json!({"title": title}));
         }
+    }
+
+    /// A report that did not come from the screen (`hc report`), into every
+    /// viewer's stream as if the program had written it. If the program is
+    /// halfway through a sequence of its own, that is cancelled and resumed.
+    pub fn relay_report(&self, st: &mut State, id: u32, body: &str) {
+        if st.stitching.contains(&id) {
+            return; // the repaint after the read carries it
+        }
+        let bytes = st.screens.get(&id).and_then(|s| s.continuation()).map(|unfinished| {
+            let mut bytes = if unfinished.is_empty() { Vec::new() } else { vec![0x18] };
+            bytes.extend(format!("\x1b]7501;{body}\x1b\\").as_bytes());
+            bytes.extend(unfinished);
+            bytes
+        });
+        let mut behind = Vec::new();
+        for (index, v) in st.viewers.get_mut(&id).into_iter().flatten().enumerate() {
+            if v.repaint_pending || v.recovering {
+                continue; // the repaint they are due carries it
+            }
+            let Some(bytes) = &bytes else {
+                v.recovering = true; // past continuation tracking: repaint at the next boundary
+                continue;
+            };
+            v.conn.with(|ob| {
+                if !ob.data(v.channel, bytes) {
+                    behind.push(index);
+                }
+            });
+        }
+        repaint_behind(st, id, behind);
     }
 
     /// Applies 7501 reports and tells subscribers what changed.
@@ -406,6 +426,23 @@ pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
         paint.extend(continuation);
     }
     paint
+}
+
+/// Viewers whose backlog was dropped get a full repaint instead.
+fn repaint_behind(st: &mut State, id: u32, behind: Vec<usize>) {
+    if behind.is_empty() {
+        return;
+    }
+    let paint = first_paint(st, id, 0);
+    let recovering = st.screens[&id].continuation().is_none();
+    let viewers = st.viewers.get_mut(&id).expect("viewers with queued output");
+    for index in behind {
+        let v = &mut viewers[index];
+        v.recovering = recovering;
+        v.conn.with(|ob| {
+            ob.data(v.channel, &paint);
+        });
+    }
 }
 
 fn paint_state(st: &State, id: u32, screen: Vec<u8>) -> Vec<u8> {
