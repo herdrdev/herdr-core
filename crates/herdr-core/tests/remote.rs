@@ -327,6 +327,9 @@ fn terminals_on_another_machine_work_like_local_ones() {
     s.json(&["send", "rohan/echo", "hello"]);
     wait_until("the reply", || text(&s, "rohan/echo").contains("got-hello"));
     assert_eq!(get(&s, &t)["name"], "echo");
+    let r = s.json(&["report", "state=working:id=bg", "--terminal", "rohan/echo"]);
+    assert_eq!(r["records"]["bg"]["state"], "working", "{r}");
+    assert_eq!(get(&rohan, "t1")["records"]["bg"]["state"], "working", "it lands on rohan");
 
     let done = run(&s, &["--on", "rohan", "sh", "-c", "sleep 0.3; exit 3"]);
     let w = s.json(&["wait", &done]);

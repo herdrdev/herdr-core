@@ -353,6 +353,16 @@ pub struct LabelParams {
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct ReportParams {
+    /// The OSC 7501 report as a program would send it: `state=working:id=bg`.
+    pub body: String,
+    /// The terminal: `t7`, a name, or `machine/t7`. Default: the one you run in.
+    #[arg(long, default_value = "", hide_default_value = true)]
+    #[serde(default)]
+    pub terminal: String,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct KeepParams {
     /// The terminal: `t7`, a name, or `machine/t7`.
     pub terminal: String,

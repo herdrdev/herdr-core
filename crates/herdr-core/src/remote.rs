@@ -803,6 +803,7 @@ const ON_A_TERMINAL: &[&str] = &[
     "terminal.interrupt",
     "terminal.wait",
     "terminal.put",
+    "terminal.report",
 ];
 
 /// Where a call goes when it isn't here.
