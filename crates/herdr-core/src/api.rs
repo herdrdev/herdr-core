@@ -361,9 +361,14 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
             None => {
                 let st = core.lock();
                 let text = st.screens.get(&id).map(|s| crate::stitch::text(&s.screen_rows())).unwrap_or_default();
-                let working =
-                    st.reg.terminals.get(&id).and_then(|t| t.status.as_ref()).is_some_and(|s| s.state == "working");
-                ReadResult { text, complete: false, how: "screen".into(), why: working.then(|| "working".into()) }
+                let why = st
+                    .reg
+                    .terminals
+                    .get(&id)
+                    .and_then(|t| t.status.as_ref())
+                    .filter(|s| matches!(s.state.as_str(), "working" | "blocked" | "error"))
+                    .map(|s| s.state.clone());
+                ReadResult { text, complete: false, how: "screen".into(), why }
             }
         };
         core.flush_saved().await?;

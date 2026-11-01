@@ -61,6 +61,11 @@ hc read --lines 100 review          # screen plus history; waits return status o
 hc interrupt review                # stop its current turn, not the process
 ```
 
+`read --lines 0` reads only the visible screen. History reads may scroll a
+full-screen app, then restore its view. While its status is `working`,
+`blocked` or `error`, history reads return only the screen immediately,
+marked incomplete with `why` set to that status; no scroll input is sent.
+
 Keep doing useful work while children work. When you need their results:
 
 ```sh

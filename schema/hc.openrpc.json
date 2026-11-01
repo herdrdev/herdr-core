@@ -599,7 +599,7 @@
             "type": "string"
           },
           "why": {
-            "description": "Why only the screen: \"working\" (a full-screen app isn't scrolled while\nit works; read again once it stops).",
+            "description": "Why only the screen: \"working\", \"blocked\" or \"error\" (a full-screen app\nis not scrolled in these states).",
             "type": [
               "string",
               "null"

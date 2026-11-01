@@ -343,8 +343,8 @@ pub struct ReadResult {
     pub complete: bool,
     /// "screen", "history", or "stitched" (a full-screen app, read by scrolling it).
     pub how: String,
-    /// Why only the screen: "working" (a full-screen app isn't scrolled while
-    /// it works; read again once it stops).
+    /// Why only the screen: "working", "blocked" or "error" (a full-screen app
+    /// is not scrolled in these states).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
 }

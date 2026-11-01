@@ -469,6 +469,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let mut human = r["text"].as_str().unwrap_or_default().to_string();
             if r["why"] == "working" {
                 human.push_str("\n[hc] only its screen: it is working; read again once it stops for its history");
+            } else if let Some(state @ ("blocked" | "error")) = r["why"].as_str() {
+                human
+                    .push_str(&format!("\n[hc] only its screen: it is {state}; history is not scrolled in this state"));
             } else if r["complete"] == false {
                 human.push_str("\n[hc] incomplete: older output may be missing");
             }
