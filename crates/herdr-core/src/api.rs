@@ -598,7 +598,7 @@ fn free_name(core: &Core, st: &crate::runtime::State, name: &str) -> Result<(), 
 
 async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machines::Machine, RpcError> {
     let (target, via) = match (p.target, p.via) {
-        (Some(target), None) => (target, false),
+        (Some(target), None) => (crate::machines::ssh_target(target), false),
         (None, Some(command)) => (command, true),
         _ => return Err(RpcError::invalid_params("give either target or via")),
     };

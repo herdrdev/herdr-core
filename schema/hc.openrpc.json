@@ -3536,11 +3536,11 @@
           }
         },
         {
-          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
           "name": "target",
           "required": false,
           "schema": {
-            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
             "type": [
               "string",
               "null"
