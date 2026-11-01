@@ -187,3 +187,7 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+A status ends with the program that reported it: when the terminal's own
+program exits, or when it gets the terminal back from a program it ran (a
+shell whose agent exited), the status and its records clear.

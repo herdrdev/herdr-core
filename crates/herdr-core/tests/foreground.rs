@@ -35,3 +35,22 @@ fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
     assert_eq!(canonical(event["cwd"].as_str().unwrap()), canonical(sub.to_str().unwrap()));
     assert_eq!(get(&s, &t)["foreground"], event, "the record says the same");
 }
+
+#[test]
+fn a_status_ends_when_the_shell_gets_the_terminal_back() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));
+    // `set -m`: the shell runs its jobs in front, as an interactive one does.
+    let t = run(&s, &["sh", "-c", &script(&s, "set -m; (r state=idle:app=agent; w end); exec sleep 100")]);
+    let shell = get(&s, &t)["pid"].clone();
+    wait_until("the job in front, with its status", || {
+        let t = get(&s, &t);
+        t["status"]["state"] == "idle" && t["foreground"]["pid"].is_i64() && t["foreground"]["pid"] != shell
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(get(&s, &t)["status"]["app"], "agent", "kept while its program runs");
+    touch(&s, "end");
+    wait_until("the shell in front", || get(&s, &t)["foreground"]["pid"] == shell);
+    wait_until("no status", || get(&s, &t)["status"].is_null());
+    assert_eq!(get(&s, &t)["state"], "live");
+}

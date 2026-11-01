@@ -154,22 +154,37 @@ impl Core {
     /// Keeps every live terminal's `foreground` current, with an event on each change.
     pub async fn watch_foreground(self: Arc<Self>) {
         let ms = std::env::var("HC_FOREGROUND_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+        // The group last seen in front of each terminal (a job's leader may be
+        // gone before its shell takes the terminal back).
+        let mut front = std::collections::HashMap::new();
         loop {
             tokio::time::sleep(Duration::from_millis(ms)).await;
             let live: Vec<u32> = self.lock().reg.terminals.values().filter(|t| t.is_live()).map(|t| t.id()).collect();
+            front.retain(|id, _| live.contains(id));
             for id in live {
                 let pgid = self.foreground(id).await;
                 let now = (pgid > 0).then(|| about(pgid)).flatten();
+                let before = if pgid > 0 { front.insert(id, pgid) } else { None };
                 let mut st = self.lock();
-                let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
+                let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live()) else {
                     continue;
                 };
-                if let Some(f) = &now {
-                    t.last_cwd = Some(f.cwd.clone());
+                // The terminal's own program got it back: what it ran has ended
+                // (or stopped), and so has that program's status.
+                let first = t.pid.map(|pid| pid as i32);
+                let change =
+                    (before.is_some_and(|b| Some(b) != first) && Some(pgid) == first).then(|| crate::status::reset(t));
+                if t.foreground != now {
+                    if let Some(f) = &now {
+                        t.last_cwd = Some(f.cwd.clone());
+                    }
+                    t.foreground = now.clone();
+                    self.save_soon();
+                    self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
                 }
-                t.foreground = now.clone();
-                self.save_soon();
-                self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
+                if let Some(change) = change {
+                    self.status_changed(&mut st, id, change);
+                }
             }
         }
     }
