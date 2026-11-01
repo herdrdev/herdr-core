@@ -635,6 +635,12 @@ impl Terminal {
         String::from_utf8_lossy(&self.format(ffi::FORMAT_PLAIN, None, false)).into_owned()
     }
 
+    /// `plain_text` line for line, with colors and text styles as SGR
+    /// sequences. Each line ends with its style reset, so any line stands alone.
+    pub fn styled_text(&self) -> String {
+        String::from_utf8_lossy(&self.format_with(ffi::FORMAT_VT, None, false, true)).replace("\r\n", "\n")
+    }
+
     fn grid_ref(&self, tag: i32, x: u16, y: u32) -> Option<ffi::GridRef> {
         let point = ffi::Point { tag, value: ffi::PointValue { coord: ffi::Coord { x, y } } };
         let mut out = ffi::GridRef { size: size_of::<ffi::GridRef>(), node: ptr::null_mut(), x: 0, y: 0 };

@@ -1032,14 +1032,17 @@ async fn forward_once(core: &Core, m: &Machine, method: &str, mut params: Value)
     }
     let deadline = deadline_for(core, method, &params);
     let line = line(core, m).await?;
-    // An older core would read no program as "nothing to run".
+    // What an older core would get wrong: no program read as "nothing to
+    // run", a format ignored for plain text.
     let own_shell = params["argv"].as_array().is_none_or(Vec::is_empty) || params.get("line").is_some();
-    if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {
-        return Err(RpcError::new(
-            "needs_update",
-            format!("{}'s hc is older and can't pick its own shell", m.name),
-            format!("hc machine update {}", m.name),
-        ));
+    let needs = match method {
+        "terminal.run" if own_shell => Some(("shell", "can't pick its own shell")),
+        "terminal.read" if params["format"] == "ansi" => Some(("ansi", "reads text without colors")),
+        _ => None,
+    };
+    if let Some((_, lacks)) = needs.filter(|(feature, _)| !line.features.iter().any(|f| f == feature)) {
+        let hint = format!("hc machine update {}", m.name);
+        return Err(RpcError::new("needs_update", format!("{}'s hc is older and {lacks}", m.name), hint));
     }
     let reply = line.call(&m.name, method, params, deadline).await.map_err(|e| match e.kind.as_str() {
         "unknown_method" => RpcError::new(

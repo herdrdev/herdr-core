@@ -456,9 +456,10 @@ Arguments:
   [TERMINAL]  The terminal: `t7`, a name, or `machine/t7`
 
 Options:
-      --json           JSON output even in a terminal
-      --lines <LINES>  Lines of history above the screen [default: 0]
-  -h, --help           Print help
+      --json             JSON output even in a terminal
+      --lines <LINES>    Lines of history above the screen [default: 0]
+      --format <FORMAT>  `ansi`: each line keeps its colors and text styles as SGR sequences (a full-screen app is not scrolled for history: its screen only) [default: plain] [possible values: plain, ansi]
+  -h, --help             Print help
 ```
 
 ## hc rm

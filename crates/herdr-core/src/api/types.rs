@@ -334,6 +334,25 @@ pub struct ReadParams {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub lines: usize,
+    /// `ansi`: each line keeps its colors and text styles as SGR sequences (a
+    /// full-screen app is not scrolled for history: its screen only).
+    #[arg(long, value_enum, default_value_t = TextFormat::Plain)]
+    #[serde(default, skip_serializing_if = "TextFormat::is_plain")]
+    pub format: TextFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TextFormat {
+    #[default]
+    Plain,
+    Ansi,
+}
+
+impl TextFormat {
+    fn is_plain(&self) -> bool {
+        *self == TextFormat::Plain
+    }
 }
 
 #[derive(Serialize, JsonSchema)]
