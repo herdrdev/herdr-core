@@ -9,13 +9,18 @@
             "minimum": 0,
             "type": "integer"
           },
+          "resize_notifications": {
+            "description": "True only when the entire path sends RESIZE before replacement paints.\nFalse or absent means the observer must track size changes separately.",
+            "type": "boolean"
+          },
           "terminal": {
             "$ref": "#/components/schemas/Terminal"
           }
         },
         "required": [
           "channel",
-          "terminal"
+          "terminal",
+          "resize_notifications"
         ],
         "type": "object"
       },
@@ -1435,6 +1440,19 @@
           }
         },
         {
+          "description": "Features supported by a core dialing in, including relaying size notifications.",
+          "name": "features",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Features supported by a core dialing in, including relaying size notifications.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
           "description": "Switch this connection to framed mode after the reply.",
           "name": "framed",
           "required": false,
@@ -2242,6 +2260,16 @@
           "schema": {
             "default": false,
             "description": "Watch only: never type or resize.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+          "name": "resize_notifications",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
             "type": "boolean"
           }
         },

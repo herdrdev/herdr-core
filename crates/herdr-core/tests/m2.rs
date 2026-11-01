@@ -180,6 +180,69 @@ fn size_follows_the_last_active_typing_viewer() {
 }
 
 #[test]
+fn observers_receive_the_terminal_grid_and_a_repaint_when_it_changes() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&s, &t).contains("retained"));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true, "resize_notifications": true}));
+    let mut initial: Vec<_> = observer.conn.stash.drain(..).collect();
+    while let Some(frame) = observer.conn.read(Duration::from_millis(200)) {
+        initial.push(frame);
+    }
+    let mut active = Viewer::attach(&s, &t, 60, 20, json!({}));
+
+    let mut check = |cols: u16, rows: u16| {
+        wait_until("terminal resized", || size(&s, &t) == (cols.into(), rows.into()));
+        let mut frames = Vec::new();
+        while let Some(frame) = observer.conn.read(Duration::from_millis(200)) {
+            frames.push(frame);
+        }
+        let payload = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+        eprintln!(
+            "terminal {cols}x{rows}; observer frames: {:?}",
+            frames.iter().map(|(_, k, p)| (*k, p.len())).collect::<Vec<_>>()
+        );
+        let resize = frames
+            .iter()
+            .position(|(ch, kind, p)| *ch == observer.channel && *kind == wire::RESIZE && *p == payload)
+            .expect("observer must learn the terminal's size");
+        let paint: Vec<_> = frames[resize + 1..]
+            .iter()
+            .filter(|(ch, kind, _)| *ch == observer.channel && *kind == wire::DATA)
+            .flat_map(|(_, _, p)| p.iter().copied())
+            .collect();
+        let mut screen = ghostty_vt::Terminal::new(cols, rows, 1 << 20);
+        screen.write(&paint);
+        assert!(screen.plain_text().contains("retained"), "observer needs a fresh paint");
+    };
+    check(60, 20);
+    active.conn.send(active.channel, wire::RESIZE, &[100, 0, 30, 0]);
+    check(100, 30);
+    drop(active);
+    check(200, 120);
+    assert!(
+        initial.iter().any(|(_, kind, p)| *kind == wire::RESIZE && p == &[200, 0, 120, 0]),
+        "first paint must also announce the actual grid"
+    );
+}
+
+#[test]
+fn legacy_observers_do_not_receive_unsolicited_resize_paints() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&s, &t).contains("retained"));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true}));
+    observer.conn.stash.clear();
+    while observer.conn.read(Duration::from_millis(100)).is_some() {}
+    let _active = Viewer::attach(&s, &t, 60, 20, json!({}));
+    wait_until("terminal resized", || size(&s, &t) == (60, 20));
+    assert!(
+        observer.conn.read(Duration::from_millis(200)).is_none(),
+        "legacy mobile ignores RESIZE and must not paint before its size event"
+    );
+}
+
+#[test]
 fn display_facts_do_not_take_size_leadership_from_an_active_viewer() {
     let s = Session::new();
     let t = run(&s, &["sleep", "100"]);

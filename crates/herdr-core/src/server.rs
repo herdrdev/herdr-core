@@ -181,7 +181,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         }
     }
     let conn = Arc::new(Conn::default());
-    let mut writer = tokio::spawn(write_frames(conn.clone(), write));
+    let mut writer = tokio::spawn(write_frames(core.clone(), conn.clone(), write));
     // Another core dialing in says who it is in its hello.
     let hello: Value = serde_json::from_str(&line).unwrap_or_default();
     crate::remote::peer_joined(&core, &conn, &hello["params"]);
@@ -284,9 +284,10 @@ pub fn heartbeat(core: Arc<Core>, conn: Arc<Conn>, channel: u32) {
 }
 
 /// Sends whatever the outbox hands out: control first, then streams by credit.
-async fn write_frames(conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
+async fn write_frames(core: Arc<Core>, conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
     loop {
         conn.wake.notified().await;
+        core.prepare_repaints(&conn);
         loop {
             let next = conn.outbox().next_frame();
             match next {
@@ -326,7 +327,12 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 let task = tokio::spawn(async move {
                     let handled = handle(&core, Some(&conn), None, &payload).await;
                     if let Some(reply) = &handled.reply {
-                        conn.with(|out| out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes())));
+                        conn.with(|out| {
+                            out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes()));
+                            if let Some(channel) = reply["result"]["channel"].as_u64() {
+                                out.resume(channel as u32);
+                            }
+                        });
                     }
                     if handled.stop {
                         // Give the writer a moment to put the reply on the wire before we exit.

@@ -107,6 +107,9 @@ pub struct HelloParams {
     pub core: Option<CoreInfo>,
     /// What that core calls this one (`rohan`), so news about `t7` reaches it as `rohan/t7`.
     pub calls_you: Option<String>,
+    /// Features supported by a core dialing in, including relaying size notifications.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -358,6 +361,10 @@ pub struct AttachParams {
     #[arg(long)]
     #[serde(default)]
     pub observe: bool,
+    /// Observer understands core-to-viewer RESIZE before replacement paints.
+    #[arg(skip)]
+    #[serde(default)]
+    pub resize_notifications: bool,
     /// Scrollback lines to show first (main screen only).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
@@ -387,6 +394,9 @@ pub struct AttachResult {
     /// RESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.
     pub channel: u32,
     pub terminal: Public,
+    /// True only when the entire path sends RESIZE before replacement paints.
+    /// False or absent means the observer must track size changes separately.
+    pub resize_notifications: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema, Default)]

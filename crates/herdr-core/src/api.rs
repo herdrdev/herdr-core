@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell"];
+pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell", "resize_notifications"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -425,13 +425,18 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
     }
     let req = crate::viewers::AttachRequest {
         observe: p.observe,
+        resize_notifications: p.resize_notifications,
         history: p.history,
         size: (p.cols, p.rows),
         display: p.display,
         resumed: p.resumed,
     };
     let channel = core.attach(conn, id, req)?;
-    Ok(AttachResult { channel, terminal: Public(record(core, id)?) })
+    Ok(AttachResult {
+        channel,
+        terminal: Public(record(core, id)?),
+        resize_notifications: p.observe && p.resize_notifications,
+    })
 }
 
 async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcError> {

@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 
 /// A viewer here that a stream there goes to: its connection and channel.
 type Sink = (Arc<Conn>, u32);
-/// A call waiting for its reply, and where a stream it opens goes.
-type Waiting = (oneshot::Sender<Value>, Option<Sink>);
+/// A pending reply, its stream sink and whether resize support is required.
+type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
 #[cfg(test)]
 mod tests;
@@ -58,10 +58,18 @@ impl Line {
     }
 
     /// A reply to one of our calls: to whoever waits for it.
-    fn take_reply(&self, reply: Value) {
+    fn take_reply(&self, mut reply: Value) {
         let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else { return };
-        if let (Some(sink), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
-            lock(&self.streams).insert(there as u32, sink);
+        if let (Some((sink, require_resize)), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
+            if require_resize && reply["result"]["resize_notifications"] != true {
+                let _ = self.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
+                reply = crate::rpc::response(
+                    reply["id"].clone(),
+                    Err(RpcError::new("unavailable", RESIZE_LOST, "attach again")),
+                );
+            } else {
+                lock(&self.streams).insert(there as u32, sink);
+            }
         }
         let _ = waiter.send(reply);
     }
@@ -88,7 +96,7 @@ impl Line {
         machine: &str,
         method: &str,
         params: Value,
-        sink: Option<Sink>,
+        sink: Option<(Sink, bool)>,
         deadline: Duration,
     ) -> Result<Value, RpcError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -243,7 +251,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             st.lines.insert(id.clone(), state);
             core.changed.notify_waiters();
         };
-        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name});
+        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name, "features": crate::api::FEATURES});
         match crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await {
             Ok(d) if d.hello["core"]["id"] != m.id.as_str() => {
                 down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]));
@@ -285,6 +293,9 @@ pub struct Relayed {
     pub params: Value,
 }
 
+/// Why an opted-in stream was refused: a hop on the way lost resize support.
+const RESIZE_LOST: &str = "resize notifications lost";
+
 /// Viewers left waiting by a dropped line to `m` get their terminal back.
 async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
     let waiting: Vec<((usize, u32), Relayed)> = core
@@ -299,8 +310,11 @@ async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         let mut params = r.params.clone();
         params["history"] = 0.into();
         params["resumed"] = true.into();
+        negotiate_resize(&line, &mut params);
         let deadline = deadline_for(&core, "terminal.attach", &params);
-        let reply = line.call_into(&m.name, "terminal.attach", params, Some((r.conn.clone(), here)), deadline).await;
+        let sink = ((r.conn.clone(), here), r.params["resize_notifications"] == true);
+        let reply = line.call_into(&m.name, "terminal.attach", params, Some(sink), deadline).await;
+        let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
         if !st.relayed.contains_key(&(key, here)) {
@@ -312,7 +326,13 @@ async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
             }
             None => {
                 st.relayed.remove(&(key, here));
-                r.conn.with(|out| out.finish(here, b""));
+                // A downgraded path must not deliver paints sized for the old
+                // contract; any other failure still hands over what arrived.
+                if lost_resize {
+                    r.conn.with(|out| out.close(here, b""));
+                } else {
+                    r.conn.with(|out| out.finish(here, b""));
+                }
             }
         }
     }
@@ -390,6 +410,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                     conn.with(|out| {
                         out.data(*here, &payload);
                     });
+                }
+            }
+            (there, wire::RESIZE) if payload.len() == 4 => {
+                if let Some((conn, here)) = lock(&line.streams).get(&there) {
+                    conn.with(|out| out.ordered_resize(*here, &payload));
                 }
             }
             (there, wire::CLOSE) => {
@@ -610,7 +635,7 @@ fn save_peers(core: &Core, st: &State) {
 pub fn peer_joined(core: &Arc<Core>, conn: &Arc<Conn>, hello: &Value) {
     let (Some(id), Some(name)) = (hello["core"]["id"].as_str(), hello["core"]["name"].as_str()) else { return };
     let (frames, mut out) = mpsc::unbounded_channel::<Vec<u8>>();
-    let line = Line::new(frames, &Value::Null); // it only calls back here, never runs
+    let line = Line::new(frames, hello);
     let c = conn.clone();
     tokio::spawn(async move {
         while let Some(frame) = out.recv().await {
@@ -638,7 +663,8 @@ pub fn from_peer(core: &Core, conn: Option<&Arc<Conn>>, mut params: Value) -> Va
     let Some(conn) = conn else { return params };
     let st = core.lock();
     let key = conn_key(conn);
-    let Some(id) = st.peer_lines.iter().find(|(_, (k, _))| *k == key).map(|(id, _)| id) else { return params };
+    let Some((id, (_, line))) = st.peer_lines.iter().find(|(_, (k, _))| *k == key) else { return params };
+    negotiate_resize(line, &mut params);
     if let (Some(rest), Some(peer)) =
         (params["caller"].as_str().and_then(|c| c.strip_prefix(&format!("{id}/"))), st.peers.get(id))
     {
@@ -741,16 +767,31 @@ pub fn conn_key(conn: &Arc<Conn>) -> usize {
     Arc::as_ptr(conn) as usize
 }
 
+fn negotiate_resize(line: &Line, params: &mut Value) {
+    if params["resize_notifications"] == true && !line.features.iter().any(|f| f == "resize_notifications") {
+        params["resize_notifications"] = false.into();
+    }
+}
+
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
-pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, params: Value) -> Result<Value, RpcError> {
+pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Value) -> Result<Value, RpcError> {
     let line = line(core, m).await?;
+    negotiate_resize(&line, &mut params);
     let here = conn.new_channel();
-    conn.with(|out| out.open(here));
+    conn.with(|out| out.open_paused(here));
     let deadline = deadline_for(core, "terminal.attach", &params);
-    match line.call_into(&m.name, "terminal.attach", params.clone(), Some((conn.clone(), here)), deadline).await {
+    match line
+        .call_into(&m.name, "terminal.attach", params.clone(), Some(((conn.clone(), here), false)), deadline)
+        .await
+    {
         Ok(mut r) => {
             let there = r["channel"].as_u64().unwrap_or_default() as u32;
+            let enabled = params["observe"] == true
+                && params["resize_notifications"] == true
+                && r["resize_notifications"] == true;
+            r["resize_notifications"] = enabled.into();
+            params["resize_notifications"] = enabled.into();
             let viewer = Relayed { line, there, conn: conn.clone(), machine: m.id.clone(), params };
             core.lock().relayed.insert((conn_key(conn), here), viewer);
             r["channel"] = here.into();

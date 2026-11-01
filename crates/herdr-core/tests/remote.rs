@@ -397,6 +397,52 @@ fn attaching_to_a_terminal_on_another_machine() {
 }
 
 #[test]
+fn remote_observer_receives_grid_and_paint_including_after_reconnect() {
+    use herdr_core::wire;
+    use std::time::Duration;
+    let (rohan, s) = with_rohan();
+    let t = run(&s, &["--on", "rohan", "sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&rohan, "t1").contains("retained"));
+    let _leader = Viewer::attach(&rohan, "t1", 80, 24, json!({}));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true, "resize_notifications": true}));
+    let mut check = |cols: u16, rows: u16| {
+        let mut frames: Vec<_> = observer.conn.stash.drain(..).collect();
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        let mut screen = ghostty_vt::Terminal::new(cols, rows, 1 << 20);
+        let mut sized = false;
+        loop {
+            for (ch, kind, payload) in frames.drain(..) {
+                if ch != observer.channel {
+                    continue;
+                }
+                if kind == wire::RESIZE {
+                    assert_eq!(payload, [cols.to_le_bytes(), rows.to_le_bytes()].concat());
+                    sized = true;
+                } else if kind == wire::DATA && sized {
+                    screen.write(&payload);
+                }
+            }
+            if sized && screen.plain_text().contains("retained") {
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "missing remote grid or paint");
+            if let Some(frame) = observer.conn.read(Duration::from_millis(100)) {
+                frames.push(frame);
+            }
+        }
+    };
+    check(80, 24);
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.json(&["server", "restart"]);
+    wait_until("remote disconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    let mut leader = Viewer::attach(&rohan, "t1", 90, 30, json!({}));
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    check(90, 30);
+    leader.conn.send(leader.channel, wire::RESIZE, &[100, 0, 40, 0]);
+    check(100, 40);
+}
+
+#[test]
 fn a_viewer_there_keeps_up_past_one_window_of_output() {
     let (_rohan, s) = with_rohan();
     let t = run(&s, &["--on", "rohan", "sh", "-c", "read l; seq 1 100000; echo all-done; sleep 100"]);

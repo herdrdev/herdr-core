@@ -708,11 +708,12 @@ impl Core {
             let _ = self.jobs.send(crate::notes::Job::Orphaned(id));
             crate::remote::orphaned_afar(self, st, id); // before `--rm` forgets where it reached
         }
-        for v in st.viewers.remove(&id).unwrap_or_default() {
-            v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
-        }
         if let (Some(relay), Some(screen)) = (st.relays.get_mut(&id), st.screens.get_mut(&id)) {
             relay.flush(screen);
+        }
+        self.queue_resize_paints(st, id, None);
+        for v in st.viewers.remove(&id).unwrap_or_default() {
+            v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }
         st.relays.remove(&id);
         if let Some(snapshot) = st.screens.remove(&id).and_then(|s| s.snapshot())
