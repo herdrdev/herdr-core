@@ -36,6 +36,8 @@ jobs:
           - { name: macos-x86_64, target: x86_64-apple-darwin, runner: macos-15 }
           - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2025 }
     runs-on: ${{ matrix.runner }}
+    # Only tag pushes can use the release environment's Apple certificate.
+    environment: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || 'build' }}
     timeout-minutes: 45
     defaults:
       run:
@@ -66,6 +68,12 @@ jobs:
           [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $want"; exit 1; }
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p herdr-core
+      - name: Sign macOS binary
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ github.event_name == 'push' && github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_P12 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+        run: scripts/mac-sign target/${{ matrix.target }}/release/herdr-core
       - name: Pack
         if: runner.os != 'Windows'
         run: |
