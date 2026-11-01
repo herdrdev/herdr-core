@@ -14,7 +14,9 @@ pub(super) fn wait_timeout(core: &Core, given: Option<f64>) -> Result<Duration, 
 pub(super) async fn terminal_wait(core: Ctx<'_>, p: WaitParams) -> Result<WaitResult, RpcError> {
     let timeout = wait_timeout(core, p.timeout)?;
     if let Some(mode) = p.children {
-        return wait_children_everywhere(core, &p, &word(&mode), timeout).await;
+        let result = wait_children_everywhere(core, &p, &word(&mode), timeout).await;
+        core.flush_saved().await?;
+        return result;
     }
     let terminal = p.terminal.as_deref().ok_or_else(|| RpcError::invalid_params("give a terminal, or children"))?;
     let id = resolve(core, terminal)?;
@@ -33,6 +35,7 @@ pub(super) async fn terminal_wait(core: Ctx<'_>, p: WaitParams) -> Result<WaitRe
             st.last_send.remove(&k);
         }
     }
+    core.flush_saved().await?;
     Ok(r)
 }
 

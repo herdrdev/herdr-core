@@ -1,4 +1,146 @@
 use super::*;
+use serde_json::json;
+
+#[tokio::test]
+async fn server_exit_flushes_even_when_background_tasks_still_own_core() {
+    let (mut core, root) = test_core();
+    core.flush_saved().await.unwrap();
+    let (release, blocked) = mpsc::channel();
+    Arc::get_mut(&mut core).unwrap().registry_writer = RegistryWriter::start(move |_| {
+        blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let background_owner = core.clone();
+    core.save(&core.lock());
+    let finish = crate::server::finish(&core);
+    tokio::pin!(finish);
+    let waited = tokio::time::timeout(Duration::from_millis(10), &mut finish).await.is_err();
+    release.send(()).unwrap();
+    if waited {
+        finish.await.unwrap();
+    }
+    drop(background_owner);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(waited, "serve returned before its queued snapshot finished");
+}
+
+#[tokio::test]
+async fn server_stop_succeeds_even_when_the_registry_flush_times_out() {
+    let (mut core, root) = test_core();
+    core.flush_saved().await.unwrap();
+    let (release, blocked) = mpsc::channel();
+    let mut first = true;
+    Arc::get_mut(&mut core).unwrap().registry_writer = RegistryWriter::start(move |_| {
+        if first {
+            first = false;
+            blocked.recv_timeout(Duration::from_secs(15)).unwrap();
+        }
+        Ok(())
+    })
+    .unwrap();
+    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let started = Instant::now();
+    let stop = crate::api::dispatch(&call, "server.stop", json!({})).await;
+    release.send(()).unwrap();
+    core.flush_saved().await.unwrap();
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(started.elapsed() >= Duration::from_secs(10), "stuck disks must still time out");
+    assert_eq!(stop.unwrap()["stopped"], true);
+}
+
+fn test_core() -> (Arc<Core>, PathBuf) {
+    let root = std::env::temp_dir().join(format!("hc-persistence-{}", platform::random_hex()));
+    let paths = Paths {
+        state: root.join("state"),
+        config: root.join("config.toml"),
+        socket: root.join("run/core.sock"),
+        holder_socket: root.join("run/core.holder.sock"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    (core, root)
+}
+
+#[tokio::test]
+async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
+    for method in ["terminal.kill", "terminal.label"] {
+        let (mut core, root) = test_core();
+        core.flush_saved().await.unwrap();
+        let (release, blocked) = mpsc::channel();
+        Arc::get_mut(&mut core).unwrap().registry_writer = RegistryWriter::start(move |_| {
+            blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let id = {
+            let mut st = core.lock();
+            let id = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, now_ms())
+                .unwrap();
+            st.reg.finish(id, Some(0), None, "exited", now_ms());
+            core.save(&st);
+            id
+        };
+        let reply = {
+            let call = crate::api::Call { core: &core, conn: None, plain: None };
+            let request =
+                crate::api::dispatch(&call, method, json!({"terminal": crate::terminals::address(id), "labels": {}}));
+            tokio::pin!(request);
+            assert!(tokio::time::timeout(Duration::from_millis(10), &mut request).await.is_err());
+            core.lock().reg.terminals.get_mut(&id).unwrap().turn = 1;
+            // Label queued a second snapshot; kill reused the existing one.
+            release.send(()).unwrap();
+            let _ = release.send(());
+            request.await.unwrap()
+        };
+        let captured = reply["turn"].clone();
+        drop(core);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(captured, 0, "{method} returned a turn observed after its barrier: {reply}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_blocked_registry_write_does_not_hold_the_core_lock() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = PathBuf::from(format!("/var/tmp/hc-save-lock-{}", platform::random_hex()));
+    let paths = Paths {
+        state: root.join("state"),
+        config: root.join("config.toml"),
+        socket: root.join("run/core.sock"),
+        holder_socket: root.join("run/core.holder.sock"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !core.paths.state.join("terminals.json").exists() {
+        assert!(Instant::now() < deadline, "startup registry was not written");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let tmp = core.paths.state.join("terminals.tmp");
+    let name = std::ffi::CString::new(tmp.as_os_str().as_bytes()).unwrap();
+    // Opening this temporary file for writing waits for a reader, like a stalled disk.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (saved, done) = mpsc::channel();
+    let saving = core.clone();
+    let worker = std::thread::spawn(move || {
+        saving.save(&saving.lock());
+        saved.send(()).unwrap();
+    });
+    let returned = done.recv_timeout(Duration::from_millis(250)).is_ok();
+    let unlocked = core.state.try_lock().is_ok();
+    // Always release the blocked write, even when checking the old synchronous implementation.
+    let reader = std::fs::File::open(&tmp).unwrap();
+    worker.join().unwrap();
+    drop(core);
+    drop(reader);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(returned && unlocked, "saving to a stalled disk must leave output and input free to take the core lock");
+}
 
 #[test]
 fn host_shutdown_is_lost_without_overriding_explicit_actions() {

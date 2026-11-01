@@ -108,7 +108,8 @@ impl Core {
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);
-            // Claim and persist before sending: a slow holder never gets a second spawn.
+            // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
+            // If a crash leaves the spawn unrecorded, the next start kills it.
             self.save(&st);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));

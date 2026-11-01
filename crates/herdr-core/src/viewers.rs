@@ -176,8 +176,8 @@ impl Core {
             self.status_changed(st, id, change);
             word_changed |= word(st) != was;
         }
-        // Losing the holder too (a reboot) leaves no tail to replay: a new word, and
-        // with it a turn or news, must already be on disk. Messages and progress can wait.
+        // Losing the holder too (a reboot) leaves no tail to replay: queue a new word,
+        // and with it a turn or news, for immediate persistence. Messages and progress can wait.
         if word_changed { self.save(st) } else { self.save_soon() }
     }
 

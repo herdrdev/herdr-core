@@ -69,11 +69,19 @@ pub fn serve() -> io::Result<()> {
             }
         }
         platform::remove_endpoint(&socket);
-        if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
-            core.handover();
-        }
-        Ok(())
+        finish(&core).await
     })
+}
+
+/// Finish queued registry work before the runtime cancels its tasks (which still own Core).
+pub(crate) async fn finish(core: &Core) -> io::Result<()> {
+    if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
+        core.handover().await?;
+    }
+    if let Err(e) = core.flush_saved().await {
+        eprintln!("core: final registry flush failed: {}", e.message);
+    }
+    Ok(())
 }
 
 /// core.json: the identity, and the system's machine id it was made on.

@@ -50,6 +50,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
             (Some(r), Some(text))
         }
     };
+    core.flush_saved().await?;
     Ok(RunResult { terminal: Public(started), first_message, wait, output })
 }
 
@@ -158,6 +159,7 @@ pub(super) async fn start(
         st.reg.terminals.get_mut(&id).expect("just created").restart_env = p.env;
         let spawn = proto::Spawn { argv: p.argv, env, cwd, cols, rows };
         st.reg.terminals.get_mut(&id).expect("just created").holder = Some(instance);
+        // Queue the snapshot before spawning; the next start kills any unrecorded spawn.
         core.save(&st);
         st.link(id).expect("assigned holder").send(&proto::json_frame(proto::SPAWN, id, &spawn));
         (id, rx)

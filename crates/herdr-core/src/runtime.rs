@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{Notify, oneshot};
 
+mod persistence;
+use persistence::RegistryWriter;
+
 pub struct Core {
     pub info: CoreInfo,
     pub started: Instant,
@@ -37,6 +40,7 @@ pub struct Core {
     /// The registry changed in a way a crash may lose: `save_soon` writes it shortly.
     dirty: std::sync::atomic::AtomicBool,
     save_due: Notify,
+    registry_writer: RegistryWriter,
 }
 
 #[derive(Default)]
@@ -176,6 +180,7 @@ impl Core {
             started: Instant::now(),
             stop: Notify::new(),
             restart: Default::default(),
+            registry_writer: RegistryWriter::new(paths.state.join("terminals.json"))?,
             paths,
             state: Mutex::new(State { reg, docs, machines, peers, ..Default::default() }),
             changed: Notify::new(),
@@ -215,9 +220,23 @@ impl Core {
     pub fn save(&self, st: &State) {
         self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
-        if let Err(e) = write_atomic(&self.paths.state.join("terminals.json"), &bytes) {
-            eprintln!("core: cannot save terminals: {e}");
-        }
+        self.registry_writer.save(bytes);
+    }
+
+    /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
+    /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
+    /// Completed write failures are logged, as before; a stuck disk still times out.
+    pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
+            .await
+            .map_err(|_| {
+                crate::rpc::RpcError::new(
+                    "unavailable",
+                    "registry persistence timed out; the operation may already have completed",
+                    "check the terminal and disk before retrying",
+                )
+            })?
+            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -863,26 +882,29 @@ impl Core {
     }
 
     /// Planned restart: the holder keeps programs; we save every screen exactly.
-    pub fn handover(&self) {
+    pub async fn handover(&self) -> io::Result<()> {
         self.wait_for_sweeps();
         self.goodbye(Goodbye::Handover);
         self.wait_for_sweeps(); // a holder that died during goodbye left one
-        let mut st = self.lock();
-        st.holders.clear();
-        let State { screens, relays, .. } = &mut *st;
-        for (id, screen) in screens.iter_mut() {
-            if let Some(relay) = relays.get_mut(id) {
-                relay.flush(screen);
+        {
+            let mut st = self.lock();
+            st.holders.clear();
+            let State { screens, relays, .. } = &mut *st;
+            for (id, screen) in screens.iter_mut() {
+                if let Some(relay) = relays.get_mut(id) {
+                    relay.flush(screen);
+                }
+                if let Some(snapshot) = screen.snapshot() {
+                    let _ = write_atomic(&self.snapshot_path(*id), &snapshot);
+                }
             }
-            if let Some(snapshot) = screen.snapshot() {
-                let _ = write_atomic(&self.snapshot_path(*id), &snapshot);
-            }
+            self.save(&st);
         }
-        self.save(&st);
+        self.registry_writer.flush().await
     }
 
     /// Server stop: end every program, then let the holder exit.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), crate::rpc::RpcError> {
         let live: Vec<u32> = {
             let mut st = self.lock();
             st.stopping = true;
@@ -894,11 +916,14 @@ impl Core {
         self.wait_for_sweeps();
         self.goodbye(Goodbye::Shutdown);
         self.wait_for_sweeps(); // a holder that died during goodbye left one
-        let mut st = self.lock();
-        for id in live {
-            self.record_finish(&mut st, id, Exit { code: None, signal: None }, "server_stop");
+        {
+            let mut st = self.lock();
+            for id in live {
+                self.record_finish(&mut st, id, Exit { code: None, signal: None }, "server_stop");
+            }
+            self.save(&st);
         }
-        self.save(&st);
+        self.flush_saved().await
     }
 }
 
