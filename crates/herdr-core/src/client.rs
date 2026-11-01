@@ -182,6 +182,9 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
     if let Some(started) = platform::systemd::spawn(&cmd, &log) {
         return started;
     }
+    if platform::spawn_core_job(&mut cmd, &log) {
+        return Ok(());
+    }
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
     platform::spawn_detached(cmd, log)
 }

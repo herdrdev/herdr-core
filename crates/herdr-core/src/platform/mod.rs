@@ -11,7 +11,37 @@ pub use unix::*;
 pub mod systemd;
 
 #[cfg(target_os = "macos")]
+mod macos_launchd;
+#[cfg(target_os = "macos")]
 mod macos_shutdown;
+
+/// Run before threads or runtime setup: a launchd launcher forks the core here.
+pub fn daemon_startup() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_launchd::startup()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// A parsed serve may have come from an older updater's direct spawn.
+pub fn prepare_core() {
+    #[cfg(target_os = "macos")]
+    macos_launchd::prepare_core();
+}
+
+/// macOS cores leave the app's process coalition; holders inherit the core's.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
+        return macos_launchd::spawn(cmd, log);
+    }
+    false
+}
 
 /// Keep the early shutdown watch alive for the core's lifetime.
 pub fn monitor_host_shutdown() -> impl Sized {
