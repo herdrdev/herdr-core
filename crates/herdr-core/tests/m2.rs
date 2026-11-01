@@ -35,6 +35,26 @@ fn first_paint_then_live_bytes_and_typing() {
 }
 
 #[test]
+fn a_persons_typing_is_timed_and_an_agents_send_is_not() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo ready; while read l; do echo got-$l; done"]);
+    wait_until("ready", || s.json(&["read", &t])["text"].as_str().unwrap().contains("ready"));
+    let record = || s.json(&["get", &t]);
+    assert!(record()["input_ms"].is_null(), "nobody has typed yet");
+    // An agent's send is not a person's typing.
+    s.json(&["send", &t, "from-agent"]);
+    wait_until("send arrives", || s.json(&["read", &t])["text"].as_str().unwrap().contains("got-from-agent"));
+    assert!(record()["input_ms"].is_null(), "send does not count as a person");
+    // An attached viewer's typing does.
+    let mut v = Viewer::attach(&s, &t, 80, 24, json!({}));
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    v.typed(b"hello\r");
+    v.shows("got-hello");
+    let at = record()["input_ms"].as_u64().expect("a person typed");
+    assert!(at >= before, "{at} is not at or after {before}");
+}
+
+#[test]
 fn a_late_viewer_gets_the_win32_input_request_the_program_made_at_start() {
     // ConPTY asks its viewer for win32-input-mode once, at start; the screen can't hold that.
     let s = Session::new();

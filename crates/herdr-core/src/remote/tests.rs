@@ -87,6 +87,10 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     let status: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     assert_eq!(status["params"]["terminal"], "renamed/t1");
     assert_eq!(core.lock().mirrors[&machine.id]["renamed/t1"]["status"]["state"], "blocked");
+    mirror_events(&core, &machine, &line, b"{\"method\":\"event\",\"params\":{\"type\":\"input\",\"terminal\":\"t1\",\"data\":{\"input_ms\":1793000000000}}}\n");
+    let typed: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(typed["params"]["type"], "input");
+    assert_eq!(core.lock().mirrors[&machine.id]["renamed/t1"]["input_ms"], 1793000000000u64);
     core.lock().machines.clear();
     mirror_event(&core, &machine, json!({"type": "doc", "data": {"name": "app", "version": 1}}));
     assert!(rx.try_recv().is_err(), "removed machines must not emit doc events");

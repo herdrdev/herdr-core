@@ -696,6 +696,16 @@
             "description": "Which terminal the program believes it runs in (TERM_PROGRAM and\nversion), fixed at start; XTVERSION answers with it.",
             "type": "string"
           },
+          "input_ms": {
+            "default": null,
+            "description": "When a person last typed into it from an attached viewer, ms since the\nepoch; null if never. Input from an agent (`send`, `keys`, `put`,\n`interrupt`) does not count: it did not come from a person.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "keep": {
             "default": false,
             "description": "Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.",
@@ -1158,6 +1168,16 @@
             "default": "",
             "description": "Which terminal the program believes it runs in (TERM_PROGRAM and\nversion), fixed at start; XTVERSION answers with it.",
             "type": "string"
+          },
+          "input_ms": {
+            "default": null,
+            "description": "When a person last typed into it from an attached viewer, ms since the\nepoch; null if never. Input from an agent (`send`, `keys`, `put`,\n`interrupt`) does not count: it did not come from a person.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "keep": {
             "default": false,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### New
+- `terminal.list` and `terminal.get` say when a person last typed into a terminal (`input_ms`), so an agent can tell a person's typing apart from its own `send` and wait for the terminal to go quiet.
+
 ## [0.1.16] - 2026-10-31
 
 ### Fixed
