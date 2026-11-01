@@ -21,7 +21,7 @@ async fn server_exit_flushes_even_when_background_tasks_still_own_core() {
         finish.await.unwrap();
     }
     drop(background_owner);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
     assert!(waited, "serve returned before its queued snapshot finished");
 }
 
@@ -45,7 +45,7 @@ async fn server_stop_succeeds_even_when_the_registry_flush_times_out() {
     release.send(()).unwrap();
     core.flush_saved().await.unwrap();
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
     assert!(started.elapsed() >= Duration::from_secs(10), "stuck disks must still time out");
     assert_eq!(stop.unwrap()["stopped"], true);
 }
@@ -98,7 +98,7 @@ async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
         };
         let captured = reply["turn"].clone();
         drop(core);
-        std::fs::remove_dir_all(root).unwrap();
+        remove_root(&root);
         assert_eq!(captured, 0, "{method} returned a turn observed after its barrier: {reply}");
     }
 }
@@ -138,7 +138,7 @@ fn a_blocked_registry_write_does_not_hold_the_core_lock() {
     worker.join().unwrap();
     drop(core);
     drop(reader);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
     assert!(returned && unlocked, "saving to a stalled disk must leave output and input free to take the core lock");
 }
 
@@ -190,7 +190,7 @@ fn a_new_holder_of_another_build_reports_both_identities() {
     assert!(core.lock().holders.is_empty());
     fake.join().unwrap();
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 /// A frame no core can read: the reader of a link that gets it fails.
@@ -286,7 +286,7 @@ fn a_link_whose_reading_fails_reconnects_but_not_twice_in_a_row() {
     assert!(core.lock().holders.is_empty());
     assert!(still_live(&core, id));
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[cfg(unix)]
@@ -302,7 +302,7 @@ fn a_reconnect_the_holder_never_answers_gives_up_and_frees_holder_start() {
     assert!(core.holder_start.try_lock().is_ok(), "runs and stops can start holders again");
     assert!(still_live(&core, id));
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[cfg(unix)]
@@ -324,7 +324,7 @@ fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
     assert!(reports.try_iter().all(|r| r != "1 closed"), "and is not cut");
     assert!(still_live(&core, id));
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[cfg(unix)]
@@ -336,7 +336,7 @@ fn a_reconnect_that_fails_leaves_the_holders_terminals_live() {
     assert!(core.lock().holders.is_empty());
     assert!(still_live(&core, id), "its holder still answers: nothing ends");
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[cfg(unix)]
@@ -370,6 +370,20 @@ async fn waiting_for_holder_start_does_not_block_the_core_executor() {
     blocker.join().unwrap();
     assert!(start.await.unwrap().is_err());
     drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
     assert!(answered_while_starting, "holder startup blocked the core executor");
+}
+
+/// Holder threads can keep the core, and so its registry writer, alive a
+/// moment after the test drops it: a last snapshot may still land.
+fn remove_root(root: impl AsRef<std::path::Path>) {
+    let start = Instant::now();
+    loop {
+        match std::fs::remove_dir_all(root.as_ref()) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if start.elapsed() < Duration::from_secs(5) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => panic!("removing {}: {e}", root.as_ref().display()),
+        }
+    }
 }
