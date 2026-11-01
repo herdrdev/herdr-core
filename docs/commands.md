@@ -518,7 +518,7 @@ Options:
 ## hc send
 
 ```text
-Paste text into a terminal and press Enter (waits for a person to pause)
+Paste text into a terminal and press Enter (waits for a person to pause and send what they typed)
 
 Usage: hc send [OPTIONS] <TERMINAL> <TEXT>
 

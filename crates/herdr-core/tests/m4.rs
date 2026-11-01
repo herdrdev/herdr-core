@@ -159,8 +159,8 @@ fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
 
-    // Someone is typing: the send waits for the quiet time.
-    person.typed(b"q");
+    // Someone is pressing keys (an arrow: no draft): the send waits for the quiet time.
+    person.typed(b"\x1b[A");
     let started = Instant::now();
     s.json(&["send", &t, "x"]);
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
@@ -182,6 +182,32 @@ fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
     let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
     let tail: Vec<&str> = bytes.iter().rev().take(5).rev().map(String::as_str).collect();
     assert_eq!(tail, ["61", "62", "63", "0d", "5a"], "all: {bytes:?}");
+}
+
+#[test]
+fn a_send_waits_for_a_person_to_send_what_they_typed() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "10000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+
+    // Half a message, then a pause longer than the quiet time: the send must not submit it.
+    person.typed(b"hey");
+    let sender = {
+        let mut cmd = s.cmd();
+        cmd.args(["send", &t, "x"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!text(&s, &t).contains("78"), "typed into the draft: {}", text(&s, &t));
+
+    let sent = Instant::now();
+    person.typed(b"\r");
+    assert!(sender.join().unwrap().status.success());
+    assert!(sent.elapsed() < Duration::from_secs(5), "held after the draft was sent: {:?}", sent.elapsed());
+    let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
+    let tail: Vec<&str> = bytes.iter().rev().take(6).rev().map(String::as_str).collect();
+    assert_eq!(tail, ["68", "65", "79", "0d", "78", "0d"], "all: {bytes:?}");
 }
 
 #[test]

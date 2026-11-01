@@ -25,9 +25,67 @@ pub struct Gate {
     /// An agent's input is going in right now: keys a person presses wait.
     busy: bool,
     held: Vec<u8>,
+    /// Roughly how many characters a person typed and hasn't sent.
+    draft: usize,
+    /// Inside a person's bracketed paste.
+    pasting: bool,
 }
 
 impl Gate {
+    /// How long agent input must still wait: until a person has paused for
+    /// `quiet` and, for input that submits, until they sent or cleared what they
+    /// typed. A draft holds for at most `HC_DRAFT_MS` after their last key: one
+    /// erased in a way the keys don't show must not hold input forever.
+    pub fn wait(&self, quiet: Duration, submits: bool) -> Duration {
+        let Some(at) = self.last_human else { return Duration::ZERO };
+        let hold = if submits && self.draft > 0 { quiet.max(env_ms("HC_DRAFT_MS", 60_000)) } else { quiet };
+        hold.saturating_sub(at.elapsed())
+    }
+
+    /// Follows a person's draft from their keys: Enter sends it, ctrl+c and
+    /// ctrl+u clear it, backspace takes one back; other key sequences don't count.
+    fn track(&mut self, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.pasting {
+                if bytes[i..].starts_with(b"\x1b[201~") {
+                    self.pasting = false;
+                    i += 6;
+                } else {
+                    self.draft += 1;
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i..].starts_with(b"\x1b[200~") {
+                self.pasting = true;
+                i += 6;
+                continue;
+            }
+            match bytes[i] {
+                b'\r' | 0x03 | 0x15 => self.draft = 0,
+                0x7f | 0x08 => self.draft = self.draft.saturating_sub(1),
+                0x1b => {
+                    // Skip the sequence: ESC [ … final, ESC O x, or alt+x.
+                    i += 1;
+                    match bytes.get(i) {
+                        Some(b'[') => {
+                            i += 1;
+                            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                                i += 1;
+                            }
+                        }
+                        Some(b'O') => i += 1,
+                        _ => {}
+                    }
+                }
+                b if b >= 0x20 && b & 0xc0 != 0x80 => self.draft += 1,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
     /// A person pressed keys while an agent's input was going in.
     pub fn has_held(&self) -> bool {
         !self.held.is_empty()
@@ -43,6 +101,7 @@ impl Gate {
     /// Returns what to write now.
     pub fn human(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.last_human = Some(Instant::now());
+        self.track(bytes);
         if self.busy {
             self.held.extend_from_slice(bytes);
             Vec::new()
@@ -102,20 +161,23 @@ pub enum Interrupted {
 impl Core {
     /// Types `steps` (built by `prepare` from the live state) into terminal `id`.
     /// `quiet`: how long a person must have stopped typing first (zero: don't wait).
+    /// `submits`: the steps press Enter, so they also wait out a person's unsent draft.
     pub async fn type_in<T>(
         &self,
         id: u32,
         quiet: Duration,
+        submits: bool,
         prepare: impl FnOnce(&State, &Terminal) -> Result<(T, Vec<Step>), RpcError>,
     ) -> Result<T, RpcError> {
         let queue = self.lock().queues.entry(id).or_default().clone();
         let _turn = queue.lock().await;
         loop {
-            let left = self.lock().gates.get(&id).and_then(|g| g.last_human).map(|t| quiet.saturating_sub(t.elapsed()));
-            match left {
-                Some(left) if !left.is_zero() => tokio::time::sleep(left).await,
-                _ => break,
+            let left = self.lock().gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, submits));
+            if left.is_zero() {
+                break;
             }
+            // Look again soon: sending or clearing a draft ends the hold early.
+            tokio::time::sleep(left.min(Duration::from_millis(50))).await;
         }
         let (out, steps) = {
             let mut st = self.lock();
@@ -159,7 +221,7 @@ impl Core {
         }
         self.settle(id).await?;
         let (status, turn, reported) = self
-            .type_in(id, quiet(), |st, t| {
+            .type_in(id, quiet(), true, |st, t| {
                 let word = state_word(t);
                 if word.as_deref() == Some("blocked") && !force {
                     return Err(RpcError::new(
@@ -246,7 +308,7 @@ impl Core {
 
     /// Named keys, after a person has paused typing.
     pub async fn keys(&self, id: u32, names: &[String]) -> Result<(Option<String>, u64), RpcError> {
-        self.type_in(id, quiet(), |st, t| {
+        self.type_in(id, quiet(), false, |st, t| {
             let screen = st.screens.get(&id).expect("live terminal has a screen");
             let mut steps = Vec::new();
             for name in names {
@@ -268,7 +330,7 @@ impl Core {
         };
         let before = if reported { -1 } else { self.foreground(id).await };
         let key = self
-            .type_in(id, Duration::ZERO, |st, t| {
+            .type_in(id, Duration::ZERO, false, |st, t| {
                 let default = if reported { "esc" } else { "ctrl+c" };
                 let key = t.stop.clone().unwrap_or_else(|| default.into());
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
@@ -326,5 +388,21 @@ mod tests {
         assert_eq!(paste(true, "hi"), b"\x1b[200~hi\x1b[201~");
         assert_eq!(paste(false, "hi"), b"hi");
         assert_eq!(paste(true, "a\x1b[201~b"), b"\x1b[200~ab\x1b[201~");
+    }
+
+    #[test]
+    fn a_draft_lasts_until_the_person_sends_or_clears_it() {
+        let draft = |keys: &[&[u8]]| {
+            let mut g = Gate::default();
+            keys.iter().for_each(|k| g.track(k));
+            g.draft
+        };
+        assert_eq!(draft(&[b"hey", "é".as_bytes()]), 4);
+        assert_eq!(draft(&[b"hey\r"]), 0, "Enter sends it");
+        assert_eq!(draft(&[b"hey", b"\x15"]), 0, "ctrl+u clears it");
+        assert_eq!(draft(&[b"hi", b"\x7f\x7f\x7f"]), 0, "backspaced away");
+        assert_eq!(draft(&[b"\x1b[A\x1bOB\x1bb\x1b[13;2u"]), 0, "arrows, alt+b, shift+enter type nothing");
+        assert_eq!(draft(&[b"\x1b[200~a\rb\x1b[201~"]), 3, "a pasted Enter doesn't send");
+        assert_eq!(draft(&[b"\x1b[200~ab", b"c\x1b[201~", b"\r"]), 0, "a paste across reads, then sent");
     }
 }
