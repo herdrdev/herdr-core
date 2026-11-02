@@ -637,6 +637,7 @@ fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), Rp
         outlive_parent: p.outlive_parent || q.outlive_parent,
         rm: p.rm || q.rm,
         keep: p.keep || q.keep,
+        login: p.login || q.login,
         bg: p.bg || q.bg,
         timeout: q.timeout.or(p.timeout),
         ..p

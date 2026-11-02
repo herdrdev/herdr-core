@@ -15,7 +15,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
     settings.login_shell()?;
     // A login shell reads the profile files too: a caller can ask for one, and
     // the setting can ask for it for the shells this core starts.
-    let login = settings.login_by_setting()?;
+    let login = p.login || settings.login_by_setting()?;
     match (&template, p.line.take(), p.argv.is_empty()) {
         // A shell line (VAR=value prefixes, quotes, ~); sh replaces itself with a single command.
         (Some(t), None, _) => p.argv = vec!["sh".into(), "-c".into(), t.command.clone()],

@@ -1682,6 +1682,16 @@
           }
         },
         {
+          "description": "Start it as a login shell: it reads the profile files too.",
+          "name": "login",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Start it as a login shell: it reads the profile files too.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Name, unique among live terminals: 1-32 of a-z 0-9 - _ .",
           "name": "name",
           "required": false,

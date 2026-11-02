@@ -501,6 +501,7 @@ Options:
       --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
       --rm                 Remove it right after it exits (once a waiting parent has the exit code)
       --keep               Replace lost programs with a shell in place, never re-run the original command
+      --login              Start it as a login shell: it reads the profile files too
       --bg                 Start it and come back at once (a server, several workers)
       --timeout <TIMEOUT>  Seconds before a wait checks in, leaving it running (default: config `wait_timeout`, else 180)
   -h, --help               Print help

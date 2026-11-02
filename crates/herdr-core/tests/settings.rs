@@ -73,6 +73,14 @@ fn a_non_login_setting_keeps_the_macos_login_shell_off() {
 }
 
 #[test]
+fn an_explicit_request_still_asks_for_a_login_shell() {
+    let s = Session::new();
+    config(&s, "shell_mode = \"non_login\"\n");
+    let t = run(&s, &["--login", "sh", "-c", "echo $0"]);
+    wait_until("the shell", || text(&s, &t).contains("-sh"));
+}
+
+#[test]
 fn a_caller_can_ask_for_a_login_shell() {
     let s = Session::new();
     let t = run(&s, &["--login", "sh", "-c", "echo $0"]);

@@ -138,6 +138,7 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Use the returned address to wait/read it; don't launch a duplicate.
 With `shell_mode = "login"` in `~/.config/herdr-core/config.toml`, the
 machine's own shell starts as a login shell: it reads the profile files too.
+`hc run --login <shell>` starts the program it names as a login shell.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
 `hc put <t> <file>` sends a file beside a terminal and prints its destination.
 `hc label <t> key=value` adds labels.
