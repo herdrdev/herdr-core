@@ -3,6 +3,10 @@
     "schemas": {
       "AttachResult": {
         "properties": {
+          "automatic_input": {
+            "description": "The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.",
+            "type": "boolean"
+          },
           "channel": {
             "description": "Stream channel: first paint, then live bytes. Send keys as DATA on it;\nRESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.",
             "format": "uint32",
@@ -20,7 +24,8 @@
         "required": [
           "channel",
           "terminal",
-          "resize_notifications"
+          "resize_notifications",
+          "automatic_input"
         ],
         "type": "object"
       },

@@ -6,6 +6,7 @@ use super::*;
 /// line is back, it is attached again on the same channel here.
 #[derive(Clone)]
 pub struct Relayed {
+    pub automatic_input: bool,
     pub line: Arc<Line>,
     pub there: u32,
     pub conn: Arc<Conn>,
@@ -40,7 +41,17 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         if !st.relayed.contains_key(&(key, here)) {
             continue;
         }
-        match reply.ok().and_then(|reply| reply["channel"].as_u64()) {
+        let reply = reply.ok();
+        if r.automatic_input && reply.as_ref().is_some_and(|reply| !automatic_input(&line, reply)) {
+            st.relayed.remove(&(key, here));
+            if let Some(there) = reply.as_ref().and_then(|reply| reply["channel"].as_u64()) {
+                lock(&line.streams).remove(&(there as u32));
+                let _ = line.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
+            }
+            r.conn.with(|out| out.close(here, b""));
+            continue;
+        }
+        match reply.and_then(|reply| reply["channel"].as_u64()) {
             Some(there) => {
                 st.relayed.insert((key, here), Relayed { line: line.clone(), there: there as u32, ..r });
             }
@@ -56,6 +67,10 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
             }
         }
     }
+}
+
+pub(super) fn automatic_input(line: &Line, reply: &Value) -> bool {
+    line.features.iter().any(|f| f == "automatic_input") && reply["automatic_input"] == true
 }
 
 pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
@@ -83,7 +98,9 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
                 && r["resize_notifications"] == true;
             r["resize_notifications"] = enabled.into();
             params["resize_notifications"] = enabled.into();
-            let viewer = Relayed { line, there, conn: conn.clone(), machine: m.id.clone(), params };
+            let automatic_input = automatic_input(&line, &r);
+            r["automatic_input"] = automatic_input.into();
+            let viewer = Relayed { automatic_input, line, there, conn: conn.clone(), machine: m.id.clone(), params };
             core.lock().relayed.insert((conn_key(conn), here), viewer);
             r["channel"] = here.into();
             Ok(localize(core, &m.name, &[], r))

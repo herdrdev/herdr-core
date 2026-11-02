@@ -22,28 +22,37 @@ const SETTLE_MAX: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub struct Gate {
     last_human: Option<Instant>,
-    /// An agent's input is going in right now: keys a person presses wait.
+    /// An agent's input is going in right now: viewer input waits.
     busy: bool,
     held: Vec<u8>,
+    held_human: bool,
 }
 
 impl Gate {
     /// A person pressed keys while an agent's input was going in.
     pub fn has_held(&self) -> bool {
-        !self.held.is_empty()
+        self.held_human
     }
 
-    /// Starts or ends an agent's input; ending returns the keys a person pressed meanwhile.
+    /// Starts or ends an agent's input; ending returns the viewer bytes held meanwhile.
     pub fn set_busy(&mut self, busy: bool) -> Vec<u8> {
         self.busy = busy;
-        if busy { Vec::new() } else { std::mem::take(&mut self.held) }
+        if busy {
+            Vec::new()
+        } else {
+            self.held_human = false;
+            std::mem::take(&mut self.held)
+        }
     }
 
-    /// A typing viewer's keys: straight through, or held while an agent types.
-    /// Returns what to write now.
-    pub fn human(&mut self, bytes: &[u8]) -> Vec<u8> {
-        self.last_human = Some(Instant::now());
+    /// Viewer bytes: straight through, or held while an agent types.
+    /// Only human input resets the quiet period.
+    pub fn viewer(&mut self, bytes: &[u8], human: bool) -> Vec<u8> {
+        if human {
+            self.last_human = Some(Instant::now());
+        }
         if self.busy {
+            self.held_human |= human && !bytes.is_empty();
             self.held.extend_from_slice(bytes);
             Vec::new()
         } else {
@@ -143,8 +152,7 @@ impl Core {
         }
         let mut st = self.lock();
         let gate = st.gates.entry(id).or_default();
-        gate.busy = false;
-        let held = std::mem::take(&mut gate.held);
+        let held = gate.set_busy(false);
         if let Some(link) = st.link(id) {
             link.input(id, &held);
         }
@@ -320,6 +328,23 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_replies_preserve_the_human_quiet_gate() {
+        let mut gate = Gate::default();
+        assert_eq!(gate.viewer(b"reply", false), b"reply");
+        assert!(gate.last_human.is_none());
+        gate.viewer(b"x", true);
+        let human = gate.last_human;
+        gate.set_busy(true);
+        assert!(gate.viewer(b"automatic", false).is_empty());
+        assert!(!gate.has_held(), "automatic replies are not a person interrupting a scroll");
+        assert_eq!(gate.last_human, human);
+        gate.viewer(b"typed", true);
+        assert!(gate.has_held());
+        assert_eq!(gate.set_busy(false), b"automatictyped");
+        assert!(!gate.has_held());
+    }
 
     #[test]
     fn pastes_are_bracketed_only_when_asked_and_cannot_end_early() {

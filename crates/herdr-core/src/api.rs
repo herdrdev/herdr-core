@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell", "resize_notifications"];
+pub const FEATURES: &[&str] =
+    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -436,6 +437,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
         channel,
         terminal: Public(record(core, id)?),
         resize_notifications: p.observe && p.resize_notifications,
+        automatic_input: true,
     })
 }
 

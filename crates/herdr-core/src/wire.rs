@@ -19,6 +19,8 @@ pub const RESIZE: u8 = 3;
 pub const FOCUS: u8 = 4;
 /// Viewer → core: JSON display facts (colors, cell size).
 pub const FACTS: u8 = 5;
+/// Viewer → core: terminal-generated replies, not human activity.
+pub const AUTOMATIC_INPUT: u8 = 6;
 
 /// Credit a stream starts with before the viewer acknowledges anything.
 pub const WINDOW: usize = 256 * 1024;

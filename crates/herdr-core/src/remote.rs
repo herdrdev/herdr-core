@@ -23,6 +23,8 @@ type Sink = (Arc<Conn>, u32);
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
 mod viewers;
+#[cfg(test)]
+use viewers::automatic_input;
 use viewers::{RESIZE_LOST, negotiate_resize, reattach};
 pub use viewers::{Relayed, attach, conn_gone, relay_in};
 

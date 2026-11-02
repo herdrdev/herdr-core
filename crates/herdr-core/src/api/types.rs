@@ -412,6 +412,8 @@ pub struct AttachResult {
     /// True only when the entire path sends RESIZE before replacement paints.
     /// False or absent means the observer must track size changes separately.
     pub resize_notifications: bool,
+    /// The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.
+    pub automatic_input: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema, Default)]

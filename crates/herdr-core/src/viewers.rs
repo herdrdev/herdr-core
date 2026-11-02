@@ -236,10 +236,15 @@ impl Core {
         Some(id)
     }
 
-    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8]) {
+    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8], automatic: bool) {
         let mut st = self.lock();
-        if let Some(id) = self.touch(&mut st, conn, channel, |_| {}) {
-            let now = st.gates.entry(id).or_default().human(bytes);
+        let id = if automatic {
+            Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
+        } else {
+            self.touch(&mut st, conn, channel, |_| {})
+        };
+        if let Some(id) = id {
+            let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
