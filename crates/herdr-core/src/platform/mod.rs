@@ -114,6 +114,7 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
         .expect("environment reader panicked");
     }
     env.retain(|k, _| !SSH_LOGIN.contains(&k.as_str()));
+    drop_unreachable_displays(&mut env);
     env
 }
 
