@@ -67,6 +67,11 @@ pub struct Terminal {
     /// Goes up each time the status leaves `working`.
     #[serde(default)]
     pub turn: u64,
+    /// When a person last typed into it from an attached viewer, ms since the
+    /// epoch; null if never. Input from an agent (`send`, `keys`, `put`,
+    /// `interrupt`) does not count: it did not come from a person.
+    #[serde(default)]
+    pub input_ms: Option<u64>,
     /// Whether the program ever sent a 7501 report.
     #[serde(default)]
     pub reported: bool,
@@ -274,6 +279,7 @@ impl Registry {
                 identity: new.identity,
                 status: None,
                 status_ms: None,
+                input_ms: None,
                 records: BTreeMap::new(),
                 turn: 0,
                 reported: false,

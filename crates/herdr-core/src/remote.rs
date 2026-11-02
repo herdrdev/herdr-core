@@ -561,6 +561,7 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         }
         "status" => set(record, &["status", "records", "reported"]),
         "turn" => set(record, &["turn"]),
+        "input" => set(record, &["input_ms"]),
         "title" => set(record, &["title"]),
         "labels" => set(record, &["labels"]),
         "keep" => set(record, &["keep"]),

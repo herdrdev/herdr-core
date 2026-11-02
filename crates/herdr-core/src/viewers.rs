@@ -240,6 +240,13 @@ impl Core {
         let mut st = self.lock();
         if let Some(id) = self.touch(&mut st, conn, channel, |_| {}) {
             let now = st.gates.entry(id).or_default().human(bytes);
+            // A person typed: tell every client when, so an agent can wait until
+            // they have stopped (or until they have had the terminal a while).
+            let at = crate::runtime::now_ms();
+            if let Some(t) = st.reg.terminals.get_mut(&id) {
+                t.input_ms = Some(at);
+            }
+            self.emit(&mut st, "input", id, serde_json::json!({"input_ms": at}));
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }

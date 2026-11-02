@@ -122,6 +122,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `removed` | `{}` | drop it |
 | `status` | `{status, records, reported}`: the root status (null when cleared), every record by key, whether it ever reported | replace all three |
 | `turn` | `{turn, state}`: the turn counter after a turn ended, and the word it ended on | set `turn` |
+| `input` | `{input_ms}`: when a person last typed into it from an attached viewer, ms since the epoch; an agent's `send`, `keys`, `put` or `interrupt` never sets it | set `input_ms` |
 | `title` | `{title}` | set `title` |
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
