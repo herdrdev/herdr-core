@@ -555,7 +555,7 @@ fn raw_hello(socket: &std::path::Path) -> (std::os::unix::net::UnixStream, proto
 fn raw_spawn(core: &mut std::os::unix::net::UnixStream, id: u32, argv: &[&str]) {
     let env = [("PATH".to_string(), std::env::var("PATH").unwrap())].into();
     let argv = argv.iter().map(|a| a.to_string()).collect();
-    let spawn = proto::Spawn { argv, env, cwd: "/".into(), cols: 80, rows: 24 };
+    let spawn = proto::Spawn { argv, env, cwd: "/".into(), cols: 80, rows: 24, login: false };
     raw_send(core, proto::json_frame(proto::SPAWN, id, &spawn));
 }
 

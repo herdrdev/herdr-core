@@ -15,15 +15,22 @@ use windows_sys::Win32::System::Threading::*;
 /// This machine's own shell: PowerShell 7 if installed, else Windows PowerShell.
 /// PowerShell's `cd` never tells Windows, so hc couldn't see its folder: each
 /// prompt does, after the person's own prompt ran (it reads `$?`).
-pub fn own_shell() -> Vec<String> {
+/// PowerShell reads its profile without being asked: a login shell is what it
+/// already is.
+pub fn own_shell(_login: bool) -> Vec<String> {
     let on_path = |exe: &str| {
         std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(exe).is_file()))
     };
     let exe = if on_path("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
-    let hook = "$global:__hc_prompt = $function:prompt; function global:prompt { $p = & $global:__hc_prompt; \
+    let hook = "$global:__hc_prompt = $function:prompt; function global:prompt { $p = $global:__hc_prompt; \
                 $l = $ExecutionContext.SessionState.Path.CurrentLocation; \
                 if ($l.Provider.Name -eq 'FileSystem') { try { [Environment]::CurrentDirectory = $l.ProviderPath } catch {} }; $p }";
     [exe, "-NoExit", "-Command", hook].map(String::from).to_vec()
+}
+
+/// Whether this platform starts its own shell as a login shell by default.
+pub fn login_shell_by_default() -> bool {
+    false
 }
 
 /// A shell line as this machine runs one: cmd reads the rest of its command

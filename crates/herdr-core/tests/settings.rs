@@ -35,6 +35,84 @@ fn headless_size_and_history_come_from_config() {
 }
 
 #[test]
+fn the_machine_shell_is_a_login_shell_when_the_setting_says_so() {
+    // A login shell is one whose name starts with a dash: that is how a shell
+    // knows to read the profile files. $0 is that name.
+    let s = Session::new();
+    config(&s, "shell_mode = \"login\"\nshell = [\"sh\", \"-c\", \"echo $0\"]\n");
+    let t = run(&s, &[]);
+    wait_until("the shell", || text(&s, &t).contains("-sh"));
+}
+
+#[test]
+fn without_the_setting_the_machine_shell_is_not_a_login_shell() {
+    let s = Session::new();
+    config(&s, "shell = [\"sh\", \"-c\", \"echo $0\"]\n");
+    let t = run(&s, &[]);
+    wait_until("the shell", || text(&s, &t).contains("sh"));
+    assert!(!text(&s, &t).contains("-sh"), "the shell was a login shell anyway");
+}
+
+#[test]
+fn a_non_login_setting_keeps_the_machine_shell_from_being_a_login_one() {
+    let s = Session::new();
+    config(&s, "shell_mode = \"non_login\"\nshell = [\"sh\", \"-c\", \"echo $0\"]\n");
+    let t = run(&s, &[]);
+    wait_until("the shell", || text(&s, &t).contains("sh"));
+    assert!(!text(&s, &t).contains("-sh"), "the shell was a login shell anyway");
+}
+
+#[test]
+fn a_non_login_setting_keeps_the_macos_login_shell_off() {
+    let mut s = Session::new();
+    s.env.push(("SHELL".into(), "/bin/sh".into()));
+    config(&s, "shell_mode = \"non_login\"\n");
+    let t = run(&s, &[]);
+    // macOS starts its own shell with -l; the setting says no.
+    assert_eq!(get(&s, &t)["argv"], serde_json::json!(["/bin/sh"]));
+}
+
+#[test]
+fn a_caller_can_ask_for_a_login_shell() {
+    let s = Session::new();
+    let t = run(&s, &["--login", "sh", "-c", "echo $0"]);
+    wait_until("the shell", || text(&s, &t).contains("-sh"));
+
+    let t = run(&s, &["sh", "-c", "echo $0"]);
+    wait_until("the shell", || text(&s, &t).contains("sh"));
+    assert!(!text(&s, &t).contains("-sh"), "the shell was a login shell anyway");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_login_shell_reads_the_profile_files() {
+    let s = Session::new();
+    std::fs::write(s.root.join(".profile"), "echo HC_PROFILE_READ\n").unwrap();
+    config(&s, "shell_mode = \"login\"\n");
+    let t = run(&s, &[]);
+    wait_until("the profile", || text(&s, &t).contains("HC_PROFILE_READ"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shell_that_is_not_a_login_one_reads_no_profile() {
+    let s = Session::new();
+    std::fs::write(s.root.join(".profile"), "echo HC_PROFILE_READ\n").unwrap();
+    config(&s, "shell_mode = \"non_login\"\n");
+    let t = run(&s, &[]);
+    wait_until("the prompt", || !text(&s, &t).is_empty());
+    assert!(!text(&s, &t).contains("HC_PROFILE_READ"), "the shell read the profile anyway");
+}
+
+#[test]
+fn a_broken_shell_mode_is_a_config_error() {
+    let s = Session::new();
+    config(&s, "shell_mode = \"yes\"\n");
+    let (code, err) = s.err(&["run", "--bg", "true"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (8, Some("config")));
+}
+
+#[test]
 fn long_session_names_fit_in_a_socket_path_or_say_so() {
     // macOS allows 104 bytes for a socket path; the session name is in it twice.
     let mut s = Session::new();

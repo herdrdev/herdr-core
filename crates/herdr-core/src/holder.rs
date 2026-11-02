@@ -339,7 +339,7 @@ impl Holder {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
             return self.to_core(&mut st, &frame);
         }
-        let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
+        let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows, spec.login)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
         let frame = match started {
             Err(e) => {

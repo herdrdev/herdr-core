@@ -9,12 +9,19 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
         None => None,
     };
     let first = template.as_ref().map(|t| crate::templates::first_message(t, &p.argv[1..].join(" ")));
+    let settings = crate::config::load(&core.paths.config)?;
+    // The setting is checked even where it does not apply: a broken one is a
+    // broken config.
+    settings.login_shell()?;
+    // A login shell reads the profile files too: a caller can ask for one, and
+    // the setting can ask for it for the shells this core starts.
+    let login = settings.login_by_setting()?;
     match (&template, p.line.take(), p.argv.is_empty()) {
         // A shell line (VAR=value prefixes, quotes, ~); sh replaces itself with a single command.
         (Some(t), None, _) => p.argv = vec!["sh".into(), "-c".into(), t.command.clone()],
         // The shell is this machine's: the caller may be on another kind.
         (None, Some(line), true) => p.argv = crate::platform::shell_line(&line),
-        (None, None, true) => p.argv = crate::config::load(&core.paths.config)?.shell()?,
+        (None, None, true) => p.argv = settings.shell()?,
         (None, None, false) => {}
         _ => return Err(RpcError::invalid_params("give argv or line, not both")),
     }
@@ -27,7 +34,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
             p.env.insert(pager.into(), "cat".into());
         }
     }
-    let started = start(core, p, template).await?;
+    let started = start(core, p, template, &settings, login).await?;
     let id = started.id();
     let first_message = match first.filter(|text| !text.is_empty()) {
         Some(text) => Some(core.first_message(id, quiet_ready, &text, caller.as_deref()).await),
@@ -85,6 +92,8 @@ pub(super) async fn start(
     core: &Arc<Core>,
     p: RunParams,
     template: Option<crate::templates::Template>,
+    settings: &crate::config::Config,
+    login: bool,
 ) -> Result<Terminal, RpcError> {
     not_stopping(&core.lock())?;
     core.ensure_holder().await.map_err(|e| {
@@ -94,7 +103,6 @@ pub(super) async fn start(
             "run hc server restart on this machine, then retry; see holder.log and core.log in the state directory",
         )
     })?;
-    let settings = crate::config::load(&core.paths.config)?;
     let (cols, rows) = settings.headless()?;
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
@@ -157,7 +165,7 @@ pub(super) async fn start(
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
         st.reg.terminals.get_mut(&id).expect("just created").restart_env = p.env;
-        let spawn = proto::Spawn { argv: p.argv, env, cwd, cols, rows };
+        let spawn = proto::Spawn { argv: p.argv, env, cwd, cols, rows, login };
         st.reg.terminals.get_mut(&id).expect("just created").holder = Some(instance);
         // Queue the snapshot before spawning; the next start kills any unrecorded spawn.
         core.save(&st);

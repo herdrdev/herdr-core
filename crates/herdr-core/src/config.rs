@@ -27,15 +27,56 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+    /// How the machine's own shell starts: "login" makes it a login shell (it
+    /// reads the profile files too), "non_login" keeps it from being one,
+    /// "auto" (the default) leaves it to the platform.
+    pub shell_mode: Option<String>,
+}
+
+/// How the machine's own shell starts.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShellMode {
+    /// The platform's way: on macOS the own shell is a login shell.
+    Auto,
+    /// A login shell: it reads the profile files too.
+    Login,
+    /// Not a login shell.
+    NonLogin,
 }
 
 impl Config {
     pub fn shell(&self) -> Result<Vec<String>, RpcError> {
         match &self.shell {
-            None => Ok(crate::platform::own_shell()),
+            None => Ok(crate::platform::own_shell(self.login_shell()?)),
             Some(argv) if argv.first().is_some_and(|exe| !exe.is_empty()) => Ok(argv.clone()),
             Some(_) => Err(invalid("shell: give an executable and optional arguments, like [\"nu\"]".into())),
         }
+    }
+
+    /// The setting, as it is written.
+    pub fn shell_mode(&self) -> Result<ShellMode, RpcError> {
+        match self.shell_mode.as_deref() {
+            None | Some("auto") => Ok(ShellMode::Auto),
+            Some("login") => Ok(ShellMode::Login),
+            Some("non_login") => Ok(ShellMode::NonLogin),
+            Some(other) => Err(invalid(format!("shell_mode {other:?}: use \"auto\", \"login\" or \"non_login\""))),
+        }
+    }
+
+    /// Whether the machine's own shell is a login shell. "auto" leaves it to
+    /// the platform.
+    pub fn login_shell(&self) -> Result<bool, RpcError> {
+        Ok(match self.shell_mode()? {
+            ShellMode::Auto => crate::platform::login_shell_by_default(),
+            ShellMode::Login => true,
+            ShellMode::NonLogin => false,
+        })
+    }
+
+    /// Whether a shell this core starts is a login shell because the setting
+    /// says so. "auto" leaves it to the platform.
+    pub fn login_by_setting(&self) -> Result<bool, RpcError> {
+        Ok(self.shell_mode()? == ShellMode::Login)
     }
 
     pub fn headless(&self) -> Result<(u16, u16), RpcError> {
@@ -96,6 +137,24 @@ mod tests {
 
     fn key(spec: &str) -> Result<DetachKey, RpcError> {
         Config { detach_key: Some(spec.into()), ..Default::default() }.detach_key()
+    }
+
+    #[test]
+    fn shell_mode_says_whether_the_machine_shell_is_a_login_one() {
+        let platform = crate::platform::login_shell_by_default();
+        assert_eq!(Config::default().shell_mode().unwrap(), ShellMode::Auto);
+        assert_eq!(Config::default().login_shell().unwrap(), platform);
+        assert_eq!(Config { shell_mode: Some("auto".into()), ..Default::default() }.login_shell().unwrap(), platform);
+        assert!(Config { shell_mode: Some("login".into()), ..Default::default() }.login_shell().unwrap());
+        assert!(!Config { shell_mode: Some("non_login".into()), ..Default::default() }.login_shell().unwrap());
+        // "auto" leaves it to the platform; "login" asks for it.
+        assert!(!Config::default().login_by_setting().unwrap());
+        assert!(Config { shell_mode: Some("login".into()), ..Default::default() }.login_by_setting().unwrap());
+        assert!(!Config { shell_mode: Some("non_login".into()), ..Default::default() }.login_by_setting().unwrap());
+        assert_eq!(
+            Config { shell_mode: Some("yes".into()), ..Default::default() }.shell_mode().unwrap_err().kind,
+            "config"
+        );
     }
 
     #[test]

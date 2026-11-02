@@ -165,10 +165,16 @@ pub fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
     status.signal()
 }
 
-/// This machine's own shell, as a person here gets it.
-pub fn own_shell() -> Vec<String> {
+/// This machine's own shell, as a person here gets it. A login shell is the
+/// one a login session starts: on macOS that is the norm.
+pub fn own_shell(login: bool) -> Vec<String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
-    if cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
+    if login && cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
+}
+
+/// Whether this platform starts its own shell as a login shell by default.
+pub fn login_shell_by_default() -> bool {
+    cfg!(target_os = "macos")
 }
 
 /// A shell line as this machine runs one.
@@ -268,13 +274,16 @@ pub struct Pty {
 
 pub type Process = Child;
 
-/// Starts `argv` on a new terminal of `cols`x`rows`.
+/// Starts `argv` on a new terminal of `cols`x`rows`. A login shell starts
+/// with its name dashed, the way a person gets one: it reads the profile
+/// files too.
 pub fn spawn_pty(
     argv: &[String],
     env: &std::collections::BTreeMap<String, String>,
     cwd: &str,
     cols: u16,
     rows: u16,
+    login: bool,
 ) -> io::Result<(Pty, Process)> {
     let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
     let (mut master, mut slave) = (0, 0);
@@ -288,6 +297,12 @@ pub fn spawn_pty(
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
     let mut cmd = Command::new(program);
+    if login {
+        // A login shell is one whose name starts with a dash: it reads the
+        // profile files, the way a person's login shell does.
+        let name = program.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(program);
+        cmd.arg0(format!("-{name}"));
+    }
     cmd.args(&argv[1..])
         .env_clear()
         .envs(env)
