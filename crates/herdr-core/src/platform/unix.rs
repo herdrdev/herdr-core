@@ -293,8 +293,12 @@ mod tests {
         assert!(display_is_live("127.0.0.1:2", &sockets));
         drop(listener);
         assert!(!display_is_live(":1", &sockets));
-        std::fs::write(sockets.join("X2"), "").unwrap();
-        assert!(!display_is_live(":2", &sockets));
+        // macOS answers a connect to a regular file with an errno we treat as uncertain.
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::write(sockets.join("X2"), "").unwrap();
+            assert!(!display_is_live(":2", &sockets));
+        }
         std::fs::remove_dir_all(&sockets).unwrap();
     }
 
@@ -360,8 +364,11 @@ mod tests {
         assert!(wayland_is_live("wayland-0", None));
         drop(listener);
         assert!(!wayland_is_live("wayland-0", Some(&runtime)));
-        std::fs::write(runtime.join("regular-file"), "").unwrap();
-        assert!(!wayland_is_live("regular-file", Some(&runtime)));
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::write(runtime.join("regular-file"), "").unwrap();
+            assert!(!wayland_is_live("regular-file", Some(&runtime)));
+        }
         std::fs::remove_dir_all(&runtime).unwrap();
     }
 }
