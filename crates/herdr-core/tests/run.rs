@@ -14,6 +14,26 @@ fn hc(s: &Session, args: &[&str]) -> (i32, String) {
 }
 
 #[test]
+fn initial_size_is_optional_and_applies_before_the_program_starts() {
+    use serde_json::{Value, json};
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let mut conn = s.connect();
+    for (id, size, expected) in [(1, Value::Null, "120 200"), (2, json!({"cols": 73, "rows": 19}), "19 73")] {
+        let mut params = json!({"argv": ["sh", "-c", "stty size"], "wait": true});
+        if !size.is_null() {
+            params["size"] = size;
+        }
+        let reply = conn.call(id, "terminal.run", params);
+        assert_eq!(reply["result"]["output"].as_str().unwrap().trim(), expected, "{reply}");
+    }
+    for size in [json!({"cols": 0, "rows": 19}), json!({"cols": 73, "rows": 0}), json!({"cols": 73})] {
+        let reply = conn.call(3, "terminal.run", json!({"argv": ["sh", "-c", "stty size"], "size": size}));
+        assert_eq!(reply["error"]["data"]["kind"], "invalid_params", "{reply}");
+    }
+}
+
+#[test]
 fn a_quick_command_returns_its_output_and_exit_code_and_leaves_no_note() {
     let mut s = Session::new();
     s.env.push(("HC_QUIET_MS".into(), "0".into()));

@@ -185,6 +185,16 @@ pub struct StopResult {
     pub stopped: bool,
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct InitialSize {
+    /// Initial terminal width in columns (at least 1).
+    #[schemars(range(min = 1))]
+    pub cols: u16,
+    /// Initial terminal height in rows (at least 1).
+    #[schemars(range(min = 1))]
+    pub rows: u16,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct RunParams {
     /// Program and arguments, or a template name and its task. With neither
@@ -198,6 +208,11 @@ pub struct RunParams {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<String>,
+    /// Initial size before the program starts. Omitted: the configured
+    /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<InitialSize>,
     /// Name, unique among live terminals: 1-32 of a-z 0-9 - _ .
     #[arg(long)]
     pub name: Option<String>,

@@ -95,7 +95,11 @@ pub(super) async fn start(
         )
     })?;
     let settings = crate::config::load(&core.paths.config)?;
-    let (cols, rows) = settings.headless()?;
+    let (cols, rows) = match p.size {
+        Some(size) if size.cols > 0 && size.rows > 0 => (size.cols, size.rows),
+        Some(_) => return Err(RpcError::invalid_params("size.cols and size.rows must be at least 1")),
+        None => settings.headless()?,
+    };
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);

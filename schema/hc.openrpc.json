@@ -373,6 +373,29 @@
         ],
         "type": "string"
       },
+      "InitialSize": {
+        "properties": {
+          "cols": {
+            "description": "Initial terminal width in columns (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Initial terminal height in rows (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "type": "object"
+      },
       "InterruptResult": {
         "properties": {
           "key": {
@@ -1755,6 +1778,22 @@
             "default": false,
             "description": "Remove it right after it exits (once a waiting parent has the exit code).",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "name": "size",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitialSize"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
           }
         },
         {

@@ -109,6 +109,11 @@ error, exited); inspect its screen.
 
 ## Run programs
 
+API clients that already know a terminal's pane size can pass `size: {cols, rows}`
+to `terminal.run` (both positive). It applies before the program starts. Omit it
+for the unchanged configured headless size (default 200×120); later viewers
+still resize the terminal normally.
+
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
 hc run "cd app && bun test"        # one quoted string is a shell command
