@@ -187,6 +187,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
+- Programs get the login session's environment. A `DISPLAY` whose X server is
+  not there is left out: a clipboard tool would fail on it instead of using
+  its own. A display on another machine is left as it is.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on

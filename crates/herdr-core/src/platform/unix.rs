@@ -171,9 +171,112 @@ pub fn own_shell() -> Vec<String> {
     if cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
 }
 
+/// Drops a display whose server is not there, or whose cookie is gone: a
+/// program that reaches for the clipboard then finds none of its own, instead
+/// of failing with an error about a display that died with its session.
+pub fn drop_unreachable_displays(env: &mut std::collections::BTreeMap<String, String>) {
+    if let Some(display) = env.get("DISPLAY").cloned()
+        && (!display_is_live(&display, Path::new("/tmp/.X11-unix")) || !cookie_is_there(env))
+    {
+        env.remove("DISPLAY");
+        env.remove("XAUTHORITY");
+    }
+    if let Some(display) = env.get("WAYLAND_DISPLAY").cloned() {
+        let runtime = env.get("XDG_RUNTIME_DIR").map(std::path::Path::new);
+        if !wayland_is_live(&display, runtime) {
+            env.remove("WAYLAND_DISPLAY");
+        }
+    }
+}
+
+/// Whether the cookie an XAUTHORITY names is there: a session's cookie is
+/// gone with the session, and the server then refuses the connection. Without
+/// an XAUTHORITY the default is ~/.Xauthority, which we do not look for: a
+/// server that wants no cookie has none.
+fn cookie_is_there(env: &std::collections::BTreeMap<String, String>) -> bool {
+    env.get("XAUTHORITY").is_none_or(|path| Path::new(path).exists())
+}
+
+/// Whether the X server a DISPLAY names can be reached: a local one has a
+/// socket under the X11 directory. Another machine's display is taken as it
+/// is: we cannot see it.
+fn display_is_live(display: &str, sockets: &Path) -> bool {
+    let Some((host, rest)) = display.rsplit_once(':') else { return true };
+    if !matches!(host, "" | "localhost") {
+        return true;
+    }
+    let number = rest.split('.').next().unwrap_or(rest);
+    let Ok(number) = number.parse::<u32>() else { return true };
+    sockets.join(format!("X{number}")).exists()
+}
+
+/// Whether the Wayland compositor a WAYLAND_DISPLAY names has its socket.
+fn wayland_is_live(display: &str, runtime: Option<&Path>) -> bool {
+    let path = if display.starts_with('/') {
+        PathBuf::from(display)
+    } else {
+        match runtime {
+            Some(runtime) => runtime.join(display),
+            None => return true,
+        }
+    };
+    path.exists()
+}
+
 /// A shell line as this machine runs one.
 pub fn shell_line(line: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), line.into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_display_whose_server_is_gone_is_not_handed_out() {
+        let sockets = dir("x11");
+        std::fs::write(sockets.join("X1"), "").unwrap();
+        assert!(display_is_live(":1", &sockets));
+        assert!(display_is_live(":1.0", &sockets));
+        assert!(!display_is_live(":2", &sockets));
+        // Another machine's display: we cannot see it, so it stays.
+        assert!(display_is_live("otherhost:1", &sockets));
+        assert!(display_is_live("localhost:1", &sockets));
+        std::fs::remove_dir_all(&sockets).unwrap();
+    }
+
+    #[test]
+    fn a_display_whose_cookie_is_gone_is_not_handed_out() {
+        let dir = dir("cookie");
+        let cookie = dir.join("Xauthority");
+        std::fs::write(&cookie, "").unwrap();
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("DISPLAY".into(), ":1".into());
+        env.insert("XAUTHORITY".into(), dir.join("gone").display().to_string());
+        assert!(!cookie_is_there(&env));
+        env.insert("XAUTHORITY".into(), cookie.display().to_string());
+        assert!(cookie_is_there(&env));
+        env.remove("XAUTHORITY");
+        assert!(cookie_is_there(&env));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_wayland_socket_that_is_gone_is_not_handed_out() {
+        let runtime = dir("wayland");
+        assert!(!wayland_is_live("wayland-0", Some(&runtime)));
+        std::fs::write(runtime.join("wayland-0"), "").unwrap();
+        assert!(wayland_is_live("wayland-0", Some(&runtime)));
+        assert!(!wayland_is_live("/run/user/1000/wayland-9", None));
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
 }
 
 /// Returns once the child exited, leaving it unreaped: until it is reaped

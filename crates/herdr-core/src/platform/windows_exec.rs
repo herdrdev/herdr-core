@@ -26,6 +26,9 @@ pub fn own_shell() -> Vec<String> {
     [exe, "-NoExit", "-Command", hook].map(String::from).to_vec()
 }
 
+/// Windows has no display to reach: nothing to drop.
+pub fn drop_unreachable_displays(_env: &mut std::collections::BTreeMap<String, String>) {}
+
 /// A shell line as this machine runs one: cmd reads the rest of its command
 /// line itself (`/s`: verbatim between the outer quotes), so the line goes
 /// raw, never quoted as an argument.
