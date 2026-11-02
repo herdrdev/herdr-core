@@ -539,7 +539,7 @@ impl Drop for RawHolder {
 fn raw_holder(s: &Session, name: &str) -> (RawHolder, std::path::PathBuf) {
     let socket = s.root.join(format!("run/{name}.sock"));
     let holder = s.cmd().env("HC_HOLDER_GRACE_MS", "60000").arg("hold").arg("--socket").arg(&socket).spawn().unwrap();
-    wait_until("holder listening", || socket.exists());
+    wait_until("holder listening", || std::os::unix::net::UnixStream::connect(&socket).is_ok());
     (RawHolder(holder), socket)
 }
 
