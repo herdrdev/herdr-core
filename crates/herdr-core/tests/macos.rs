@@ -42,6 +42,17 @@ fn independent(s: &Session, pid: i64) -> bool {
 }
 
 #[test]
+fn executable_has_bound_core_identity_and_usage_descriptions() {
+    let output = Command::new("/usr/bin/otool").args(["-P", BIN]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let plist = String::from_utf8(output.stdout).unwrap();
+    for value in ["dev.herdr.core", "Herdr Core", "NSLocalNetworkUsageDescription", "NSAppleEventsUsageDescription"] {
+        assert!(plist.contains(value), "{plist}");
+    }
+    assert!(!plist.contains("@VERSION@"), "{plist}");
+}
+
+#[test]
 fn launchd_core_and_program_survive_the_launcher_and_leave_no_job() {
     if !gui() {
         return;

@@ -3,8 +3,10 @@
 set -euo pipefail
 
 bin=${1:?usage: mac-sign herdr-core}
+root=$(cd "$(dirname "$0")/.." && pwd)
+options=(--options runtime --entitlements "$root/distribution/macos-entitlements.plist" --identifier dev.herdr.core)
 if [[ -z ${APPLE_CERTIFICATE_P12:-} && -z ${APPLE_CERTIFICATE_PASSWORD:-} ]]; then
-  codesign --force --sign - --identifier dev.herdr.core "$bin"
+  codesign --force --sign - "${options[@]}" "$bin"
   codesign --verify --strict "$bin"
   exit 0
 fi
@@ -37,8 +39,7 @@ security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keycha
 security list-keychains -d user -s "$keychain" "${searched[@]}"
 identity=$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2; exit}')
 [[ -n $identity ]] || { echo 'mac-sign: no Developer ID Application identity found' >&2; exit 1; }
-# No hardened runtime: it strips DYLD_* from core's environment, which agents
-# inherit. This curl-installed CLI is not quarantined and needs no notarization.
-# A stable identifier and Developer ID keep TCC grants valid across updates.
-codesign --force --timestamp --identifier dev.herdr.core --keychain "$keychain" --sign "$identity" "$bin"
+# The DYLD entitlement preserves the environment inherited by terminal programs.
+# Keep the signing team and identifier stable across updates for privacy grants.
+codesign --force --timestamp "${options[@]}" --keychain "$keychain" --sign "$identity" "$bin"
 codesign --verify --strict "$bin"

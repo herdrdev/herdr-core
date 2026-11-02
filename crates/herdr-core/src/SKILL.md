@@ -240,6 +240,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   is already current. JSON reports `restarted: true`; terminals keep running.
   Managed installs must be updated with their package manager instead, and
   one in a folder you can't write (Unix) the way it was installed.
+- On macOS, privacy requests from terminal programs belong to Herdr Core,
+  not Herdr.app. Existing Herdr.app grants do not transfer to the core.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
