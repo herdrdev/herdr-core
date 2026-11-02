@@ -932,6 +932,20 @@ mod tests {
     }
 
     #[test]
+    fn human_folders_follow_the_foreground_but_json_keeps_the_launch_folder() {
+        for foreground in [json!({"cwd": "/current/work"}), json!({"cwd": null}), Value::Null] {
+            let t = json!({"address": "t1", "argv": ["bash"], "cwd": "/launch/start", "foreground": foreground});
+            let original = t.clone();
+            let cwd = if foreground["cwd"].is_string() { "/current/work" } else { "/launch/start" };
+            assert_eq!(folder(&t), cwd.rsplit('/').next().unwrap());
+            assert!(picker::plain(&items(std::slice::from_ref(&t), false)[0].rest).contains(&folder(&t)));
+            assert!(describe(&t).contains(&format!("  cwd: {cwd}\n")));
+            assert_eq!(short(&t), json!({"address": "t1", "cwd": "/launch/start", "agent": "bash"}));
+            assert_eq!(t, original, "formatting must not change the full get record");
+        }
+    }
+
+    #[test]
     fn every_api_method_has_a_command_or_is_api_only() {
         Cli::command().debug_assert();
         for method in crate::api::METHOD_NAMES {

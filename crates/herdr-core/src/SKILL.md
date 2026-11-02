@@ -61,6 +61,11 @@ hc read --lines 100 review          # screen plus history; waits return status o
 hc interrupt review                # stop its current turn, not the process
 ```
 
+In human-readable output, `ls` shows the `where` label or the current folder;
+`get` shows the full current folder. Both fall back to the launch folder when
+it is unknown. JSON keeps `cwd` as the launch folder; `get` also includes the
+current folder in `foreground.cwd`.
+
 `read --lines 0` reads only the visible screen. History reads may scroll a
 full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,

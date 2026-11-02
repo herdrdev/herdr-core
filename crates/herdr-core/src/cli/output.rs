@@ -29,9 +29,14 @@ pub(super) fn agent(t: &Value) -> String {
     t["status"]["app"].as_str().unwrap_or_else(|| program.rsplit('/').next().unwrap_or_default()).into()
 }
 
-/// The last folder of a terminal's cwd, `~` for home.
+/// The current folder, falling back to where the terminal started.
+fn cwd(t: &Value) -> Option<&str> {
+    t["foreground"]["cwd"].as_str().or_else(|| t["cwd"].as_str())
+}
+
+/// The last folder of a terminal's current cwd, `~` for home.
 pub(super) fn folder(t: &Value) -> String {
-    let cwd = t["cwd"].as_str().unwrap_or_default();
+    let cwd = cwd(t).unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     if !home.is_empty() && cwd.trim_end_matches('/') == home.trim_end_matches('/') {
         return "~".into();
@@ -266,7 +271,7 @@ pub(super) fn describe(t: &Value) -> String {
         t["name"].as_str().unwrap_or("-"),
         t["parent"].as_str().unwrap_or("-"),
         command(t),
-        t["cwd"].as_str().unwrap_or("-"),
+        cwd(t).unwrap_or("-"),
         t["pid"],
         if labels.is_empty() { "-".into() } else { labels.join(" ") },
     )
