@@ -171,12 +171,10 @@ pub fn own_shell() -> Vec<String> {
     if cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
 }
 
-/// Drops a display whose server is not there, or whose cookie is gone: a
-/// program that reaches for the clipboard then finds none of its own, instead
-/// of failing with an error about a display that died with its session.
+/// Drops displays whose local servers no longer accept connections.
 pub fn drop_unreachable_displays(env: &mut std::collections::BTreeMap<String, String>) {
     if let Some(display) = env.get("DISPLAY").cloned()
-        && (!display_is_live(&display, Path::new("/tmp/.X11-unix")) || !cookie_is_there(env))
+        && !display_is_live(&display, Path::new("/tmp/.X11-unix"))
     {
         env.remove("DISPLAY");
         env.remove("XAUTHORITY");
@@ -189,28 +187,27 @@ pub fn drop_unreachable_displays(env: &mut std::collections::BTreeMap<String, St
     }
 }
 
-/// Whether the cookie an XAUTHORITY names is there: a session's cookie is
-/// gone with the session, and the server then refuses the connection. Without
-/// an XAUTHORITY the default is ~/.Xauthority, which we do not look for: a
-/// server that wants no cookie has none.
-fn cookie_is_there(env: &std::collections::BTreeMap<String, String>) -> bool {
-    env.get("XAUTHORITY").is_none_or(|path| Path::new(path).exists())
-}
-
-/// Whether the X server a DISPLAY names can be reached: a local one has a
-/// socket under the X11 directory. Another machine's display is taken as it
-/// is: we cannot see it.
+/// Only probe local X transports. Host displays may use TCP or SSH forwarding
+/// without any corresponding Unix socket.
 fn display_is_live(display: &str, sockets: &Path) -> bool {
     let Some((host, rest)) = display.rsplit_once(':') else { return true };
-    if !matches!(host, "" | "localhost") {
+    if !matches!(host, "" | "unix") {
         return true;
     }
     let number = rest.split('.').next().unwrap_or(rest);
     let Ok(number) = number.parse::<u32>() else { return true };
-    sockets.join(format!("X{number}")).exists()
+    let path = sockets.join(format!("X{number}"));
+    if socket_is_live(&path, false) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if socket_is_live(&path, true) {
+        return true;
+    }
+    false
 }
 
-/// Whether the Wayland compositor a WAYLAND_DISPLAY names has its socket.
+/// Whether the Wayland compositor accepts connections at its socket.
 fn wayland_is_live(display: &str, runtime: Option<&Path>) -> bool {
     let path = if display.starts_with('/') {
         PathBuf::from(display)
@@ -220,7 +217,51 @@ fn wayland_is_live(display: &str, runtime: Option<&Path>) -> bool {
             None => return true,
         }
     };
-    path.exists()
+    socket_is_live(&path, false)
+}
+
+/// Only absence or a refused connection proves a server is gone. In
+/// particular, a full listener backlog must not stall program startup.
+fn socket_is_live(path: &Path, abstract_socket: bool) -> bool {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = path.as_os_str().as_bytes();
+    let prefix = usize::from(abstract_socket);
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if name.len() + prefix >= address.sun_path.len() {
+        return true;
+    }
+    address.sun_family = libc::AF_UNIX as _;
+    for (dest, byte) in address.sun_path[prefix..].iter_mut().zip(name) {
+        *dest = *byte as libc::c_char;
+    }
+    let length =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + prefix + name.len() + usize::from(!abstract_socket))
+            as libc::socklen_t;
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = length as u8;
+    }
+    let socket_type = libc::SOCK_STREAM;
+    #[cfg(target_os = "linux")]
+    let socket_type = socket_type | libc::SOCK_CLOEXEC;
+    let fd = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
+    if fd < 0 {
+        return true;
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    #[cfg(not(target_os = "linux"))]
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return true;
+    }
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return true;
+    }
+    if unsafe { libc::connect(fd.as_raw_fd(), (&raw const address).cast(), length) } == 0 {
+        return true;
+    }
+    !matches!(io::Error::last_os_error().raw_os_error(), Some(libc::ENOENT | libc::ECONNREFUSED))
 }
 
 /// A shell line as this machine runs one.
@@ -242,39 +283,85 @@ mod tests {
     #[test]
     fn a_display_whose_server_is_gone_is_not_handed_out() {
         let sockets = dir("x11");
-        std::fs::write(sockets.join("X1"), "").unwrap();
+        let listener = Listener::bind(sockets.join("X1")).unwrap();
         assert!(display_is_live(":1", &sockets));
         assert!(display_is_live(":1.0", &sockets));
+        assert!(display_is_live("unix:1", &sockets));
         assert!(!display_is_live(":2", &sockets));
-        // Another machine's display: we cannot see it, so it stays.
-        assert!(display_is_live("otherhost:1", &sockets));
-        assert!(display_is_live("localhost:1", &sockets));
+        assert!(display_is_live("otherhost:2", &sockets));
+        assert!(display_is_live("localhost:2.0", &sockets));
+        assert!(display_is_live("127.0.0.1:2", &sockets));
+        drop(listener);
+        assert!(!display_is_live(":1", &sockets));
+        std::fs::write(sockets.join("X2"), "").unwrap();
+        assert!(!display_is_live(":2", &sockets));
         std::fs::remove_dir_all(&sockets).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_display_whose_cookie_is_gone_is_not_handed_out() {
-        let dir = dir("cookie");
-        let cookie = dir.join("Xauthority");
-        std::fs::write(&cookie, "").unwrap();
-        let mut env = std::collections::BTreeMap::new();
-        env.insert("DISPLAY".into(), ":1".into());
-        env.insert("XAUTHORITY".into(), dir.join("gone").display().to_string());
-        assert!(!cookie_is_there(&env));
-        env.insert("XAUTHORITY".into(), cookie.display().to_string());
-        assert!(cookie_is_there(&env));
-        env.remove("XAUTHORITY");
-        assert!(cookie_is_there(&env));
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn an_abstract_x_socket_needs_no_filesystem_entry() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::ffi::OsStrExt;
+
+        let sockets = dir("abstract-x11");
+        let path = sockets.join("X1");
+        let address = std::os::unix::net::SocketAddr::from_abstract_name(path.as_os_str().as_bytes()).unwrap();
+        let listener = Listener::bind_addr(&address).unwrap();
+        assert!(!path.exists());
+        assert!(display_is_live(":1", &sockets));
+        assert!(display_is_live("unix:1.0", &sockets));
+        drop(listener);
+        assert!(!display_is_live(":1", &sockets));
+        std::fs::remove_dir_all(&sockets).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_full_listener_backlog_does_not_block_or_remove_a_display() {
+        let runtime = dir("full-backlog");
+        let path = runtime.join("wayland-0");
+        let listener = Listener::bind(&path).unwrap();
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let _queued = Stream::connect(&path).unwrap();
+        assert!(socket_is_live(&path, false));
+        assert!(wayland_is_live("wayland-0", Some(&runtime)));
+        std::fs::remove_dir_all(&runtime).unwrap();
     }
 
     #[test]
-    fn a_wayland_socket_that_is_gone_is_not_handed_out() {
+    fn an_uncertain_socket_error_keeps_the_display() {
+        let runtime = dir("uncertain-socket");
+        std::fs::write(runtime.join("file"), "").unwrap();
+        assert!(wayland_is_live("file/not-a-socket", Some(&runtime)));
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_missing_cookie_does_not_remove_a_host_display() {
+        let mut env = std::collections::BTreeMap::from([
+            ("DISPLAY".into(), "localhost:10.0".into()),
+            ("XAUTHORITY".into(), "/nonexistent/hc-cookie".into()),
+        ]);
+        let before = env.clone();
+        drop_unreachable_displays(&mut env);
+        assert_eq!(env, before);
+    }
+
+    #[test]
+    fn a_wayland_socket_must_accept_connections() {
         let runtime = dir("wayland");
+        let path = runtime.join("wayland-0");
         assert!(!wayland_is_live("wayland-0", Some(&runtime)));
-        std::fs::write(runtime.join("wayland-0"), "").unwrap();
+        let listener = Listener::bind(&path).unwrap();
         assert!(wayland_is_live("wayland-0", Some(&runtime)));
-        assert!(!wayland_is_live("/run/user/1000/wayland-9", None));
+        assert!(wayland_is_live(path.to_str().unwrap(), None));
+        assert!(wayland_is_live(path.to_str().unwrap(), Some(Path::new("/nonexistent"))));
+        assert!(wayland_is_live("wayland-0", None));
+        drop(listener);
+        assert!(!wayland_is_live("wayland-0", Some(&runtime)));
+        std::fs::write(runtime.join("regular-file"), "").unwrap();
+        assert!(!wayland_is_live("regular-file", Some(&runtime)));
         std::fs::remove_dir_all(&runtime).unwrap();
     }
 }
