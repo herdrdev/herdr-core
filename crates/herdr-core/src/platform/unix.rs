@@ -280,6 +280,15 @@ mod tests {
         dir
     }
 
+    fn assert_display_gone(display: &str, sockets: &Path) {
+        // Concurrent tests may fork with this listener open; CLOEXEC closes it at exec, not fork.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while display_is_live(display, sockets) {
+            assert!(std::time::Instant::now() < deadline, "display {display} stayed live after listener drop");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn a_display_whose_server_is_gone_is_not_handed_out() {
         let sockets = dir("x11");
@@ -292,7 +301,7 @@ mod tests {
         assert!(display_is_live("localhost:2.0", &sockets));
         assert!(display_is_live("127.0.0.1:2", &sockets));
         drop(listener);
-        assert!(!display_is_live(":1", &sockets));
+        assert_display_gone(":1", &sockets);
         // macOS answers a connect to a regular file with an errno we treat as uncertain.
         #[cfg(target_os = "linux")]
         {
@@ -316,7 +325,7 @@ mod tests {
         assert!(display_is_live(":1", &sockets));
         assert!(display_is_live("unix:1.0", &sockets));
         drop(listener);
-        assert!(!display_is_live(":1", &sockets));
+        assert_display_gone(":1", &sockets);
         std::fs::remove_dir_all(&sockets).unwrap();
     }
 
