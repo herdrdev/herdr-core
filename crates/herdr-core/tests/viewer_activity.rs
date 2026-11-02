@@ -23,38 +23,33 @@ fn automatic_replies_do_not_take_the_size() {
     idle.shows("ready");
     let mut leader = Viewer::attach(&s, &t, 100, 30, json!({}));
     leader.shows("ready");
-    // Set VIEWER_UNTAGGED for the legacy before/after comparison.
-    let kind = if std::env::var_os("VIEWER_UNTAGGED").is_some() { wire::DATA } else { wire::AUTOMATIC_INPUT };
     for round in 0..3 {
         idle.raw.clear();
         leader.raw.clear();
         touch(&s, &format!("query{round}"));
         idle.until("kitty query", |v| v.raw.windows(6).any(|w| w == b"AAAA\x1b\\"));
         leader.until("kitty query", |v| v.raw.windows(6).any(|w| w == b"AAAA\x1b\\"));
-        for (name, viewer) in [("idle", &mut idle), ("leader", &mut leader)] {
+        for viewer in [&mut idle, &mut leader] {
             let replies = viewer.screen.take_responses();
             assert!(!replies.is_empty());
-            eprintln!("round {round} {name} automatic replies: {:?}", String::from_utf8_lossy(&replies));
-            viewer.conn.send(viewer.channel, kind, &replies);
+            viewer.conn.send(viewer.channel, wire::AUTOMATIC_INPUT, &replies);
             viewer.conn.call("terminal.get", json!({"terminal": t}));
-            let state = get(&s, &t);
-            eprintln!("round {round} after {name}: {}x{}", state["cols"], state["rows"]);
+            assert_eq!(get(&s, &t)["cols"], 100);
         }
     }
     wait_until("program received both viewers replies", || {
         std::fs::read(&log).is_ok_and(|bytes| bytes.windows(3).filter(|w| *w == b";OK").count() == 6)
     });
-    eprintln!("program input: {:?}", String::from_utf8_lossy(&std::fs::read(&log).unwrap()));
     // Every possible frame boundary is safe, including a delayed lone ESC.
     for byte in b"\x1bP1+r544e=787465726d\x1b\\\x1b[48;24;80;384;640t" {
-        idle.conn.send(idle.channel, kind, &[*byte]);
+        idle.conn.send(idle.channel, wire::AUTOMATIC_INPUT, &[*byte]);
     }
-    idle.conn.send(idle.channel, kind, b"\x1b");
+    idle.conn.send(idle.channel, wire::AUTOMATIC_INPUT, b"\x1b");
     idle.conn.call("terminal.get", json!({"terminal": t}));
     std::thread::sleep(Duration::from_millis(100));
-    idle.conn.send(idle.channel, kind, b"[48;24;80;384;640t");
+    idle.conn.send(idle.channel, wire::AUTOMATIC_INPUT, b"[48;24;80;384;640t");
     idle.conn.call("terminal.get", json!({"terminal": t}));
-    assert_eq!(get(&s, &t)["cols"], if kind == wire::DATA { 80 } else { 100 });
+    assert_eq!(get(&s, &t)["cols"], 100);
     idle.typed(b"x");
     wait_until("typing takes size", || get(&s, &t)["cols"] == 80);
     leader.conn.send(leader.channel, wire::FOCUS, &[1]);
