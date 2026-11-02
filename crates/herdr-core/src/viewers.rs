@@ -42,6 +42,13 @@ pub struct Viewer {
     pub(crate) recovering: bool,
 }
 
+impl Display {
+    /// Answer the program's color and cell-size queries with these facts.
+    pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) {
+        screen.set_display(rgb(&self.fg), rgb(&self.bg), rgb(&self.cursor), self.cell.map(|[w, h]| (w, h)));
+    }
+}
+
 fn rgb(hex: &Option<String>) -> Option<Rgb> {
     let hex = hex.as_deref()?.strip_prefix('#')?;
     let n = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
@@ -368,7 +375,7 @@ impl Core {
     fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
         let Some(screen) = st.screens.get_mut(&id) else { return };
         if let Some(d) = display {
-            screen.set_display(rgb(&d.fg), rgb(&d.bg), rgb(&d.cursor), d.cell.map(|[w, h]| (w, h)));
+            d.apply(screen);
         }
         // Display changes can notify an idle program, even without a resize or output.
         let replies = Relay::take_responses(screen);
