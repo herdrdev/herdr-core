@@ -25,6 +25,10 @@ struct Term {
     cols: u16,
     rows: u16,
     tail: VecDeque<u8>,
+    /// How much of `tail`, from its start, the last handover's saved screen
+    /// already holds. The core after that handover gets only what follows;
+    /// a core after a crash, which cannot trust a saved screen, gets it all.
+    saved: usize,
     exit: Option<Exit>,
     reader_done: bool,
     /// Since when its output could drain; None while its reader waits for a
@@ -231,8 +235,10 @@ impl Holder {
             };
             let mut out = proto::json_frame(proto::WELCOME, 0, &welcome);
             for id in &ids {
-                let (a, b) = st.terms[id].tail.as_slices();
-                out.extend(proto::frame(proto::TAIL, *id, &[a, b].concat()));
+                let t = &st.terms[id];
+                let from = if st.previous == "handover" { t.saved.min(t.tail.len()) } else { 0 };
+                let tail: Vec<u8> = t.tail.range(from..).copied().collect();
+                out.extend(proto::frame(proto::TAIL, *id, &tail));
             }
             let (frames, queued) = std::sync::mpsc::channel();
             let backlog = Arc::new(Backlog { bytes: Mutex::new(Some(0)), changed: Condvar::new() });
@@ -304,8 +310,10 @@ impl Holder {
                         return Ok(());
                     }
                     if mode == Goodbye::Handover {
-                        // The core saved screens up to here; the next one replays only what follows.
-                        st.terms.values_mut().for_each(|t| t.tail.clear());
+                        // The core saved screens up to here; the next one replays only what
+                        // follows. The tail stays whole: a core that crashes later rebuilds
+                        // from it, and a cleared one would bring back an empty screen.
+                        st.terms.values_mut().for_each(|t| t.saved = t.tail.len());
                     }
                     if mode == Goodbye::Shutdown {
                         // Whatever the core's stop missed (started since, or hiding) ends
@@ -366,6 +374,7 @@ impl Holder {
                         cols: spec.cols,
                         rows: spec.rows,
                         tail: VecDeque::new(),
+                        saved: 0,
                         exit: None,
                         reader_done: false,
                         drains_since: Some(Instant::now()),
@@ -397,6 +406,7 @@ impl Holder {
             t.tail.extend(&buf[..n]);
             let excess = t.tail.len().saturating_sub(TAIL_BYTES);
             t.tail.drain(..excess);
+            t.saved = t.saved.saturating_sub(excess);
             self.to_core(&mut st, &proto::frame(proto::OUTPUT, id, &buf[..n]));
             // A core that falls behind slows its programs, as a PTY nobody reads would.
             let Some(backlog) = st.core.as_ref().map(|c| c.backlog.clone()).filter(|b| b.over(BACKLOG_BYTES)) else {
