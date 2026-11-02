@@ -162,6 +162,9 @@ pub(super) async fn start(
         let id = st.reg.create(new, now_ms())?;
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
+        if let Some(display) = &p.display {
+            display.apply(&mut screen);
+        }
         st.screens.insert(id, screen);
         let (env, scope) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);

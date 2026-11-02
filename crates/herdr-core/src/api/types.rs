@@ -213,6 +213,11 @@ pub struct RunParams {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<InitialSize>,
+    /// The caller's colors and cell size, answering the program's display queries
+    /// from its start. Omitted: Ghostty's defaults until a viewer attaches.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::viewers::Display>,
     /// Name, unique among live terminals: 1-32 of a-z 0-9 - _ .
     #[arg(long)]
     pub name: Option<String>,

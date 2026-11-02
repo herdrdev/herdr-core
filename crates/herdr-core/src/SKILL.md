@@ -135,7 +135,9 @@ error, exited); inspect its screen.
 API clients that already know a terminal's pane size can pass `size: {cols, rows}`
 to `terminal.run` (both positive). It applies before the program starts. Omit it
 for the unchanged configured headless size (default 200×120); later viewers
-still resize the terminal normally.
+still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
+`terminal.attach`) likewise answers the program's color and cell-size queries
+from its start, before any viewer attaches.
 
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
