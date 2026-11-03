@@ -168,8 +168,12 @@ impl Holder {
     }
 
     fn drained(&self) -> bool {
+        // Set once, before the DRAIN's own look: a release before it needs none.
+        if !self.draining.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
         let (_settled, st) = self.settled();
-        self.draining.load(std::sync::atomic::Ordering::SeqCst) && st.terms.is_empty()
+        st.terms.is_empty()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
