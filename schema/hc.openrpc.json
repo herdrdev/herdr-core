@@ -1176,6 +1176,17 @@
               "null"
             ]
           },
+          "first_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A template first message that was not sent; retained for later inspection."
+          },
           "foreground": {
             "anyOf": [
               {

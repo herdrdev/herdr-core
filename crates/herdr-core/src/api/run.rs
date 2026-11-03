@@ -33,6 +33,13 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
         Some(text) => Some(core.first_message(id, quiet_ready, &text, caller.as_deref()).await),
         None => None,
     };
+    if let Some(failed) = first_message.as_ref().filter(|f| !f.sent) {
+        let mut st = core.lock();
+        if let Some(t) = st.reg.terminals.get_mut(&id) {
+            t.first_message = Some(failed.clone());
+            core.save(&st);
+        }
+    }
     let (wait, output) = match timeout {
         None => (None, None),
         Some(timeout) => {

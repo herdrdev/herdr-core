@@ -115,6 +115,9 @@ pub struct Terminal {
     /// The template that started it.
     #[serde(default)]
     pub template: Option<String>,
+    /// A template first message that was not sent; retained for later inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<crate::templates::FirstMessage>,
     /// The holder (its instance) that runs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
@@ -297,6 +300,7 @@ impl Registry {
                 foreground: None,
                 afar: Default::default(),
                 template: new.template.map(|t| t.name),
+                first_message: None,
                 holder: None,
             },
         );

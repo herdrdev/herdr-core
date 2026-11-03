@@ -45,8 +45,12 @@ hc wait helper
 hc send helper "Inspect x.rs only. No subagents. Report with hc send $HC_TERMINAL_ID when done or stuck."
 ```
 
+Template launches allow up to 60 seconds for readiness, retrying startup
+settle failures with the same safety rules as `send` (including its startup
+age limit). This covers slow startup without waiting forever on a dialog.
 Check `first_message.sent` in a launch with a task. If false, the task was
-NOT sent: `hc read <t>`; resolve readiness first (a trust dialog may need
+NOT sent; `hc get <t>` keeps `first_message: {sent: false, reason}` for later
+inspection, even after the core restarts. To recover: `hc read <t>`; resolve readiness first (a trust dialog may need
 `hc keys <t> down enter`), then send the task. Do not blindly resend after a
 failed send: it may still have arrived; read first.
 

@@ -946,6 +946,14 @@ mod tests {
     }
 
     #[test]
+    fn get_keeps_an_unsent_first_message_visible_to_people() {
+        let mut t = json!({"address": "t1", "argv": ["pi"], "state": "live"});
+        assert!(!describe(&t).contains("first message"));
+        t["first_message"] = json!({"sent": false, "reason": "output did not settle"});
+        assert!(describe(&t).contains("first message NOT sent: output did not settle"));
+    }
+
+    #[test]
     fn every_api_method_has_a_command_or_is_api_only() {
         Cli::command().debug_assert();
         for method in crate::api::METHOD_NAMES {
