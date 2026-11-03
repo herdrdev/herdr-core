@@ -252,7 +252,8 @@ fn babysit(mut sock: UnixStream, mut child: Child) -> io::Result<()> {
     let pid = child.id();
     let holder = sock.try_clone()?;
     let _ = sock.set_read_timeout(None);
-    // The holder gave up on the start before the pid reached it: nobody has this program, so it does not run on.
+    // The holder gave up on the start before the pid reached it: nobody has this program, so it ends now.
+    // A pid that was written just before the holder left is hung up at once by the watcher below instead.
     if send_reply(&mut sock, &Reply::Pid(pid)).is_err() {
         let _ = child.kill();
         return child.wait().map(drop);
