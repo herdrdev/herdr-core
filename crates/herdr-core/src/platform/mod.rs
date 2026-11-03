@@ -11,7 +11,11 @@ pub use unix::*;
 pub mod systemd;
 
 #[cfg(target_os = "macos")]
+mod macos_bundle;
+#[cfg(target_os = "macos")]
 mod macos_launchd;
+#[cfg(target_os = "macos")]
+mod macos_responsibility;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
 
@@ -19,6 +23,8 @@ mod macos_shutdown;
 pub fn daemon_startup() -> bool {
     #[cfg(target_os = "macos")]
     {
+        macos_bundle::installer_startup();
+        macos_responsibility::holder_startup();
         macos_launchd::startup()
     }
     #[cfg(not(target_os = "macos"))]
@@ -41,6 +47,11 @@ pub(crate) fn raise_nofile_limit() {
     }
 }
 
+pub fn migrate_legacy_install() {
+    #[cfg(target_os = "macos")]
+    macos_bundle::migrate_legacy();
+}
+
 /// macOS cores leave the app's process coalition; holders inherit the core's.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
@@ -49,6 +60,27 @@ pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) ->
         return macos_launchd::spawn(cmd, log);
     }
     false
+}
+
+pub fn update_source(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if path.is_dir() {
+        return path.join(macos_bundle::EXECUTABLE);
+    }
+    path.to_path_buf()
+}
+
+pub fn bundle_update_hint() -> Option<&'static str> {
+    cfg!(target_os = "macos")
+        .then_some("use hc update, or --from 'Herdr Core.app' (its Contents/MacOS/herdr-core also works)")
+}
+
+pub fn privacy_upgrade_notice() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "; recreate terminals started before the Herdr Core.app upgrade if macOS privacy access is broken (they were not stopped)"
+    } else {
+        ""
+    }
 }
 
 /// Keep the early shutdown watch alive for the core's lifetime.

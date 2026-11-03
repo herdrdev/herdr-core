@@ -36,6 +36,7 @@ pub fn serve() -> io::Result<()> {
     // Adopt the holder's terminals before anyone can talk to us.
     let core = Core::start(paths, info)?;
     let bound = AsyncListener::bind(&socket)?;
+    platform::migrate_legacy_install();
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;

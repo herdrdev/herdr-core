@@ -1,5 +1,5 @@
 #!/bin/bash
-# A bare executable cannot be stapled; Gatekeeper obtains its ticket online.
+# Submit the signed bundle and staple its ticket before packaging.
 set -euo pipefail
 
 bin=${1:?usage: mac-notarize signed-herdr-core}
@@ -28,6 +28,10 @@ if [[ $status != 0 ]] || ! jq -e '.status == "Accepted"' "$work/submission.json"
   fi
   echo 'core notarization failed' >&2
   exit 1
+fi
+if [[ -d $bin/Contents ]]; then
+  xcrun stapler staple "$bin"
+  xcrun stapler validate "$bin"
 fi
 codesign --verify --strict "$bin"
 spctl --assess --type execute --verbose=2 "$bin"

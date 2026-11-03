@@ -89,7 +89,10 @@ pub fn download(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, R
     let exe = if target.starts_with("windows") { "herdr-core.exe" } else { "herdr-core" };
     let ok =
         Command::new(tar_program()).arg("-xf").arg(&tar).arg("-C").arg(scratch).status().is_ok_and(|s| s.success());
-    let bin = scratch.join(exe);
+    // Root executable remains in macOS archives for old updaters. New ones
+    // carry the entire signed bundle through installation instead.
+    let bundled = scratch.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    let bin = if target.starts_with("macos-") && bundled.is_file() { bundled } else { scratch.join(exe) };
     if !ok || !bin.is_file() {
         return Err(RpcError::new(
             "refused",

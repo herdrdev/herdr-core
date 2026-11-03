@@ -33,6 +33,24 @@ impl Releases {
         let bin_dir = Path::new(BIN).parent().unwrap();
         for t in targets {
             let tar = dir.join(format!("herdr-core-{t}.tar.gz"));
+            if cfg!(target_os = "macos") && t.starts_with("macos-") {
+                let app = s.root.join("Herdr Core.app");
+                for (script, args) in [
+                    ("mac-bundle", vec![PathBuf::from(BIN), app.clone()]),
+                    ("mac-sign", vec![app.clone()]),
+                    ("package", vec![app, tar]),
+                ] {
+                    let out = Command::new("bash")
+                        .arg(format!("{ROOT}/../../scripts/{script}"))
+                        .args(args)
+                        .env_remove("APPLE_CERTIFICATE_P12")
+                        .env_remove("APPLE_CERTIFICATE_PASSWORD")
+                        .output()
+                        .unwrap();
+                    assert!(out.status.success(), "{script}: {out:?}");
+                }
+                continue;
+            }
             assert!(
                 Command::new("tar")
                     .arg("-czf")
@@ -103,8 +121,23 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     };
     assert!(install(&s).contains("installed"));
     assert!(bin.join("herdr-core").is_file() && bin.join("hc").is_symlink());
+    if cfg!(target_os = "macos") {
+        let bundle = s.root.join(".local/share/herdr-core/Herdr Core.app");
+        assert!(bundle.join("Contents/Info.plist").is_file());
+        assert_eq!(
+            bin.join("herdr-core").canonicalize().unwrap(),
+            bundle.join("Contents/MacOS/herdr-core").canonicalize().unwrap()
+        );
+    }
 
     s.bin = bin.join("hc");
+    if cfg!(target_os = "macos") {
+        let (_, err) = s.err(&["update", "--from", BIN]);
+        assert_eq!(err["error"]["kind"], "refused");
+        assert!(err["error"]["hint"].as_str().unwrap().contains("Herdr Core.app"));
+        let source = s.root.join("Herdr Core.app");
+        assert_eq!(s.json(&["update", "--from", source.to_str().unwrap()])["now"], format!("hc {THIS}"));
+    }
     let t = run(&s, &["sh", "-c", "while read l; do echo got-$l; done"]);
     let pid = s.json(&["server", "status"])["pid"].clone();
     assert!(install(&s).contains("updated"), "again: an update");
@@ -112,6 +145,67 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     s.json(&["send", &t, "still"]);
     wait_until("the terminal kept running", || text(&s, &t).contains("got-still"));
     drop(r);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_bundle_install_preserves_an_unrelated_hc_symlink() {
+    let mut s = Session::new();
+    let r = Releases::new(&s, THIS, &[&here()]);
+    let bin = s.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink("/usr/bin/true", bin.join("hc")).unwrap();
+    let out = s
+        .program("sh")
+        .arg(format!("{ROOT}/../../distribution/install.sh"))
+        .env("HERDR_RELEASES_URL", &r.url)
+        .env("HC_INSTALL_DIR", &bin)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    s.bin = bin.join("herdr-core");
+    assert_eq!(std::fs::read_link(bin.join("hc")).unwrap(), Path::new("/usr/bin/true"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failed_legacy_migration_leaves_the_serving_core_and_install_untouched() {
+    let mut s = Session::new();
+    let bin = s.root.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy(BIN, bin.join("herdr-core")).unwrap();
+    s.bin = bin.join("herdr-core");
+    s.env.push(("HERDR_RELEASES_URL".into(), format!("file://{}/missing", s.root.display())));
+    let pid = s.json(&["server", "status"])["pid"].clone();
+    let log = s.root.join("state/herdr-core/test/core.log");
+    wait_until("failed background migration diagnostic", || {
+        std::fs::read_to_string(&log).unwrap_or_default().contains("legacy bundle migration deferred")
+    });
+    assert_eq!(s.json(&["server", "status"])["pid"], pid);
+    assert!(!s.bin.is_symlink());
+    assert_eq!(std::fs::read_to_string(log).unwrap().matches("legacy bundle migration deferred").count(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_old_updaters_bare_copy_migrates_and_restarts_before_its_first_new_holder() {
+    let mut s = Session::new();
+    let r = Releases::new(&s, THIS, &[&here()]);
+    let bin = s.root.join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy(BIN, bin.join("herdr-core")).unwrap();
+    s.bin = bin.join("herdr-core");
+    s.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
+    let pid = s.json(&["server", "status"])["pid"].clone();
+    wait_until("background bundle migration", || s.bin.is_symlink());
+    wait_until("planned restart after migration", || s.json(&["server", "status"])["pid"] != pid);
+    // No holder existed before migration: its first spawn must match the new
+    // core, not the now-replaced bare executable's inode-based build identity.
+    let t = run(&s, &["sh", "-c", "while read l; do echo got-$l; done"]);
+    assert!(s.root.join(".local/share/herdr-core/Herdr Core.app/Contents/Info.plist").is_file());
+    s.json(&["server", "restart"]);
+    s.json(&["send", &t, "migrated"]);
+    wait_until("terminal survives migration and later restart", || text(&s, &t).contains("got-migrated"));
 }
 
 /// The URL the install script downloads hc from, for a list giving `url`,

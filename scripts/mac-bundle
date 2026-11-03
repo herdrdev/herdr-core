@@ -1,0 +1,12 @@
+#!/bin/sh
+# Assemble before signing; the same metadata is embedded in the executable.
+set -eu
+bin=${1:?usage: mac-bundle herdr-core output.app}
+app=${2:?usage: mac-bundle herdr-core output.app}
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+version=$("$bin" --version)
+version=${version#hc }
+mkdir -p "$app/Contents/MacOS"
+cp "$bin" "$app/Contents/MacOS/herdr-core"
+chmod 755 "$app/Contents/MacOS/herdr-core"
+sed "s/@VERSION@/$version/g" "$root/distribution/macos-Info.plist" > "$app/Contents/Info.plist"

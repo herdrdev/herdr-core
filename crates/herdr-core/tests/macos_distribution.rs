@@ -53,6 +53,7 @@ fn script(s: &Scratch, name: &str) -> Command {
 fn mac_sign_uses_runtime_and_entitlements_even_for_ad_hoc_builds() {
     let s = Scratch::new();
     stub(&s, "codesign", "exit 0");
+    std::fs::create_dir_all(s.root.join("herdr-core/Contents/MacOS")).unwrap();
     let out = script(&s, "mac-sign").output().unwrap();
     assert!(out.status.success(), "{out:?}");
     let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
@@ -60,12 +61,16 @@ fn mac_sign_uses_runtime_and_entitlements_even_for_ad_hoc_builds() {
     assert!(calls.contains("--entitlements ") && calls.contains("macos-entitlements.plist"), "{calls}");
     assert!(calls.contains("--identifier dev.herdr.core"), "{calls}");
     assert!(calls.contains("--verify --strict"), "{calls}");
+    let lines: Vec<_> = calls.lines().collect();
+    assert!(lines[0].ends_with("/Contents/MacOS/herdr-core"), "nested executable first: {calls}");
+    assert!(lines[1].ends_with("/herdr-core"), "then bundle: {calls}");
 }
 
 #[test]
 fn notarization_requires_acceptance_before_gatekeeper_assessment() {
     for accepted in [true, false] {
         let s = Scratch::new();
+        std::fs::create_dir_all(s.root.join("herdr-core/Contents")).unwrap();
         stub(&s, "codesign", "case $* in *-dvv*) echo 'Authority=Developer ID Application: Test' >&2 ;; esac");
         stub(&s, "ditto", "exit 0");
         stub(&s, "spctl", "exit 0");
@@ -85,6 +90,8 @@ fn notarization_requires_acceptance_before_gatekeeper_assessment() {
         let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
         assert!(calls.contains("notarytool submit") && calls.contains("--wait"), "{calls}");
         assert_eq!(calls.contains("spctl --assess"), accepted, "{calls}");
+        assert_eq!(calls.contains("stapler staple"), accepted, "{calls}");
+        assert_eq!(calls.contains("stapler validate"), accepted, "{calls}");
         assert_eq!(calls.contains("notarytool log test-id"), !accepted, "{calls}");
     }
 }

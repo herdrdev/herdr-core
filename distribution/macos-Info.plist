@@ -5,6 +5,8 @@
     <key>CFBundleName</key><string>Herdr Core</string>
     <key>CFBundleDisplayName</key><string>Herdr Core</string>
     <key>CFBundleExecutable</key><string>herdr-core</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSUIElement</key><true/>
     <key>CFBundleVersion</key><string>@VERSION@</string>
     <key>CFBundleShortVersionString</key><string>@VERSION@</string>
     <key>NSLocalNetworkUsageDescription</key><string>Programs running in Herdr terminals can connect to devices and services on your local network.</string>

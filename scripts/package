@@ -8,7 +8,18 @@ fi
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-cp "$1" "$work/herdr-core"
+if [ -d "$1/Contents/MacOS" ]; then
+    cp -R "$1" "$work/Herdr Core.app"
+    # Released old updaters only know this path. Keep it as an identical,
+    # independently signed executable; migration fetches the complete bundle.
+    cp "$1/Contents/MacOS/herdr-core" "$work/herdr-core"
+else
+    cp "$1" "$work/herdr-core"
+fi
 cp "$root/LICENSE" "$work/LICENSE"
 cp "$root/crates/herdr-core/THIRD-PARTY-NOTICES" "$work/THIRD-PARTY-NOTICES"
-tar -czf "$2" -C "$work" herdr-core LICENSE THIRD-PARTY-NOTICES
+if [ -d "$work/Herdr Core.app" ]; then
+    tar -czf "$2" -C "$work" herdr-core 'Herdr Core.app' LICENSE THIRD-PARTY-NOTICES
+else
+    tar -czf "$2" -C "$work" herdr-core LICENSE THIRD-PARTY-NOTICES
+fi

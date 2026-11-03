@@ -18,6 +18,13 @@ fn coalition(pid: i64) -> u64 {
     info[0]
 }
 
+fn responsible(pid: i64) -> i64 {
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr()) };
+    assert!(!symbol.is_null(), "responsibility lookup unavailable");
+    let lookup: unsafe extern "C" fn(libc::pid_t) -> libc::pid_t = unsafe { std::mem::transmute(symbol) };
+    unsafe { lookup(pid as libc::pid_t) as i64 }
+}
+
 fn gui() -> bool {
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let available = Command::new("/bin/launchctl").args(["print", &domain]).output().unwrap().status.success();
@@ -86,9 +93,14 @@ fn launchd_core_and_program_survive_the_launcher_and_leave_no_job() {
     });
     let program: i64 = line.split_whitespace().next().unwrap().parse().unwrap();
     assert_eq!(coalition(program), coalition(core));
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    assert_eq!(responsible(core), core, "detached core is live and responsible");
+    assert_eq!(responsible(holder), holder, "holder owns its responsibility");
+    assert_eq!(responsible(program), holder, "terminal programs must not disclaim");
     s.json(&["server", "restart"]);
     wait_until("new core", || s.json(&["server", "status"])["pid"].as_i64() != Some(core));
     assert!(pid_alive(program), "holder kept the terminal across handover");
+    assert_eq!(responsible(program), holder, "responsibility survives the old core exiting");
     s.json(&["server", "stop"]);
     wait_until("program stopped", || !pid_alive(program));
     assert!(!s.socket().exists());

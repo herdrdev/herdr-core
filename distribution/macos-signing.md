@@ -29,15 +29,29 @@ debugging or unsigned-memory exceptions. Camera, audio-input and Apple Events
 entitlements permit user-approved terminal workloads; they do not grant access
 without consent. There is no App Sandbox.
 
-`scripts/mac-notarize` submits a zip and waits for acceptance. A bare executable
-cannot be stapled; Gatekeeper obtains its notarization ticket online. The
-distributed tarball contains the exact signed executable that was submitted.
+`scripts/mac-bundle` assembles **Herdr Core.app** with the same Info.plist as
+its executable. `scripts/mac-sign` signs the executable and then the bundle.
+`scripts/mac-notarize` submits the bundle zip, waits for acceptance, and staples
+and validates its ticket. The existing macOS archive names contain the complete
+bundle plus an identical root executable for released updaters.
 
-The installer downloads, extracts, copies, chmods and renames the binary (or
-delegates to `hc update --from`). `hc update` stages a copy, chmods it, checks
-it runs, then renames it into place. Neither re-signs, strips, nor adds
-quarantine. Herdr's core installer delegates to these same paths. The embedded
-plist and signature survive these operations unchanged.
+The installer and new `hc update` stage and verify the complete bundle, check
+that it runs, then atomically exchange it with the installed bundle. They do
+not re-sign, strip, or add quarantine. Entry points in `HC_INSTALL_DIR` (default
+`~/.local/bin`) point into `~/.local/share/herdr-core/Herdr Core.app`.
+Old updaters that copy only the executable remain compatible: a legacy core
+starts immediately and downloads its matching bundle in the background,
+checks the release checksum and signature, installs it, and requests a planned
+core restart that keeps terminals. The restart is required because bare and
+bundled executables have different inode-based holder build identities.
+An offline failure leaves the core running and retries on the next startup.
+
+After launchd detachment the core uses a SETEXEC responsibility disclaimer;
+each holder does the same. Terminal programs never disclaim: the live holder
+must remain their privacy subject across core restarts. Missing SPI falls back
+to inherited responsibility with a diagnostic. Existing pre-upgrade holders
+cannot be repaired by restarting the core: users must recreate those terminals
+if privacy access is broken. Updates never kill them automatically.
 
 ## Verification
 

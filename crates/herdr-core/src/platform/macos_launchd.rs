@@ -6,7 +6,6 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -254,7 +253,7 @@ fn detach(socket: &Path) -> io::Result<()> {
     }
     // libSystem can initialize libnotify before main. fork disables it in the
     // child; exec gives the detached core fresh libnotify/libdispatch state.
-    Err(cmd.exec())
+    super::macos_responsibility::exec(cmd)
 }
 
 fn receive(socket: &Path) -> io::Result<()> {

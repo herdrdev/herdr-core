@@ -68,7 +68,10 @@ jobs:
           [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $want"; exit 1; }
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p herdr-core
-      - name: Sign macOS binary
+      - name: Assemble macOS bundle
+        if: runner.os == 'macOS'
+        run: sh scripts/mac-bundle target/${{ matrix.target }}/release/herdr-core 'target/${{ matrix.target }}/release/Herdr Core.app'
+      - name: Sign macOS bundle
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE_P12: ${{ github.event_name == 'push' && github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_P12 || '' }}
@@ -78,14 +81,14 @@ jobs:
             : "${APPLE_CERTIFICATE_P12:?missing release certificate}"
             : "${APPLE_CERTIFICATE_PASSWORD:?missing release certificate password}"
           fi
-          scripts/mac-sign target/${{ matrix.target }}/release/herdr-core
-      - name: Notarize macOS binary
+          scripts/mac-sign 'target/${{ matrix.target }}/release/Herdr Core.app'
+      - name: Notarize macOS bundle
         if: runner.os == 'macOS' && github.event_name == 'push' && github.ref_type == 'tag'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: bash scripts/mac-notarize target/${{ matrix.target }}/release/herdr-core
+        run: bash scripts/mac-notarize 'target/${{ matrix.target }}/release/Herdr Core.app'
       - name: Pack
         if: runner.os != 'Windows'
         run: |
@@ -93,6 +96,7 @@ jobs:
           "$bin" --version # it runs on its own platform
           if [ "${{ runner.os }}" = Linux ]; then file "$bin" | grep -q 'static' || { file "$bin"; echo "not static"; exit 1; }; fi
           mkdir -p dist
+          if [ "${{ runner.os }}" = macOS ]; then bin="$(dirname "$bin")/Herdr Core.app"; fi
           sh scripts/package "$bin" dist/herdr-core-${{ matrix.name }}.tar.gz
       # Windows: a zip of the exe, Microsoft's ConPTY (Windows' own swallows
       # answers to programs) and its notices. Zipped by Windows' tar, which

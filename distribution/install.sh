@@ -67,7 +67,15 @@ tar -xzf "$tmp/hc.tar.gz" -C "$tmp"
 "$tmp/herdr-core" --version >/dev/null 2>&1 || fail "the downloaded hc does not run on this machine"
 mkdir -p "$bin"
 
-if [ -x "$bin/herdr-core" ]; then
+if [ "$os" = macos ] && [ -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; then
+  action=installed
+  [ ! -x "$bin/herdr-core" ] || action=updated
+  bundled="$tmp/Herdr Core.app/Contents/MacOS/herdr-core"
+  "$bundled" --hc-install-bundle "$bundled" "$bin/herdr-core" || fail "installing Herdr Core.app failed"
+  # A planned restart adopts every holder without stopping its terminal.
+  "$bin/herdr-core" server restart >/dev/null || fail "restarting the core failed"
+  say "hc $version $action as Herdr Core.app. Recreate pre-update terminals if macOS privacy access is broken; running terminals were kept."
+elif [ -x "$bin/herdr-core" ]; then
   # Swapped the planned way, so its terminals keep running.
   "$bin/herdr-core" update --from "$tmp/herdr-core" >/dev/null || fail "updating $bin/herdr-core failed (see above)"
   say "hc updated to $version."
