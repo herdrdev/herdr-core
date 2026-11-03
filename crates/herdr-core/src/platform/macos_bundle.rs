@@ -7,6 +7,8 @@ use std::process::Command;
 pub const EXECUTABLE: &str = "Contents/MacOS/herdr-core";
 const REQUIREMENT: &str =
     "=identifier \"dev.herdr.core\" and anchor apple generic and certificate leaf[subject.OU] = \"2W9652Q7QR\"";
+const LSREGISTER: &str =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 fn bundle(exe: &Path) -> Option<&Path> {
     let root = exe.parent()?.parent()?.parent()?;
@@ -302,6 +304,11 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
     })();
     if !activated {
         let _ = std::fs::remove_dir_all(slot);
+    }
+    // LaunchServices doesn't find apps in hidden folders by itself. Unknown to
+    // it, the first Local Network prompt names `herdr-core` with Apple's generic text.
+    if result.is_ok() {
+        let _ = Command::new(LSREGISTER).arg("-f").arg(&active).output();
     }
     result
 }
