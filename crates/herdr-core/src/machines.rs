@@ -483,8 +483,11 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     }
     // Same OS and CPU: this very hc. Else this version's released build for it.
     let scratch = crate::releases::Scratch::new()?;
-    let bin = if there == here {
-        std::env::current_exe().map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?
+    let macos = there.starts_with("macos ");
+    let bundle = !macos || run_there(paths, to, "id -u", b"")? != "0";
+    let current = std::env::current_exe().map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
+    let bin = if there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core")) {
+        current
     } else {
         let version = env!("CARGO_PKG_VERSION");
         let not_released = |_| {
@@ -495,7 +498,7 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
             )
         };
         let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
-        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, true)?
+        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, bundle)?
     };
     let (exe, bundled) = install_payload(&bin, &scratch.0)?;
     let n = exe.len();
@@ -510,9 +513,15 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
         );
         return run_there(paths, to, &format!("sh -c '{script}'"), &exe);
     }
+    let guard = if macos {
+        "case $(readlink \"$d/herdr-core\" || true) in */Contents/MacOS/herdr-core) \
+         echo \"a bundled remote core needs a complete bundle; run hc update on that machine\" >&2; exit 5;; esac; "
+    } else {
+        ""
+    };
     // Into a temp file beside the target, checked whole and running, then swapped.
     let script = format!(
-        "set -e; d=$HOME/.local/bin; mkdir -p $d; rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
+        "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
          head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
          chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this hc does not run there\" >&2; exit 4; }}; \
          mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \

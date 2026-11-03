@@ -278,8 +278,48 @@ fn machine_installs_keep_the_complete_bundle_and_both_aliases() {
         assert_eq!(hc.canonicalize().unwrap(), remote.bin.canonicalize().unwrap());
         local.json(&["machine", "update", "bare"]);
         assert_eq!(hc.canonicalize().unwrap(), remote.bin.canonicalize().unwrap());
+        if !cross_arch {
+            let bundled = remote.bin.canonicalize().unwrap();
+            let before = std::fs::read(&bundled).unwrap();
+            local.bin = local.root.join("herdr-core");
+            let (_, error) = local.err(&["--json", "machine", "update", "bare"]);
+            assert_eq!(error["error"]["kind"], "install_failed");
+            assert!(error["error"]["message"].as_str().unwrap().contains("complete bundle"), "{error}");
+            assert_eq!(remote.bin.canonicalize().unwrap(), bundled);
+            assert_eq!(hc.canonicalize().unwrap(), bundled);
+            assert_eq!(std::fs::read(&bundled).unwrap(), before);
+        }
         local.json(&["machine", "rm", "bare"]);
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_root_remote_gets_the_independently_signed_standalone_release() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Session::new();
+    remote.bin = remote.root.join(".local/bin/herdr-core");
+    let tools = remote.root.join("fakebin");
+    std::fs::create_dir(&tools).unwrap();
+    std::fs::write(tools.join("id"), "#!/bin/sh\necho 0\n").unwrap();
+    std::fs::set_permissions(tools.join("id"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut local = Session::new();
+    let r = Releases::new(&local, THIS, &[&here()]);
+    local.bin = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
+    local.env.push(fake_ssh(&local, &[("root", &remote)]));
+    local.json(&["machine", "add", "root", "--install"]);
+    for update in [false, true] {
+        if update {
+            local.json(&["machine", "update", "root"]);
+        }
+        assert!(!remote.bin.is_symlink());
+        assert!(!remote.root.join(".local/share/herdr-core/current").exists());
+        assert_eq!(remote.bin.with_file_name("hc").canonicalize().unwrap(), remote.bin.canonicalize().unwrap());
+        let out = Command::new("/usr/bin/codesign").args(["--verify", "--strict"]).arg(&remote.bin).output().unwrap();
+        assert!(out.status.success(), "standalone signature: {out:?}");
+    }
+    local.json(&["machine", "rm", "root"]);
 }
 
 #[cfg(target_os = "macos")]

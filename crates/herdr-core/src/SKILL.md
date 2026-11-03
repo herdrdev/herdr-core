@@ -257,6 +257,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   cores or holders run; later installs reclaim unused previous bundles.
   Per-user installs use the bundle. Root/system destinations keep the independently
   signed standalone executable and their existing macOS privacy behavior.
+  Machine installs also preserve bundles. A standalone sender cannot replace a
+  bundled remote core: run `hc update` there instead. Root remotes receive the
+  standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
