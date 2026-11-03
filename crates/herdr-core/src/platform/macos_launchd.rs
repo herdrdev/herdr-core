@@ -199,16 +199,25 @@ fn fallback(log: &Path, error: &io::Error) {
     }
 }
 
+/// The umask of this process, read once: reading it means setting it, so no program may be forked meanwhile.
+pub(super) fn umask() -> libc::mode_t {
+    static MASK: std::sync::OnceLock<libc::mode_t> = std::sync::OnceLock::new();
+    *MASK.get_or_init(|| {
+        let _one = super::unix::FORKING.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe {
+            let mask = libc::umask(0o077);
+            libc::umask(mask);
+            mask
+        }
+    })
+}
+
 fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
     let inherited = Inherited::capture(cmd)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
     remove_stale(&format!("gui/{}", unsafe { libc::getuid() }), now);
     remove_stale_dirs(Path::new("/tmp"), now);
-    let mask = unsafe {
-        let mask = libc::umask(0o077);
-        libc::umask(mask);
-        mask
-    };
+    let mask = umask();
     let cwd = cmd.get_current_dir().map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?;
     // Create the log ourselves: same ownership, mask and append behavior as
     // direct startup, even before launchd has run the job for the first time.

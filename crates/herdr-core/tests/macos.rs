@@ -11,11 +11,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 fn coalition(pid: i64) -> u64 {
-    let mut info = [0u64; 5];
-    let size = std::mem::size_of_val(&info) as i32;
-    let read = unsafe { libc::proc_pidinfo(pid as i32, 20, 0, info.as_mut_ptr().cast(), size) };
-    assert_eq!(read, size, "coalition lookup for {pid}");
-    info[0]
+    coalitions(pid)[0]
 }
 
 /// The resource and jetsam coalition ids of a process.
@@ -559,10 +555,6 @@ fn programs_start_directly_when_the_job_binary_is_an_older_build() {
     if !gui() {
         return;
     }
-    let Some(old) = std::env::var_os("HC_OLD_BIN") else {
-        eprintln!("skipping: no HC_OLD_BIN");
-        return;
-    };
     let mut s = Session::new();
     let bin = s.root.join("herdr-core");
     std::fs::copy(BIN, &bin).unwrap();
@@ -572,9 +564,12 @@ fn programs_start_directly_when_the_job_binary_is_an_older_build() {
     if !independent(&s, core) {
         return;
     }
-    // The holder now finds an older build at its path: its jobs end in a usage error.
-    std::fs::copy(&old, s.root.join("old")).unwrap();
-    std::fs::rename(s.root.join("old"), &bin).unwrap();
+    // The holder now finds an older build at its path: it doesn't know the sentinel and ends in a usage error.
+    let old = s.root.join("old");
+    std::fs::write(&old, "#!/bin/sh\nexit 2\n").unwrap();
+    std::fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::rename(&old, &bin).unwrap();
+    s.bin = BIN.into(); // the holder's path holds the old build; the commands come from here
     let started = std::time::Instant::now();
     let id = run(&s, &["sh", "-c", "echo $$; exec sleep 300"]);
     wait_until("direct start", || text(&s, &id).trim().parse::<i64>().is_ok());

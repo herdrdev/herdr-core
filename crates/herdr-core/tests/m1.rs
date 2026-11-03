@@ -512,6 +512,23 @@ fn an_exit_never_overtakes_its_output_while_the_core_is_behind() {
     assert!(printed.ends_with(b"END"), "exit after {} bytes of output", printed.len());
 }
 
+/// Input sent right behind a spawn waits for the program to start instead of being dropped.
+#[test]
+fn input_right_after_a_spawn_reaches_the_program() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "behind");
+    let (mut core, _) = raw_hello(&socket);
+    raw_spawn(&mut core, 1, &["sh", "-c", "read line; echo got-$line"]);
+    raw_send(&mut core, proto::frame(proto::INPUT, 1, b"x\n"));
+    let mut printed = Vec::new();
+    while !String::from_utf8_lossy(&printed).contains("got-x") {
+        let (kind, id, payload) = proto::read(&mut core).expect("its output").unwrap();
+        if (kind, id) == (proto::OUTPUT, 1) {
+            printed.extend(payload);
+        }
+    }
+}
+
 /// A late goodbye from a core that was replaced leaves the new one connected.
 #[test]
 fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {

@@ -29,9 +29,10 @@ pub const SENTINEL: &str = "--hc-launchd-spawn";
 const PROTOCOL: u32 = 1;
 /// From starting the job to the stub's hello: past it, programs start directly.
 const JOB: Duration = Duration::from_secs(2);
-/// For the stub's answer once it has the spec. With the job start and its two removals (`JOB` each at most)
-/// it stays below the core's own spawn wait.
-const ANSWER: Duration = Duration::from_secs(3);
+/// A start as a whole, from the job to the program's pid: the core gives up on it at 10 s.
+const START: Duration = Duration::from_secs(9);
+/// How long the stub waits for what the holder sends it.
+const ANSWER: Duration = Duration::from_secs(5);
 /// After launchd failed to start a stub, programs start directly this long.
 const COOLDOWN: Duration = Duration::from_secs(60);
 /// How long a dropped program waits for its stub to reap it.
@@ -121,6 +122,7 @@ pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: 
     }
     let Ok(limits) = launchd::limits() else { return direct() };
     let spec = Spec { argv: argv.to_vec(), env: env.clone(), cwd: cwd.into(), limits, exec: false };
+    let begun = Instant::now();
     let sock = match connect(&stderr_path()) {
         Ok(sock) => sock,
         Err(error) => {
@@ -128,7 +130,7 @@ pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: 
             return direct();
         }
     };
-    match launch(sock, slave, &spec, ANSWER) {
+    match launch(sock, slave, &spec, left(begun)) {
         Launch::Started(remote) => Ok(Process::Stub(remote)),
         Launch::Unavailable(error) => {
             cool_down("a program", &error);
@@ -165,8 +167,9 @@ pub fn start_exec(cmd: &Command, log: &Path) -> bool {
     })();
     let Some(spec) = spec else { return false };
     let nothing = File::open("/dev/null").ok();
+    let begun = Instant::now();
     let launched = connect(log).and_then(|sock| {
-        match launch(sock, nothing.as_ref().ok_or(io::Error::other("no /dev/null"))?, &spec, ANSWER) {
+        match launch(sock, nothing.as_ref().ok_or(io::Error::other("no /dev/null"))?, &spec, left(begun)) {
             Launch::Execed => Ok(()),
             Launch::Unavailable(error) | Launch::Failed(error) => Err(error),
             Launch::Refused(reason) => Err(io::Error::other(reason)),
@@ -182,6 +185,11 @@ pub fn start_exec(cmd: &Command, log: &Path) -> bool {
     }
 }
 
+/// What is left of `START`.
+fn left(begun: Instant) -> Duration {
+    START.saturating_sub(begun.elapsed()).max(Duration::from_secs(1))
+}
+
 static COOL_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn cooling_down() -> bool {
@@ -191,16 +199,6 @@ fn cooling_down() -> bool {
 fn cool_down(what: &str, error: &io::Error) {
     eprintln!("hc: no launchd job for {what} ({error}); starting programs directly for a minute");
     *COOL_UNTIL.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + COOLDOWN);
-}
-
-/// The umask as the holder has it, read once: reading it means setting it.
-fn umask() -> libc::mode_t {
-    static MASK: std::sync::OnceLock<libc::mode_t> = std::sync::OnceLock::new();
-    *MASK.get_or_init(|| unsafe {
-        let mask = libc::umask(0o077);
-        libc::umask(mask);
-        mask
-    })
 }
 
 /// Where this process's stderr goes (the holder's log), so a stub's own errors land there too.
@@ -217,8 +215,14 @@ fn stderr_path() -> PathBuf {
 fn connect(log: &Path) -> io::Result<UnixStream> {
     let start = Instant::now();
     let left = || JOB.saturating_sub(start.elapsed()).max(Duration::from_millis(1));
-    let (mut job, listener) =
-        launchd::start_job(std::env::current_exe()?.as_os_str(), SENTINEL, Path::new("/"), log, umask(), Some(left()))?;
+    let (mut job, listener) = launchd::start_job(
+        std::env::current_exe()?.as_os_str(),
+        SENTINEL,
+        Path::new("/"),
+        log,
+        launchd::umask(),
+        Some(left()),
+    )?;
     let sock = launchd::accept(&listener, left())?;
     sock.set_read_timeout(Some(left()))?;
     // The stub has forked and seen its launcher exit: only the job goes.
@@ -249,6 +253,8 @@ fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> Laun
         Err(error) => return Launch::Unavailable(error),
     }
     let sock = reader.get_mut();
+    // A stub that stopped reading must not hold the holder up: it acts only on a whole line.
+    sock.set_write_timeout(Some(answer)).ok();
     let sent = send_fd(sock, slave.as_raw_fd()).and_then(|()| {
         let mut line = serde_json::to_vec(spec)?;
         line.push(b'\n');

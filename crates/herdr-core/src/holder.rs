@@ -140,6 +140,16 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
     Ok(())
 }
 
+/// A terminal being started: its id leaves `starting` when this goes, even if the start panics.
+struct Starting(Arc<Holder>, u32);
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        self.0.lock().starting.remove(&self.1);
+        self.0.changed.notify_all();
+    }
+}
+
 impl Holder {
     fn exit(&self) -> ! {
         platform::remove_endpoint(&self.socket);
@@ -279,9 +289,13 @@ impl Holder {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             match kind {
                 proto::SPAWN => {
-                    // Starting a program can take a while: the other terminals' frames must not wait.
-                    let (holder, spec) = (self.clone(), proto::parse(&payload)?);
-                    std::thread::spawn(move || holder.spawn(id, spec));
+                    let spec = proto::parse(&payload)?;
+                    // Reserved here, before the next frame: input for it waits for the start.
+                    if let Some(starting) = self.reserve(id) {
+                        // A start can take a while: the other terminals' frames must not wait.
+                        let holder = self.clone();
+                        std::thread::spawn(move || holder.spawn(id, spec, starting));
+                    }
                 }
                 proto::INPUT => {
                     if let Some(t) = self.lock_started(id).terms.get(&id) {
@@ -306,7 +320,7 @@ impl Holder {
                     }
                 }
                 proto::FOREGROUND => {
-                    let mut st = self.lock();
+                    let mut st = self.lock_started(id);
                     let pgid = st.terms.get(&id).filter(|t| t.exit.is_none()).map_or(-1, |t| t.pty.foreground());
                     self.to_core(&mut st, &proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
@@ -326,6 +340,10 @@ impl Holder {
                 proto::GOODBYE => {
                     let mode: Goodbye = proto::parse(&payload)?;
                     let mut st = self.lock();
+                    // A program still starting is answered, or swept, before this core leaves.
+                    while !st.starting.is_empty() {
+                        st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
+                    }
                     // Read late, after a newer core said hello: that one stays.
                     if st.core.as_ref().is_none_or(|c| c.generation != generation) {
                         return Ok(());
@@ -337,9 +355,6 @@ impl Holder {
                     if mode == Goodbye::Shutdown {
                         // Whatever the core's stop missed (started since, or hiding) ends
                         // here, before the goodbye: the stop returns when all is gone.
-                        while !st.starting.is_empty() {
-                            st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
-                        }
                         let scopes: Vec<Option<String>> = st.terms.values().map(|t| t.scope.clone()).collect();
                         drop(st);
                         scopes.into_iter().for_each(|scope| self.sweep(scope));
@@ -363,17 +378,18 @@ impl Holder {
         Ok(())
     }
 
-    fn spawn(self: &Arc<Self>, id: u32, spec: proto::Spawn) {
+    /// Takes `id` for a start, unless it is already running (answered again) or being started (that one answers).
+    fn reserve(self: &Arc<Self>, id: u32) -> Option<Starting> {
         let mut st = self.lock();
         if let Some(t) = st.terms.get(&id) {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
-            return self.to_core(&mut st, &frame);
+            self.to_core(&mut st, &frame);
+            return None;
         }
-        // A duplicate of a spawn in flight is dropped: that one answers the core.
-        if !st.starting.insert(id) {
-            return;
-        }
-        drop(st);
+        st.starting.insert(id).then(|| Starting(self.clone(), id))
+    }
+
+    fn spawn(self: &Arc<Self>, id: u32, spec: proto::Spawn, _starting: Starting) {
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
         let mut st = self.lock();
@@ -475,7 +491,6 @@ impl Holder {
             crate::sweep::sweep(&[scope]);
             self.sweeps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         }
-        drop(child);
         let exited = Instant::now();
         let mut st = self.lock();
         while let Some(t) = st.terms.get(&id).filter(|t| !t.reader_done) {
@@ -495,6 +510,9 @@ impl Holder {
             t.exit = Some(exit);
             self.to_core(&mut st, &proto::json_frame(proto::EXITED, id, &exit));
         }
+        // Only now may its pid be reaped: until the exit is recorded a signal must still reach it, not a stranger.
+        drop(st);
+        drop(child);
     }
 
     /// Starts a core when the last one crashed and none came back in time.

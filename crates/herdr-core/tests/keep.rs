@@ -286,10 +286,13 @@ fn waits_end_when_a_kept_program_is_lost() {
     assert_eq!(waited["reason"], "exit");
 }
 
+/// How long a run waits for its program to start: a start through launchd takes longer than 50 ms.
+const SPAWN_MS: &str = if cfg!(target_os = "macos") { "2000" } else { "50" };
+
 #[test]
 fn a_kept_run_timeout_retains_the_claim_until_the_holder_answers() {
     let mut s = Session::new();
-    s.env.push(("HC_SPAWN_MS".into(), "2000".into()));
+    s.env.push(("HC_SPAWN_MS".into(), SPAWN_MS.into()));
     run(&s, &["sleep", "100"]);
     let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap() as i32;
     unsafe {
@@ -336,7 +339,7 @@ fn children_waits_also_end_on_program_loss() {
 fn late_initial_spawn_failure_is_handled_after_timeout_even_after_keep_off() {
     for keep in [false, true] {
         let mut s = Session::new();
-        s.env.push(("HC_SPAWN_MS".into(), "2000".into()));
+        s.env.push(("HC_SPAWN_MS".into(), SPAWN_MS.into()));
         run(&s, &["sleep", "100"]);
         let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap() as i32;
         unsafe {

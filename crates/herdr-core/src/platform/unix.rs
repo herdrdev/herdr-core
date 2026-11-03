@@ -540,7 +540,7 @@ pub fn spawn_pty(
 }
 
 /// Held while a terminal's descriptors are made and while a program is forked directly.
-static FORKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static FORKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Starts the program itself, as a child of this process.
 pub(super) fn spawn_direct(
