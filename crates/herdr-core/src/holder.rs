@@ -172,7 +172,7 @@ impl Holder {
         }
     }
 
-    /// The state once `id` is no longer being started: a signal or release must find its terminal.
+    /// The state once `id` is no longer being started: input, a resize, a signal or a release must find its terminal.
     fn lock_started(&self, id: u32) -> MutexGuard<'_, State> {
         let mut st = self.lock();
         while st.starting.contains(&id) {
@@ -284,13 +284,13 @@ impl Holder {
                     std::thread::spawn(move || holder.spawn(id, spec));
                 }
                 proto::INPUT => {
-                    if let Some(t) = self.lock().terms.get(&id) {
+                    if let Some(t) = self.lock_started(id).terms.get(&id) {
                         let _ = t.input.send(payload);
                     }
                 }
                 proto::RESIZE => {
                     let size: proto::Size = proto::parse(&payload)?;
-                    let mut st = self.lock();
+                    let mut st = self.lock_started(id);
                     if let Some(t) = st.terms.get_mut(&id) {
                         t.cols = size.cols;
                         t.rows = size.rows;
