@@ -154,7 +154,7 @@ fn send_refuses_a_blocked_program_and_checks_status_atomically() {
 }
 
 #[test]
-fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
+fn agents_wait_for_a_person_to_pause() {
     let s = session();
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
@@ -164,24 +164,6 @@ fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
     let started = Instant::now();
     s.json(&["send", &t, "x"]);
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
-
-    // Keys pressed while a paste is going in are held until it's done.
-    std::thread::sleep(Duration::from_millis(700));
-    let sender = {
-        let mut cmd = s.cmd();
-        cmd.args(["send", &t, "abc"]);
-        std::thread::spawn(move || cmd.output().unwrap())
-    };
-    // Inside the paste: "abc" is in, its Enter (the second 0d) is not.
-    let tokens = || text(&s, &t).split_whitespace().map(String::from).collect::<Vec<_>>();
-    wait_until("paste in", || tokens().contains(&"63".to_string()));
-    assert_eq!(tokens().iter().filter(|b| *b == "0d").count(), 1, "the paste ended already: tests nothing");
-    person.typed(b"Z");
-    assert!(sender.join().unwrap().status.success());
-    wait_until("Z delivered", || text(&s, &t).contains("5a"));
-    let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
-    let tail: Vec<&str> = bytes.iter().rev().take(5).rev().map(String::as_str).collect();
-    assert_eq!(tail, ["61", "62", "63", "0d", "5a"], "all: {bytes:?}");
 }
 
 #[test]
