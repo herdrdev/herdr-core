@@ -67,6 +67,14 @@ fn mac_sign_uses_runtime_and_entitlements_even_for_ad_hoc_builds() {
 }
 
 #[test]
+fn advertised_personal_information_has_runtime_entitlements() {
+    let entitlements = std::fs::read_to_string(format!("{ROOT}/distribution/macos-entitlements.plist")).unwrap();
+    for key in ["addressbook", "calendars", "photos-library"] {
+        assert!(entitlements.contains(&format!("com.apple.security.personal-information.{key}</key><true/>")));
+    }
+}
+
+#[test]
 fn notarization_requires_acceptance_before_gatekeeper_assessment() {
     for accepted in [true, false] {
         let s = Scratch::new();

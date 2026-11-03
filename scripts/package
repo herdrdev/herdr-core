@@ -1,6 +1,7 @@
 #!/bin/sh
 # Package a built Unix binary with its redistribution notices.
 set -eu
+export COPYFILE_DISABLE=1
 if [ "$#" -ne 2 ]; then
     echo "usage: scripts/package <herdr-core binary> <output.tar.gz>" >&2
     exit 2
@@ -11,7 +12,7 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 if [ -d "$1/Contents/MacOS" ]; then
     cp -R "$1" "$work/Herdr Core.app"
     # Released old updaters only know this path. Keep it as an identical,
-    # independently signed executable; migration fetches the complete bundle.
+    # independently signed executable; the app installer completes old upgrades.
     cp "$1/Contents/MacOS/herdr-core" "$work/herdr-core"
 else
     cp "$1" "$work/herdr-core"

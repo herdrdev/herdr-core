@@ -100,6 +100,8 @@ pub fn download(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, R
             "",
         ));
     }
+    crate::platform::verify_release_bundle(&bin)
+        .map_err(|e| RpcError::new("refused", format!("invalid release signature: {e}"), ""))?;
     Ok(bin)
 }
 

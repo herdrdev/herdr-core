@@ -30,13 +30,13 @@ pub fn serve() -> io::Result<()> {
     // Where we listen, for clients whose env points elsewhere.
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;
+    platform::legacy_bundle_notice(&paths.state);
     let info = load_identity(&paths.state, platform::machine_id())?;
     let socket = paths.socket.clone();
     let _shutdown_watch = platform::monitor_host_shutdown();
     // Adopt the holder's terminals before anyone can talk to us.
     let core = Core::start(paths, info)?;
     let bound = AsyncListener::bind(&socket)?;
-    platform::migrate_legacy_install();
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;

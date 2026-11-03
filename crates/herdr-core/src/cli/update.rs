@@ -95,7 +95,7 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
     let human = format!(
         "{shown}: {was} -> {now}; core running again (pid {}), terminals kept{}",
         status["pid"],
-        crate::platform::privacy_upgrade_notice()
+        crate::platform::privacy_upgrade_notice(&dest)
     );
     Ok(Out {
         json: json!({"path": shown, "was": was, "now": now, "restarted": restarted, "pid": status["pid"]}),

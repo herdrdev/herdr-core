@@ -47,9 +47,39 @@ pub(crate) fn raise_nofile_limit() {
     }
 }
 
-pub fn migrate_legacy_install() {
+pub fn core_executable(exe: &std::path::Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
-    macos_bundle::migrate_legacy();
+    {
+        macos_bundle::core_executable(exe)
+    }
+    #[cfg(not(target_os = "macos"))]
+    exe.to_path_buf()
+}
+
+pub fn needs_bundle_update() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_bundle::needs_bundle_update()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn legacy_bundle_notice(state: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    macos_bundle::legacy_notice(state);
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn verify_release_bundle(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if macos_bundle::source_is_bundle(path) {
+        let local = std::env::var("HERDR_RELEASES_URL")
+            .is_ok_and(|url| url.trim_end_matches('/') != "https://releases.herdr.dev");
+        macos_bundle::verify(path.parent().unwrap().parent().unwrap().parent().unwrap(), local)?;
+    }
+    Ok(())
 }
 
 /// macOS cores leave the app's process coalition; holders inherit the core's.
@@ -75,12 +105,13 @@ pub fn bundle_update_hint() -> Option<&'static str> {
         .then_some("use hc update, or --from 'Herdr Core.app' (its Contents/MacOS/herdr-core also works)")
 }
 
-pub fn privacy_upgrade_notice() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "; recreate terminals started before the Herdr Core.app upgrade if macOS privacy access is broken (they were not stopped)"
-    } else {
-        ""
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn privacy_upgrade_notice(previous_exe: &std::path::Path) -> &'static str {
+    #[cfg(target_os = "macos")]
+    if !macos_bundle::source_is_bundle(previous_exe) {
+        return "; recreate terminals started before the Herdr Core.app upgrade if macOS privacy access is broken (they were not stopped)";
     }
+    ""
 }
 
 /// Keep the early shutdown watch alive for the core's lifetime.

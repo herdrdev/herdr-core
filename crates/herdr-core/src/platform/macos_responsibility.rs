@@ -39,12 +39,13 @@ pub fn exec(cmd: Command) -> io::Result<()> {
 
 fn exec_or_inherit(mut cmd: Command, disclaim: Option<Disclaim>) -> io::Result<()> {
     match disclaim {
-        Some(disclaim) => exec_with(&cmd, disclaim),
-        None => {
-            eprintln!("hc: responsibility disclaimer unavailable; using inherited responsibility");
-            Err(cmd.exec())
+        Some(disclaim) => {
+            let error = exec_with(&cmd, disclaim).unwrap_err();
+            eprintln!("hc: responsibility disclaimer failed ({error}); using inherited responsibility");
         }
+        None => eprintln!("hc: responsibility disclaimer unavailable; using inherited responsibility"),
     }
+    Err(cmd.exec())
 }
 
 fn cstring(value: &OsStr) -> io::Result<CString> {
@@ -112,9 +113,9 @@ mod tests {
     }
 
     #[test]
-    fn disclaimer_failure_is_reported_without_running_the_command() {
-        let error = exec_with(&Command::new("/usr/bin/true"), refuse).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    fn disclaimer_failure_falls_back_to_plain_exec() {
+        let error = exec_or_inherit(Command::new("/nonexistent/hc-disclaim-test"), Some(refuse)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

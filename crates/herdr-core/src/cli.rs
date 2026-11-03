@@ -583,13 +583,17 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             if let Some(v) = &version
                 && !force
                 && !older(&this, &format!("hc {v}"))
+                && !crate::platform::needs_bundle_update()
             {
                 let human = format!("{this} is already {v} or newer");
                 return Ok(Some(up_to_date(&paths, v, human)?));
             }
             // Only when asked: hc never checks for updates on its own.
             let scratch = crate::releases::Scratch::new()?;
-            let m = crate::releases::manifest(version.as_deref(), &scratch.0)?;
+            let requested = version
+                .as_deref()
+                .map(|v| if !force && !older(&this, &format!("hc {v}")) { env!("CARGO_PKG_VERSION") } else { v });
+            let m = crate::releases::manifest(requested, &scratch.0)?;
             // Apps and scripts built for this generation would break on another one.
             if m.generation != crate::api::GENERATION && !force {
                 return Err(RpcError::new(
@@ -603,7 +607,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
                     "update the apps that use hc first, then hc update --force",
                 ));
             }
-            if version.is_none() && !force && !older(&this, &format!("hc {}", m.version)) {
+            if version.is_none()
+                && !force
+                && !older(&this, &format!("hc {}", m.version))
+                && !crate::platform::needs_bundle_update()
+            {
                 let human = format!("{this} is up to date (latest release: {})", m.version);
                 up_to_date(&paths, &m.version, human)?
             } else {

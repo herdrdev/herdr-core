@@ -38,7 +38,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Only tag pushes can use the release environment's Apple certificate.
     environment: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || 'build' }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
