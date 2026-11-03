@@ -35,9 +35,12 @@ impl Releases {
             let tar = dir.join(format!("herdr-core-{t}.tar.gz"));
             if cfg!(target_os = "macos") && t.starts_with("macos-") {
                 let app = s.root.join("Herdr Core.app");
+                let standalone = s.root.join("herdr-core");
+                std::fs::copy(BIN, &standalone).unwrap();
                 for (script, args) in [
                     ("mac-bundle", vec![PathBuf::from(BIN), app.clone()]),
                     ("mac-sign", vec![app.clone()]),
+                    ("mac-sign", vec![standalone]),
                     ("package", vec![app, tar]),
                 ] {
                     let out = Command::new("bash")

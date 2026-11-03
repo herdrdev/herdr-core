@@ -11,9 +11,9 @@ work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 if [ -d "$1/Contents/MacOS" ]; then
     cp -R "$1" "$work/Herdr Core.app"
-    # Released old updaters only know this path. Keep it as an identical,
-    # independently signed executable; the app installer completes old upgrades.
-    cp "$1/Contents/MacOS/herdr-core" "$work/herdr-core"
+    # Old updaters install only this standalone signature. The bundle executable
+    # is resource-sealed and cannot be copied out without invalidating it.
+    cp "$(dirname "$1")/herdr-core" "$work/herdr-core"
 else
     cp "$1" "$work/herdr-core"
 fi
