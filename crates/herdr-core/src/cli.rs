@@ -369,6 +369,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             };
             let mut human =
                 format!("sent at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
+            if r["waited_for_person"] == true {
+                human.push_str("; waited for the person's draft");
+            }
             if !r["wait"].is_null() {
                 human = format!("{human}\n{}", describe_wait(&r["wait"]));
             }
@@ -951,6 +954,14 @@ mod tests {
         assert!(!describe(&t).contains("first message"));
         t["first_message"] = json!({"sent": false, "reason": "output did not settle"});
         assert!(describe(&t).contains("first message NOT sent: output did not settle"));
+    }
+
+    #[test]
+    fn get_says_when_input_is_waiting_for_a_person() {
+        let mut t = json!({"address": "t1", "waiting_for_person": true});
+        assert!(describe(&t).contains("waiting for the person to submit or clear their draft"));
+        t["waiting_for_person"] = json!(false);
+        assert!(!describe(&t).contains("waiting for the person"));
     }
 
     #[test]

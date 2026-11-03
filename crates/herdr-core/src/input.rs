@@ -17,11 +17,15 @@ pub const OUTPUT_SETTLE: Duration = Duration::from_millis(800);
 const STARTUP_MS: u64 = 10_000;
 /// The longest a send waits for a starting agent to settle.
 const SETTLE_MAX: Duration = Duration::from_secs(5);
+/// Maximum extra hold for an unsent human draft; remote calls budget for it too.
+pub const DRAFT_MAX_MS: u64 = 180_000;
 
 /// A person's typing, as it affects agent input to one terminal.
 #[derive(Default)]
 pub struct Gate {
     last_human: Option<Instant>,
+    draft: Draft,
+    pub waiting_for_person: bool,
     /// An agent's input is going in right now: viewer input waits.
     busy: bool,
     held: Vec<u8>,
@@ -48,8 +52,9 @@ impl Gate {
     /// Viewer bytes: straight through, or held while an agent types.
     /// Only human input resets the quiet period.
     pub fn viewer(&mut self, bytes: &[u8], human: bool) -> Vec<u8> {
-        if human {
+        if human && !bytes.is_empty() {
             self.last_human = Some(Instant::now());
+            self.draft.feed(bytes);
         }
         if self.busy {
             self.held_human |= human && !bytes.is_empty();
@@ -57,6 +62,102 @@ impl Gate {
             Vec::new()
         } else {
             bytes.to_vec()
+        }
+    }
+}
+
+/// Conservative input tracking, not a claim about the program's composer.
+/// Escape does not mean clear in every program; only Enter, ctrl+c and ctrl+u release.
+#[derive(Default)]
+struct Draft {
+    pending: bool,
+    escape: Vec<u8>,
+    pasted: bool,
+}
+
+impl Draft {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if !self.escape.is_empty() {
+                self.escape.push(byte);
+                if self.escape.len() == 2 && matches!(byte, b'[' | b'O') {
+                    continue;
+                }
+                if self.escape.len() > 2 && !(0x40..=0x7e).contains(&byte) {
+                    if self.escape.len() > 128 {
+                        self.escape.clear();
+                    }
+                    continue;
+                }
+                match self.escape.as_slice() {
+                    b"\x1b[200~" => self.pasted = true,
+                    b"\x1b[201~" => self.pasted = false,
+                    // Alt+text is still text; CSI and SS3 navigation are not.
+                    [0x1b, b] => self.key(u32::from(*b)),
+                    _ => self.encoded_key(),
+                }
+                self.escape.clear();
+            } else if byte == 0x1b {
+                self.escape.push(byte);
+            } else if self.pasted {
+                self.pending = true;
+            } else {
+                self.key(u32::from(byte));
+            }
+        }
+    }
+
+    fn key(&mut self, code: u32) {
+        match code {
+            10 | 13 | 3 | 21 if !self.pasted => self.pending = false,
+            9 | 32..=126 | 128..=0x10ffff => self.pending = true,
+            _ => {}
+        }
+    }
+
+    fn encoded_key(&mut self) {
+        let Some(body) = self.escape.strip_prefix(b"\x1b[") else { return };
+        let Some((&kind, params)) = body.split_last() else { return };
+        let Ok(params) = std::str::from_utf8(params) else { return };
+        let fields: Vec<&str> = params.split(';').collect();
+        let number = |i: usize| fields.get(i)?.split(':').next()?.parse::<u32>().ok();
+        let (code, ctrl) = match kind {
+            // Kitty/CSI-u: release events do not type, nor do functional key codes.
+            b'u' if !fields.get(1).is_some_and(|s| s.ends_with(":3")) => {
+                let code = match number(0) {
+                    Some(57414) => 13,         // Keypad Enter.
+                    Some(57399..=57416) => 32, // Keypad text.
+                    Some(code) if !(57344..=63743).contains(&code) => code,
+                    _ => return,
+                };
+                (code, number(1).unwrap_or(1).saturating_sub(1) & 4 != 0)
+            }
+            // xterm modifyOtherKeys.
+            b'~' if number(0) == Some(27) => {
+                let Some(code) = number(2) else { return };
+                (code, number(1).unwrap_or(1).saturating_sub(1) & 4 != 0)
+            }
+            // Win32-input-mode: Unicode character, key-down, control-state.
+            b'_' if number(3) == Some(1) => {
+                let Some(code) = number(2) else { return };
+                (code, number(4).unwrap_or(0) & 12 != 0)
+            }
+            _ => return,
+        };
+        self.key(if ctrl && (64..=127).contains(&code) { code & 31 } else { code });
+    }
+}
+
+/// Cleans up the transient waiting flag even if an input operation is cancelled.
+struct PersonWait<'a> {
+    core: &'a Core,
+    id: u32,
+}
+
+impl Drop for PersonWait<'_> {
+    fn drop(&mut self) {
+        if let Some(gate) = self.core.lock().gates.get_mut(&self.id) {
+            gate.waiting_for_person = false;
         }
     }
 }
@@ -100,6 +201,7 @@ pub struct Sent {
     pub turn: u64,
     /// Whether it went `working` soon after; None when it never reports status.
     pub started: Option<bool>,
+    pub waited_for_person: bool,
 }
 
 pub enum Interrupted {
@@ -112,34 +214,54 @@ pub enum Interrupted {
 impl Core {
     /// Types `steps` (built by `prepare` from the live state) into terminal `id`.
     /// `quiet`: how long a person must have stopped typing first (zero: don't wait).
+    /// Messages also hold for an unsent human draft, capped at three minutes.
+    /// Returns whether that draft held this operation (including time in the queue).
     pub async fn type_in<T>(
         &self,
         id: u32,
         quiet: Duration,
+        protect_draft: bool,
         prepare: impl FnOnce(&State, &Terminal) -> Result<(T, Vec<Step>), RpcError>,
-    ) -> Result<T, RpcError> {
-        let queue = self.lock().queues.entry(id).or_default().clone();
-        let _turn = queue.lock().await;
-        loop {
-            let left = self.lock().gates.get(&id).and_then(|g| g.last_human).map(|t| quiet.saturating_sub(t.elapsed()));
-            match left {
-                Some(left) if !left.is_zero() => tokio::time::sleep(left).await,
-                _ => break,
-            }
-        }
-        let (out, steps) = {
+    ) -> Result<(T, bool), RpcError> {
+        let deadline = Instant::now() + env_ms("HC_DRAFT_MS", DRAFT_MAX_MS);
+        let (queue, mut waited_for_person) = {
             let mut st = self.lock();
-            let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or_else(|| {
-                RpcError::new(
-                    "finished",
-                    format!("{} has finished", crate::terminals::address(id)),
-                    format!("hc read {}", crate::terminals::address(id)),
-                )
-            })?;
-            t.check_program()?;
-            let prepared = prepare(&st, t)?;
-            st.gates.entry(id).or_default().busy = true;
-            prepared
+            let draft = protect_draft && st.gates.get(&id).is_some_and(|g| g.draft.pending);
+            (st.queues.entry(id).or_default().clone(), draft)
+        };
+        let _turn = queue.lock().await;
+        let _waiting = PersonWait { core: self, id };
+        let mut prepare = Some(prepare);
+        let (out, steps) = loop {
+            let prepared = {
+                let mut st = self.lock();
+                let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or_else(|| {
+                    RpcError::new(
+                        "finished",
+                        format!("{} has finished", crate::terminals::address(id)),
+                        format!("hc read {}", crate::terminals::address(id)),
+                    )
+                })?;
+                t.check_program()?;
+                let gate = st.gates.entry(id).or_default();
+                let draft = protect_draft && gate.draft.pending && Instant::now() < deadline;
+                gate.waiting_for_person = draft;
+                waited_for_person |= draft;
+                let left = gate.last_human.map_or(Duration::ZERO, |t| quiet.saturating_sub(t.elapsed()));
+                if draft || !left.is_zero() {
+                    None
+                } else {
+                    let t = &st.reg.terminals[&id];
+                    let prepared = prepare.take().expect("prepared once")(&st, t)?;
+                    st.gates.entry(id).or_default().busy = true;
+                    Some(prepared)
+                }
+            };
+            if let Some(prepared) = prepared {
+                break prepared;
+            }
+            // Also notice submit/clear or an exit while waiting.
+            tokio::time::sleep(Duration::from_millis(25)).await;
         };
         for step in steps {
             match step {
@@ -168,7 +290,7 @@ impl Core {
         if let Some(link) = st.link(id) {
             link.input(id, &held);
         }
-        Ok(out)
+        Ok((out, waited_for_person))
     }
 
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
@@ -193,8 +315,8 @@ impl Core {
             t.check_program()?;
         }
         self.settle(id).await?;
-        let (status, turn, reported) = self
-            .type_in(id, quiet(), |st, t| {
+        let ((status, turn, reported), waited_for_person) = self
+            .type_in(id, quiet(), true, |st, t| {
                 let word = state_word(t);
                 if word.as_deref() == Some("blocked") && !force {
                     return Err(RpcError::new(
@@ -245,7 +367,7 @@ impl Core {
         } else {
             None
         };
-        Ok(Sent { status, turn, started })
+        Ok(Sent { status, turn, started, waited_for_person })
     }
 
     /// A starting agent can report before it is ready for a paste (Pi swaps its
@@ -282,7 +404,7 @@ impl Core {
 
     /// Named keys, after a person has paused typing.
     pub async fn keys(&self, id: u32, names: &[String]) -> Result<(Option<String>, u64), RpcError> {
-        self.type_in(id, quiet(), |st, t| {
+        self.type_in(id, quiet(), false, |st, t| {
             let screen = st.screens.get(&id).expect("live terminal has a screen");
             let mut steps = Vec::new();
             for name in names {
@@ -292,6 +414,7 @@ impl Core {
             Ok(((state_word(t), t.turn), steps))
         })
         .await
+        .map(|(out, _)| out)
     }
 
     /// Esc for programs that report status, else ctrl+c; then watch what happens.
@@ -304,14 +427,15 @@ impl Core {
         };
         let before = if reported { -1 } else { self.foreground(id).await };
         let key = self
-            .type_in(id, Duration::ZERO, |st, t| {
+            .type_in(id, Duration::ZERO, false, |st, t| {
                 let default = if reported { "esc" } else { "ctrl+c" };
                 let key = t.stop.clone().unwrap_or_else(|| default.into());
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
                 let bytes = crate::keys::encode(screen, &key)?;
                 Ok((key, vec![Step::Write(bytes)]))
             })
-            .await?;
+            .await?
+            .0;
         let live = |st: &State| st.reg.terminals.get(&id).is_some_and(|t| t.is_live());
         if reported {
             let settled = |st: &State| st.reg.terminals.get(&id).is_none_or(|t| !t.is_live() || !working(t));
@@ -362,16 +486,66 @@ mod tests {
         let mut gate = Gate::default();
         assert_eq!(gate.viewer(b"reply", false), b"reply");
         assert!(gate.last_human.is_none());
+        assert!(!gate.draft.pending);
         gate.viewer(b"x", true);
+        assert!(gate.draft.pending);
         let human = gate.last_human;
         gate.set_busy(true);
         assert!(gate.viewer(b"automatic", false).is_empty());
         assert!(!gate.has_held(), "automatic replies are not a person interrupting a scroll");
         assert_eq!(gate.last_human, human);
+        gate.viewer(b"\r\x15", false);
+        assert!(gate.draft.pending, "automatic input cannot submit or clear a person's draft");
         gate.viewer(b"typed", true);
         assert!(gate.has_held());
-        assert_eq!(gate.set_busy(false), b"automatictyped");
+        assert_eq!(gate.set_busy(false), b"automatic\r\x15typed");
         assert!(!gate.has_held());
+    }
+
+    #[test]
+    fn drafts_clear_only_on_submit_or_unambiguous_clear_keys() {
+        for clear in [
+            b"\r".as_slice(),
+            b"\n",
+            b"\x03",
+            b"\x15",
+            b"\x1b[13u",
+            b"\x1b[57414u",
+            b"\x1b[99;5u",
+            b"\x1b[27;5;117~",
+            b"\x1b[13;0;13;1;0;1_",
+        ] {
+            let mut draft = Draft::default();
+            draft.feed(b"unfinished");
+            for byte in clear {
+                draft.feed(&[*byte]);
+            }
+            assert!(!draft.pending, "{clear:?}");
+        }
+        for keep in [b"\x7f".as_slice(), b"\x08", b"\x1b", b"\x1b[A", b"\x1b[13;1:3u"] {
+            let mut draft = Draft::default();
+            draft.feed(b"unfinished");
+            draft.feed(keep);
+            assert!(draft.pending, "{keep:?}");
+        }
+    }
+
+    #[test]
+    fn paste_newlines_and_navigation_do_not_release_a_draft() {
+        let mut draft = Draft::default();
+        draft.feed(b"\x1b[A\x1b[<64;5;5M\x7f\x08");
+        assert!(!draft.pending);
+        for byte in b"\x1b[200~a\nb\r\x1b[201~" {
+            draft.feed(&[*byte]);
+        }
+        assert!(draft.pending);
+        draft.feed(b"\x1b\r");
+        assert!(!draft.pending);
+        for key in [b"\x1b[97u".as_slice(), b"\x1b[57400u", b"\x1b[65;30;97;1;0;1_", b"\x1b[27;1;97~"] {
+            draft.feed(key);
+            assert!(draft.pending, "{key:?}");
+            draft.feed(b"\x15");
+        }
     }
 
     #[test]
