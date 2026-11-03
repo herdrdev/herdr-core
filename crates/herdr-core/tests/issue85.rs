@@ -24,6 +24,55 @@ command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; for i in $(seq 
 }
 
 #[test]
+fn a_retried_first_message_stays_pending_until_the_delivered_task_finishes() {
+    let mut s = Session::new();
+    s.env = vec![("HC_QUIET_MS".into(), "0".into()), ("HC_STARTED_MS".into(), "100".into())];
+    let dir = s.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&dir).unwrap();
+    let finish = s.root.join("finish");
+    std::fs::write(
+        dir.join("ticker.md"),
+        format!(
+            r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; for i in $(seq 1 65); do echo tick; sleep 0.1; done; read -r task; echo "got:$task"; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; printf "\033]7501;state=idle\033\\"; sleep 100'
+---
+"#,
+            finish.display()
+        ),
+    )
+    .unwrap();
+    let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+    let start = Instant::now();
+    let r = s.json(&["run", "--bg", "--parent", &parent, "ticker", "retried-task"]);
+    assert_eq!(r["first_message"]["sent"], true, "{r}");
+    assert!(start.elapsed().as_secs() >= 5, "must outlast the first settle attempt");
+    let child = r["address"].as_str().unwrap();
+    wait_until("retried task delivered", || text(&s, child).contains("got:retried-task"));
+    let wait = |mode: &str, timeout: &str| {
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "wait", "--children", mode, "--timeout", timeout])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+    for mode in ["all", "any"] {
+        let r = wait(mode, "0.1");
+        assert_eq!(r["reason"], "timeout", "{mode}: startup done is not completion: {r}");
+        assert_eq!(r["children"][0]["ended"], false, "{r}");
+    }
+    std::fs::write(finish, "").unwrap();
+    let r = wait("any", "5");
+    assert_eq!(r["reason"], "children", "{r}");
+    assert_eq!(r["children"][0]["ended"], true, "{r}");
+    assert_eq!(wait("all", "0.1")["reason"], "children");
+    assert_eq!(wait("any", "0.1")["reason"], "timeout", "completion is consumed once");
+    assert_eq!(text(&s, child).matches("got:retried-task").count(), 1, "delivered once");
+}
+
+#[test]
 fn an_unsent_template_message_stays_visible_in_get() {
     let mut s = Session::new();
     s.env.push(("HC_READY_MS".into(), "1200".into()));
