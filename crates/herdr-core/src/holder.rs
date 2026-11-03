@@ -87,7 +87,8 @@ struct Holder {
     draining: std::sync::atomic::AtomicBool,
     /// Sweeps still ending what a finished program left behind.
     sweeps: std::sync::atomic::AtomicUsize,
-    /// One start at a time, so a second core asking for a terminal that is still starting finds it.
+    /// One start at a time. Each core connection has its own commands thread, and a core taking over re-sends
+    /// SPAWN for terminals it already asked for: the second must find the first, not start the program twice.
     spawning: Mutex<()>,
 }
 

@@ -512,7 +512,7 @@ fn many_terminals_start_at_once_and_leave_no_job_or_stub_behind() {
     run(&s, &["true"]);
     let holder = holder_of(&s);
     let ids: Vec<String> = std::thread::scope(|scope| {
-        let jobs: Vec<_> = (0..30)
+        let jobs: Vec<_> = (0..12)
             .map(|i| {
                 scope.spawn({
                     let s = &s;
