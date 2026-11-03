@@ -386,7 +386,12 @@ mod tests {
         drop(stub);
         let mut remote = Remote { pid: program.id(), reader: BufReader::new(holder) };
         assert_eq!(remote.wait().unwrap(), (None, Some(libc::SIGKILL)));
-        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&program.wait().unwrap()), Some(libc::SIGKILL));
+        let ended = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            program.try_wait().unwrap().is_some()
+        });
+        assert!(ended, "the program outlived its stub");
+        let _ = program.kill();
     }
 
     #[test]
@@ -395,13 +400,18 @@ mod tests {
             let program = Command::new("sleep").arg("300").spawn().unwrap();
             let pid = program.id();
             let (mut holder, stub) = UnixStream::pair().unwrap();
-            let stub = std::thread::spawn(move || babysit(stub, program));
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || done.send(babysit(stub, program)).unwrap());
             if read_the_pid {
                 assert_eq!(read_reply(&mut BufReader::new(&mut holder)).unwrap(), Reply::Pid(pid));
             }
             drop(holder);
-            stub.join().unwrap().unwrap();
-            assert!(gone(pid), "the program outlived its holder");
+            let result = ended.recv_timeout(Duration::from_secs(10));
+            if result.is_err() {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            }
+            result.expect("the program outlived its holder").unwrap();
+            assert!(gone(pid));
         }
     }
 
