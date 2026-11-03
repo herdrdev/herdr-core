@@ -245,6 +245,7 @@ fn holds_file(pid: i32, needle: &[u8]) -> bool {
 /// macOS shows no environment for its own binaries and none a job restored
 /// in-process, so a session's processes are the ones holding its files
 /// (the holder and the stubs log to its state dir), and what they started.
+/// A program orphaned from both of them holds no such file and is not found.
 #[cfg(target_os = "macos")]
 fn procs_with(path: &str) -> Vec<i32> {
     let me = std::process::id() as i32;

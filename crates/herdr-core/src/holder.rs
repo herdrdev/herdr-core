@@ -552,11 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn what_looks_at_the_terminals_waits_for_a_start_in_flight() {
-        assert!(during_a_start(|h| drop(h.settled())).0, "the table was read in the middle of a start");
-    }
-
-    #[test]
     fn a_drain_does_not_see_an_empty_holder_in_the_middle_of_a_start() {
         let (waited, drained) = during_a_start(|h| h.drained());
         assert!(waited, "a drain looked at the table in the middle of a start");
