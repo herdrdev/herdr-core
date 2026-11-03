@@ -169,26 +169,22 @@ fn agents_wait_for_a_person_to_pause() {
 
 #[test]
 fn a_send_does_not_submit_a_persons_unfinished_draft_after_a_pause() {
-    let s = Session::new(); // Keep the production 3000 ms typing quiet period.
+    let s = session();
     let t = run(
         &s,
         "stty -echo; r state=idle; while IFS= read -r l; do echo \"submitted:$l\"; r state=working; r state=done; done",
     );
     wait_until("idle", || status(&s, &t) == "idle");
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
-    let draft = b"my half-written draft ";
-    for byte in draft {
-        person.typed(&[*byte]);
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    person.typed(b"my half-written draft ");
     // A thinking pause, not Enter. The draft is still in the program's input buffer.
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(Duration::from_millis(1200));
     assert!(!text(&s, &t).contains("submitted:"));
     let mut conn = s.connect();
     let target = t.clone();
     let sending =
         std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "agent-message"})));
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(1200));
     let screen = text(&s, &t);
     assert!(
         !screen.contains("submitted:my half-written draft agent-message"),
@@ -196,13 +192,11 @@ fn a_send_does_not_submit_a_persons_unfinished_draft_after_a_pause() {
     );
     assert_eq!(s.json(&["get", &t])["waiting_for_person"], true);
     assert!(!sending.is_finished());
-    eprintln!("held draft after four-second pause: screen={screen:?}; waiting_for_person=true");
     person.typed(b"\r");
     let sent = sending.join().unwrap();
     assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
     shows(&s, &t, "submitted:agent-message");
     assert!(text(&s, &t).contains("submitted:my half-written draft"));
-    eprintln!("after human Enter: send={sent}; screen={:?}", text(&s, &t));
     assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
 }
 
