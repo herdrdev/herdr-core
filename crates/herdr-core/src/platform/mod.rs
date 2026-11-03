@@ -18,14 +18,15 @@ mod macos_shutdown;
 mod macos_stub;
 
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
-pub fn daemon_startup() -> bool {
+/// Returns the command line a core or holder moved into its job is to run.
+pub fn daemon_startup() -> Option<Vec<std::ffi::OsString>> {
     #[cfg(target_os = "macos")]
     {
         macos_launchd::startup()
     }
     #[cfg(not(target_os = "macos"))]
     {
-        false
+        None
     }
 }
 
@@ -39,10 +40,8 @@ pub fn prepare_core() {
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
     #[cfg(target_os = "macos")]
-    match cmd.get_args().next().and_then(|arg| arg.to_str()) {
-        Some("serve") => return macos_launchd::spawn(cmd, log),
-        Some("hold") => return macos_stub::start_exec(cmd, log),
-        _ => {}
+    if matches!(cmd.get_args().next().and_then(|arg| arg.to_str()), Some("serve" | "hold")) {
+        return macos_launchd::spawn(cmd, log);
     }
     false
 }

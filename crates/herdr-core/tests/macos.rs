@@ -39,7 +39,8 @@ fn members(id: u64) -> Vec<i64> {
 
 /// "<program> <grandchild>": a program with a child of its own, both in one terminal.
 fn tree(s: &Session, extra: &[&str]) -> (String, i64, i64) {
-    let id = run(s, &[extra, &["sh", "-c", "sleep 300 & echo \"$$ $!\"; wait"]].concat());
+    // It hangs up on nothing: only being killed ends it.
+    let id = run(s, &[extra, &["sh", "-c", "trap '' HUP; sleep 300 & echo \"$$ $!\"; wait"]].concat());
     let mut pids = Vec::new();
     wait_until("program and its child", || {
         pids = text(s, &id).split_whitespace().filter_map(|w| w.parse::<i64>().ok()).collect();
@@ -540,33 +541,70 @@ fn a_terminal_that_prints_a_lot_then_exits_loses_nothing() {
     assert!(text(&s, &id).contains("200000"));
 }
 
-#[test]
-fn programs_start_directly_when_the_job_binary_is_an_older_build() {
-    if !gui() {
-        return;
-    }
-    let mut s = Session::new();
+/// A holder whose path holds a build that does not know the job sentinel (it ends in a usage error).
+fn holder_with_an_older_build_at_its_path(s: &mut Session) -> i64 {
     let bin = s.root.join("herdr-core");
     std::fs::copy(BIN, &bin).unwrap();
     s.bin = bin.clone();
-    run(&s, &["sleep", "300"]);
-    let (core, holder) = (s.json(&["server", "status"])["pid"].as_i64().unwrap(), holder_of(&s));
-    if !independent(&s, core) {
-        return;
-    }
-    // The holder now finds an older build at its path: it doesn't know the sentinel and ends in a usage error.
+    run(s, &["sleep", "300"]);
     let old = s.root.join("old");
     std::fs::write(&old, "#!/bin/sh\nexit 2\n").unwrap();
     std::fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     std::fs::rename(&old, &bin).unwrap();
-    s.bin = BIN.into(); // the holder's path holds the old build; the commands come from here
-    let started = std::time::Instant::now();
-    let id = run(&s, &["sh", "-c", "echo $$; exec sleep 300"]);
-    wait_until("direct start", || text(&s, &id).trim().parse::<i64>().is_ok());
-    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
-    assert_eq!(coalitions(text(&s, &id).trim().parse().unwrap()), coalitions(holder), "started by the holder itself");
-    let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/holder.log")).unwrap();
-    assert!(log.contains("starting programs directly"), "{log}");
+    s.bin = BIN.into(); // the commands come from here, the holder's path holds the old build
+    holder_of(s)
+}
+
+#[test]
+fn a_program_that_cannot_get_its_job_fails_instead_of_starting_in_the_holders_coalition() {
+    if !gui() {
+        return;
+    }
+    let mut s = Session::new();
+    holder_with_an_older_build_at_its_path(&mut s);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    // Not once, and not again a moment later: nothing is ever started in the holder's coalition silently.
+    for _ in 0..2 {
+        let (_, error) = s.err(&["run", "--bg", "sh", "-c", "echo started; exec sleep 300"]);
+        assert_eq!(error["error"]["kind"], "spawn_failed", "{error}");
+        assert!(error["error"]["message"].as_str().unwrap().contains("launchd"), "{error}");
+    }
+}
+
+#[test]
+fn losing_only_the_stub_ends_its_program_and_reports_a_kill() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let (a, program, _) = tree(&s, &[]);
+    let (kept, kept_program, _) = tree(&s, &["--keep"]);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let holder = holder_of(&s);
+    let parent_of = |pid: i64| -> i64 {
+        let out = Command::new("/bin/ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+    };
+    // What `pkill -f herdr-core` does to a stub, while its program lives on.
+    for (stub, program) in [(parent_of(program), program), (parent_of(kept_program), kept_program)] {
+        assert!(![core, holder].contains(&stub), "the program's parent is its stub");
+        unsafe { libc::kill(stub as i32, libc::SIGKILL) };
+        wait_until("the program is gone with its stub", || !pid_alive(program));
+    }
+    wait_until("exit reported", || get(&s, &a)["state"] == "finished");
+    let r = get(&s, &a);
+    assert_eq!((r["reason"].as_str(), r["signal"].as_i64()), (Some("exited"), Some(libc::SIGKILL as i64)), "{r}");
+    wait_until("the kept terminal is recovered", || {
+        let r = get(&s, &kept);
+        r["state"] == "live" && r["pid"].as_i64().is_some_and(|p| p != kept_program)
+    });
+    assert!(pid_alive(core) && pid_alive(holder));
 }
 
 #[test]

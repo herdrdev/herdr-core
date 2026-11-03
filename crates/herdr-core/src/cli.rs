@@ -139,7 +139,7 @@ pub fn command_names() -> Vec<String> {
 pub fn main() -> i32 {
     let daemon = crate::platform::daemon_startup();
     client::remember_exe();
-    let args: Vec<_> = if daemon { vec!["serve".into()] } else { std::env::args_os().skip(1).collect() };
+    let args: Vec<_> = daemon.unwrap_or_else(|| std::env::args_os().skip(1).collect());
     match args.iter().map(|a| a.to_str()).collect::<Vec<_>>().as_slice() {
         [Some("--help" | "-h" | "help")] => {
             print!("{HELP}");

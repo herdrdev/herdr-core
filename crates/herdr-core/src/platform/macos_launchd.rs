@@ -1,5 +1,6 @@
-//! A one-shot launchd job gives the core its own coalition. setsid alone
-//! leaves it in the app's coalition, which macOS can kill when the app quits.
+//! A one-shot launchd job gives the core its own coalition, and the holder
+//! another. setsid alone leaves them in the app's coalition, which macOS can
+//! kill when the app quits.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -10,11 +11,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DETACH: &str = "HC_LAUNCHD_DETACH";
 const SENTINEL: &str = "--hc-launchd";
+/// The holder's own sentinel: an older build rejects it, where it would run `serve` for `SENTINEL`.
+const HOLD: &str = "--hc-launchd-hold";
 const DIRECT: &str = "HC_LAUNCHD_DIRECT";
 const LAUNCHCTL: &str = "/bin/launchctl";
 const PREFIX: &str = "dev.herdr.core.";
@@ -72,6 +75,9 @@ pub(super) fn restore_limits(limits: &Limits) -> io::Result<()> {
 struct Inherited {
     env: Vec<(Vec<u8>, Vec<u8>)>,
     limits: Limits,
+    /// The command line to run (empty from an older launcher: `serve`).
+    #[serde(default)]
+    args: Vec<Vec<u8>>,
 }
 
 impl Inherited {
@@ -90,7 +96,11 @@ impl Inherited {
         env.remove(OsStr::new(DETACH));
         env.remove(OsStr::new(DIRECT));
         env.insert("XPC_SERVICE_NAME".into(), "0".into());
-        Ok(Self { env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(), limits: limits()? })
+        Ok(Self {
+            env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(),
+            limits: limits()?,
+            args: cmd.get_args().map(|arg| arg.to_owned().into_vec()).collect(),
+        })
     }
 
     /// Runs only in the newly forked core, before it creates any threads.
@@ -108,17 +118,26 @@ impl Inherited {
     }
 }
 
-/// Detach only the internal launchd sentinel before any CLI/runtime setup.
-pub fn startup() -> bool {
-    let sentinel = std::env::args_os().nth(1);
-    let spawner = sentinel.as_deref() == Some(OsStr::new(super::macos_stub::SENTINEL));
-    if !spawner && sentinel.as_deref() != Some(OsStr::new(SENTINEL)) {
-        return false;
-    }
+/// This process is a holder that was started in a job of its own.
+static ISOLATED: AtomicBool = AtomicBool::new(false);
+
+/// Whether programs get a job each: only a holder that left the app's coalition
+/// can usefully give them theirs. One started directly (SSH, or a failed job)
+/// never switches, so its programs all start alike.
+pub(super) fn isolated() -> bool {
+    ISOLATED.load(Ordering::Relaxed)
+}
+
+/// Detach only the internal launchd sentinels before any CLI/runtime setup.
+/// For a core or holder just moved into its job: the command line to run.
+pub fn startup() -> Option<Vec<OsString>> {
+    let arg = std::env::args_os().nth(1)?;
+    let sentinel = [SENTINEL, HOLD, super::macos_stub::SENTINEL].into_iter().find(|s| arg == *s)?;
     let result = if let Some(socket) = std::env::var_os(DETACH) {
-        detach(if spawner { super::macos_stub::SENTINEL } else { SENTINEL }, Path::new(&socket))
-    } else if let Some(socket) = std::env::args_os().nth(2) {
-        if spawner {
+        detach(sentinel, Path::new(&socket)).map(|()| Vec::new())
+    } else {
+        let socket = std::env::args_os().nth(2)?;
+        if sentinel == super::macos_stub::SENTINEL {
             // A stub never becomes a core: it serves one program, then ends.
             std::process::exit(match super::macos_stub::serve(Path::new(&socket)) {
                 Ok(()) => 0,
@@ -129,14 +148,17 @@ pub fn startup() -> bool {
             });
         }
         receive(Path::new(&socket))
-    } else {
-        return false;
     };
-    if let Err(error) = result {
-        eprintln!("hc: launchd detach failed: {error}");
-        std::process::exit(1);
+    match result {
+        Ok(args) => {
+            ISOLATED.store(sentinel == HOLD, Ordering::Relaxed);
+            Some(if args.is_empty() { vec!["serve".into()] } else { args })
+        }
+        Err(error) => {
+            eprintln!("hc: launchd detach failed: {error}");
+            std::process::exit(1);
+        }
     }
-    true
 }
 
 /// Called only after parsing a real Cmd::Serve, so help/errors never launch.
@@ -156,7 +178,7 @@ pub fn prepare_core() {
         paths.create_dirs()?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("serve");
-        launch(&cmd, &paths.state.join("core.log"))
+        launch(&cmd, SENTINEL, &paths.state.join("core.log"))
     })();
     match result {
         Ok(()) => std::process::exit(0),
@@ -174,18 +196,21 @@ pub(super) fn ssh() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some()
 }
 
-/// Only `serve` uses this path (programs use `macos_stub`). SSH is already
+/// `serve` and `hold` use this path (programs use `macos_stub`). SSH is already
 /// outside the app, and must retain its existing lifetime.
 pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
     if ssh() {
         return false;
     }
-    match launch(cmd, log) {
+    let serve = cmd.get_args().next() == Some(OsStr::new("serve"));
+    match launch(cmd, if serve { SENTINEL } else { HOLD }, log) {
         Ok(()) => true,
         Err(error) => {
             fallback(log, &error);
-            // Do not retry in a directly spawned fixed binary after a failure.
-            cmd.env(DIRECT, std::process::id().to_string());
+            if serve {
+                // Do not retry in a directly spawned fixed binary after a failure.
+                cmd.env(DIRECT, std::process::id().to_string());
+            }
             false
         }
     }
@@ -199,20 +224,17 @@ fn fallback(log: &Path, error: &io::Error) {
     }
 }
 
-/// The umask of this process, read once: reading it means setting it, so no program may be forked meanwhile.
+/// The umask of this process, read once (reading it means setting it).
 pub(super) fn umask() -> libc::mode_t {
     static MASK: std::sync::OnceLock<libc::mode_t> = std::sync::OnceLock::new();
-    *MASK.get_or_init(|| {
-        let _one = super::unix::FORKING.lock().unwrap_or_else(|p| p.into_inner());
-        unsafe {
-            let mask = libc::umask(0o077);
-            libc::umask(mask);
-            mask
-        }
+    *MASK.get_or_init(|| unsafe {
+        let mask = libc::umask(0o077);
+        libc::umask(mask);
+        mask
     })
 }
 
-fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
+fn launch(cmd: &Command, sentinel: &str, log: &Path) -> io::Result<()> {
     let inherited = Inherited::capture(cmd)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
     remove_stale(&format!("gui/{}", unsafe { libc::getuid() }), now);
@@ -222,7 +244,7 @@ fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
     // Create the log ourselves: same ownership, mask and append behavior as
     // direct startup, even before launchd has run the job for the first time.
     std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    let (mut job, listener) = start_job(cmd.get_program(), SENTINEL, &cwd, log, mask, None)?;
+    let (mut job, listener) = start_job(cmd.get_program(), sentinel, &cwd, log, mask, None)?;
     let mut ready = accept(&listener, HANDSHAKE_TIMEOUT).map_err(|e| match e.kind() {
         io::ErrorKind::TimedOut => io::Error::new(
             io::ErrorKind::TimedOut,
@@ -330,12 +352,14 @@ pub(super) fn connect_back(socket: &Path) -> io::Result<UnixStream> {
     UnixStream::connect(socket)
 }
 
-fn receive(socket: &Path) -> io::Result<()> {
+fn receive(socket: &Path) -> io::Result<Vec<OsString>> {
     let mut ready = connect_back(socket)?;
     ready.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     let inherited: Inherited = serde_json::from_reader(&mut ready)?;
+    let args = inherited.args.iter().cloned().map(OsString::from_vec).collect();
     inherited.restore()?;
-    ready.write_all(&[1])
+    ready.write_all(&[1])?;
+    Ok(args)
 }
 
 pub(super) struct Job {
@@ -626,7 +650,7 @@ mod tests {
         let log = scratch.dir.join("core.log");
         let mut cmd = Command::new(old);
         cmd.arg("serve");
-        let error = launch(&cmd, &log).unwrap_err();
+        let error = launch(&cmd, SENTINEL, &log).unwrap_err();
         if error.to_string().contains("launchctl bootstrap") {
             eprintln!("skipping: bootstrap denied: {error}");
             return;

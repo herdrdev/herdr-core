@@ -6,7 +6,7 @@
 use crate::holder_proto::{self as proto, Exit, Goodbye, HeldTerminal};
 use crate::paths::Paths;
 use crate::platform::{self, Process, Pty, Stream};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -69,20 +69,11 @@ impl Backlog {
 
 struct State {
     terms: HashMap<u32, Term>,
-    /// Programs being started (without the lock): their ids are taken.
-    starting: HashSet<u32>,
     core: Option<Core>,
     generation: u64,
     previous: &'static str,
     core_left: Instant,
     restarts: Vec<Instant>,
-}
-
-impl State {
-    /// Nothing runs and nothing is being started.
-    fn idle(&self) -> bool {
-        self.terms.is_empty() && self.starting.is_empty()
-    }
 }
 
 struct Holder {
@@ -111,7 +102,6 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
     let holder = Arc::new(Holder {
         state: Mutex::new(State {
             terms: HashMap::new(),
-            starting: HashSet::new(),
             core: None,
             generation: 0,
             previous: "none",
@@ -138,16 +128,6 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         });
     }
     Ok(())
-}
-
-/// A terminal being started: its id leaves `starting` when this goes, even if the start panics.
-struct Starting(Arc<Holder>, u32);
-
-impl Drop for Starting {
-    fn drop(&mut self) {
-        self.0.lock().starting.remove(&self.1);
-        self.0.changed.notify_all();
-    }
 }
 
 impl Holder {
@@ -177,18 +157,9 @@ impl Holder {
     }
 
     fn exit_if_drained(&self) {
-        if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().idle() {
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().terms.is_empty() {
             self.exit();
         }
-    }
-
-    /// The state once `id` is no longer being started: input, a resize, a signal or a release must find its terminal.
-    fn lock_started(&self, id: u32) -> MutexGuard<'_, State> {
-        let mut st = self.lock();
-        while st.starting.contains(&id) {
-            st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
-        }
-        st
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -241,10 +212,6 @@ impl Holder {
             if st.core.is_some() {
                 self.core_gone(&mut st, "crash");
             }
-            // A program still starting is part of what a new core must be told about.
-            while !st.starting.is_empty() {
-                st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
-            }
             st.generation += 1;
             let mut ids: Vec<u32> = st.terms.keys().copied().collect();
             ids.sort();
@@ -288,23 +255,15 @@ impl Holder {
     fn commands(self: &Arc<Self>, stream: &mut Stream, generation: u64) -> io::Result<()> {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             match kind {
-                proto::SPAWN => {
-                    let spec = proto::parse(&payload)?;
-                    // Reserved here, before the next frame: input for it waits for the start.
-                    if let Some(starting) = self.reserve(id) {
-                        // A start can take a while: the other terminals' frames must not wait.
-                        let holder = self.clone();
-                        std::thread::spawn(move || holder.spawn(id, spec, starting));
-                    }
-                }
+                proto::SPAWN => self.spawn(id, proto::parse(&payload)?),
                 proto::INPUT => {
-                    if let Some(t) = self.lock_started(id).terms.get(&id) {
+                    if let Some(t) = self.lock().terms.get(&id) {
                         let _ = t.input.send(payload);
                     }
                 }
                 proto::RESIZE => {
                     let size: proto::Size = proto::parse(&payload)?;
-                    let mut st = self.lock_started(id);
+                    let mut st = self.lock();
                     if let Some(t) = st.terms.get_mut(&id) {
                         t.cols = size.cols;
                         t.rows = size.rows;
@@ -313,19 +272,19 @@ impl Holder {
                 }
                 proto::SIGNAL => {
                     let sig: proto::Signal = proto::parse(&payload)?;
-                    let st = self.lock_started(id);
+                    let st = self.lock();
                     // Never signal after reaping: the pid may belong to someone else now.
                     if let Some(t) = st.terms.get(&id).filter(|t| t.exit.is_none()) {
                         t.pty.signal(t.pid, sig.signal);
                     }
                 }
                 proto::FOREGROUND => {
-                    let mut st = self.lock_started(id);
+                    let mut st = self.lock();
                     let pgid = st.terms.get(&id).filter(|t| t.exit.is_none()).map_or(-1, |t| t.pty.foreground());
                     self.to_core(&mut st, &proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
                 proto::RELEASE => {
-                    if let Some(t) = self.lock_started(id).terms.remove(&id)
+                    if let Some(t) = self.lock().terms.remove(&id)
                         && !t.reader_done
                     {
                         // Leftover background jobs still hold the PTY: hang them up.
@@ -340,10 +299,6 @@ impl Holder {
                 proto::GOODBYE => {
                     let mode: Goodbye = proto::parse(&payload)?;
                     let mut st = self.lock();
-                    // A program still starting is answered, or swept, before this core leaves.
-                    while !st.starting.is_empty() {
-                        st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
-                    }
                     // Read late, after a newer core said hello: that one stays.
                     if st.core.as_ref().is_none_or(|c| c.generation != generation) {
                         return Ok(());
@@ -378,23 +333,14 @@ impl Holder {
         Ok(())
     }
 
-    /// Takes `id` for a start, unless it is already running (answered again) or being started (that one answers).
-    fn reserve(self: &Arc<Self>, id: u32) -> Option<Starting> {
+    fn spawn(self: &Arc<Self>, id: u32, spec: proto::Spawn) {
         let mut st = self.lock();
         if let Some(t) = st.terms.get(&id) {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
-            self.to_core(&mut st, &frame);
-            return None;
+            return self.to_core(&mut st, &frame);
         }
-        st.starting.insert(id).then(|| Starting(self.clone(), id))
-    }
-
-    fn spawn(self: &Arc<Self>, id: u32, spec: proto::Spawn, _starting: Starting) {
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
-        let mut st = self.lock();
-        st.starting.remove(&id);
-        self.changed.notify_all();
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));
@@ -434,8 +380,6 @@ impl Holder {
             }
         };
         self.to_core(&mut st, &frame);
-        drop(st);
-        self.exit_if_drained();
     }
 
     /// Always reads, core or not, so programs never stall on a full PTY.
@@ -510,9 +454,6 @@ impl Holder {
             t.exit = Some(exit);
             self.to_core(&mut st, &proto::json_frame(proto::EXITED, id, &exit));
         }
-        // Only now may its pid be reaped: until the exit is recorded a signal must still reach it, not a stranger.
-        drop(st);
-        drop(child);
     }
 
     /// Starts a core when the last one crashed and none came back in time.
@@ -523,7 +464,7 @@ impl Holder {
             if st.core.is_some() || st.core_left.elapsed() < self.grace {
                 continue;
             }
-            if st.idle() {
+            if st.terms.is_empty() {
                 self.exit();
             }
             let now = Instant::now();

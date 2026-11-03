@@ -6,35 +6,32 @@
 //! The holder keeps the PTY. For each program it starts a one-shot job that
 //! runs `herdr-core --hc-launchd-spawn` (a "stub"), hands it the slave side and
 //! the program's description over a socket, and the stub starts the program as
-//! its parent and reports its pid and, at the end, its exit.
+//! its parent and reports its pid and, at the end, its exit. The program and
+//! the socket live and die together: whichever side loses the other ends it.
 
 use super::macos_launchd::{self as launchd, Limits};
-use super::unix::{pty_command, spawn_direct};
+use super::unix::pty_command;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 /// An older binary doesn't know it and ends with a usage error.
 pub const SENTINEL: &str = "--hc-launchd-spawn";
 const PROTOCOL: u32 = 1;
-/// From starting the job to the stub's hello: past it, programs start directly.
-const JOB: Duration = Duration::from_secs(2);
+/// From starting the job to the stub's hello.
+const JOB: Duration = Duration::from_secs(3);
 /// A start as a whole, from the job to the program's pid: the core gives up on it at 10 s.
 const START: Duration = Duration::from_secs(9);
 /// How long the stub waits for what the holder sends it.
 const ANSWER: Duration = Duration::from_secs(5);
-/// After launchd failed to start a stub, programs start directly this long.
-const COOLDOWN: Duration = Duration::from_secs(60);
 /// How long a dropped program waits for its stub to reap it.
 const REAP: Duration = Duration::from_secs(2);
 
@@ -46,19 +43,12 @@ struct Spec {
     env: BTreeMap<String, String>,
     cwd: String,
     limits: Limits,
-    /// Replace the stub with `argv` (the holder) instead of starting it as a child.
-    #[serde(default)]
-    exec: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum Reply {
     Hello(u32),
-    /// Nothing was started: the holder may start the program itself.
-    Refused(String),
-    /// The stub is about to `exec` the holder: the socket closing next is the success.
-    Execing,
     Pid(u32),
     /// The program could not start: the OS error the holder would have had.
     Errno(i32),
@@ -102,103 +92,39 @@ impl Drop for Remote {
 }
 
 impl Remote {
-    /// (exit code, signal). A stub gone without a word (its coalition was
-    /// ended, so the program went too) is neither.
+    /// (exit code, signal). A stub gone without a word was killed on its own
+    /// (a killed stub leaves its program running), so the program is killed
+    /// too and reported as that kill: the pid is still ours, the stub not
+    /// having reaped it.
     pub fn wait(&mut self) -> io::Result<(Option<i32>, Option<i32>)> {
         // Darwin refuses to set it on a socket whose peer has gone: nothing to wait for then.
         let _ = self.reader.get_ref().set_read_timeout(None);
         Ok(match read_reply(&mut self.reader) {
             Ok(Reply::Exit { code, signal }) => (code, signal),
-            _ => (None, None),
+            _ => {
+                unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGKILL) };
+                (None, Some(libc::SIGKILL))
+            }
         })
     }
 }
 
-/// Starts the program: in a job of its own when launchd allows, else directly.
+/// Starts the program. A holder that has its own coalition gives the program
+/// a job of its own, and that either works or fails visibly: starting it
+/// directly would put it back in the holder's coalition. Any other holder (SSH,
+/// or one whose own job failed) was never isolated, and starts programs directly.
 pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: &File) -> io::Result<Process> {
-    let direct = || Ok(Process::Direct(spawn_direct(argv, env, cwd, slave)?));
-    if launchd::ssh() || cooling_down() {
-        return direct();
+    if !launchd::isolated() {
+        return Ok(Process::Direct(pty_command(argv, env, cwd, slave)?.spawn()?));
     }
-    let Ok(limits) = launchd::limits() else { return direct() };
-    let spec = Spec { argv: argv.to_vec(), env: env.clone(), cwd: cwd.into(), limits, exec: false };
+    let spec = Spec { argv: argv.to_vec(), env: env.clone(), cwd: cwd.into(), limits: launchd::limits()? };
     let begun = Instant::now();
-    let sock = match connect(&stderr_path()) {
-        Ok(sock) => sock,
-        Err(error) => {
-            cool_down("a program", &error);
-            return direct();
-        }
-    };
-    match launch(sock, slave, &spec, left(begun)) {
-        Launch::Started(remote) => Ok(Process::Stub(remote)),
-        Launch::Unavailable(error) => {
-            cool_down("a program", &error);
-            direct()
-        }
-        Launch::Refused(reason) => {
-            cool_down("a program", &io::Error::other(reason));
-            direct()
-        }
-        Launch::Failed(error) => Err(error),
-        Launch::Execed => unreachable!("only a holder's job replaces itself"),
-    }
+    let sock = connect(&stderr_path()).map_err(unavailable)?;
+    launch(sock, slave, &spec, START.saturating_sub(begun.elapsed()).max(Duration::from_secs(1))).map(Process::Stub)
 }
 
-/// Starts `cmd` (a holder) as a job's own process, so it has a coalition of its
-/// own too. False when it must start directly, with the reason logged.
-pub fn start_exec(cmd: &Command, log: &Path) -> bool {
-    if launchd::ssh() || cooling_down() {
-        return false;
-    }
-    let spec = (|| {
-        let mut env: BTreeMap<String, String> = super::utf8_vars().collect();
-        for (key, value) in cmd.get_envs() {
-            match (key.to_str(), value.map(OsStr::to_str)) {
-                (Some(key), Some(Some(value))) => env.insert(key.into(), value.into()),
-                (Some(key), None) => env.remove(key),
-                _ => None,
-            };
-        }
-        let argv = std::iter::once(cmd.get_program()).chain(cmd.get_args());
-        let argv = argv.map(|arg| arg.to_str().map(String::from)).collect::<Option<Vec<_>>>()?;
-        let cwd = std::env::current_dir().ok()?.to_str()?.to_string();
-        Some(Spec { argv, env, cwd, limits: launchd::limits().ok()?, exec: true })
-    })();
-    let Some(spec) = spec else { return false };
-    let nothing = File::open("/dev/null").ok();
-    let begun = Instant::now();
-    let launched = connect(log).and_then(|sock| {
-        match launch(sock, nothing.as_ref().ok_or(io::Error::other("no /dev/null"))?, &spec, left(begun)) {
-            Launch::Execed => Ok(()),
-            Launch::Unavailable(error) | Launch::Failed(error) => Err(error),
-            Launch::Refused(reason) => Err(io::Error::other(reason)),
-            Launch::Started(_) => Err(io::Error::other("a stub started the holder as a program")),
-        }
-    });
-    match launched {
-        Ok(()) => true,
-        Err(error) => {
-            cool_down("the holder", &error);
-            false
-        }
-    }
-}
-
-/// What is left of `START`.
-fn left(begun: Instant) -> Duration {
-    START.saturating_sub(begun.elapsed()).max(Duration::from_secs(1))
-}
-
-static COOL_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
-
-fn cooling_down() -> bool {
-    COOL_UNTIL.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|until| Instant::now() < until)
-}
-
-fn cool_down(what: &str, error: &io::Error) {
-    eprintln!("hc: no launchd job for {what} ({error}); starting programs directly for a minute");
-    *COOL_UNTIL.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + COOLDOWN);
+fn unavailable(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("cannot start the program in a launchd job of its own: {error}"))
 }
 
 /// Where this process's stderr goes (the holder's log), so a stub's own errors land there too.
@@ -230,52 +156,31 @@ fn connect(log: &Path) -> io::Result<UnixStream> {
     Ok(sock)
 }
 
-enum Launch {
-    Started(Remote),
-    /// No usable stub: launchd or the binary is at fault; nothing was started.
-    Unavailable(io::Error),
-    /// The stub declined before starting anything.
-    Refused(String),
-    /// The stub became the program (its socket closed on exec).
-    Execed,
-    /// The program was (or may have been) started and did not come up.
-    Failed(io::Error),
-}
-
-/// Hello, then the slave and the spec, then the stub's answer. Before the spec
-/// is sent, any failure leaves the holder free to start the program itself.
-/// After it, only a refusal does: a stub that went quiet may have started it.
-fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> Launch {
+/// Hello, then the slave and the spec, then the stub's answer. Whatever fails
+/// after the spec is sent, the stub ends the program once the socket closes.
+fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> io::Result<Remote> {
     let mut reader = BufReader::new(sock);
-    match read_reply(&mut reader) {
-        Ok(Reply::Hello(PROTOCOL)) => {}
-        Ok(other) => return Launch::Unavailable(io::Error::other(format!("unexpected stub hello {other:?}"))),
-        Err(error) => return Launch::Unavailable(error),
+    match read_reply(&mut reader).map_err(unavailable)? {
+        Reply::Hello(PROTOCOL) => {}
+        other => return Err(unavailable(io::Error::other(format!("unexpected stub hello {other:?}")))),
     }
     let sock = reader.get_mut();
     // A stub that stopped reading must not hold the holder up: it acts only on a whole line.
     sock.set_write_timeout(Some(answer)).ok();
-    let sent = send_fd(sock, slave.as_raw_fd()).and_then(|()| {
-        let mut line = serde_json::to_vec(spec)?;
-        line.push(b'\n');
-        sock.write_all(&line)
-    });
-    if let Err(error) = sent {
-        return Launch::Unavailable(error);
-    }
+    send_fd(sock, slave.as_raw_fd())
+        .and_then(|()| {
+            let mut line = serde_json::to_vec(spec)?;
+            line.push(b'\n');
+            sock.write_all(&line)
+        })
+        .map_err(unavailable)?;
     sock.set_read_timeout(Some(answer)).ok();
     match read_reply(&mut reader) {
-        Ok(Reply::Pid(pid)) => Launch::Started(Remote { pid, reader }),
-        Ok(Reply::Refused(reason)) => Launch::Refused(reason),
-        Ok(Reply::Execing) if spec.exec => match read_reply(&mut reader) {
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Launch::Execed,
-            Ok(Reply::Errno(errno)) => Launch::Failed(io::Error::from_raw_os_error(errno)),
-            Ok(Reply::Error(text)) => Launch::Failed(io::Error::other(text)),
-            _ => Launch::Failed(io::Error::other("launcher lost")),
-        },
-        Ok(Reply::Errno(errno)) => Launch::Failed(io::Error::from_raw_os_error(errno)),
-        Ok(Reply::Error(text)) => Launch::Failed(io::Error::other(text)),
-        _ => Launch::Failed(io::Error::other("launcher lost")),
+        Ok(Reply::Pid(pid)) => Ok(Remote { pid, reader }),
+        Ok(Reply::Errno(errno)) => Err(io::Error::from_raw_os_error(errno)),
+        Ok(Reply::Error(text)) => Err(unavailable(io::Error::other(text))),
+        Ok(other) => Err(unavailable(io::Error::other(format!("unexpected stub answer {other:?}")))),
+        Err(error) => Err(unavailable(error)),
     }
 }
 
@@ -295,63 +200,58 @@ fn send_reply(sock: &mut UnixStream, reply: &Reply) -> io::Result<()> {
 
 /// The stub: starts one program for the holder that started its job.
 pub fn serve(socket: &Path) -> io::Result<()> {
-    let mut sock = launchd::connect_back(socket)?;
+    run(launchd::connect_back(socket)?)
+}
+
+fn run(mut sock: UnixStream) -> io::Result<()> {
     send_reply(&mut sock, &Reply::Hello(PROTOCOL))?;
     sock.set_read_timeout(Some(ANSWER))?;
     let slave = unsafe { File::from_raw_fd(recv_fd(&sock)?) };
     unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
     let mut line = String::new();
     BufReader::new(&sock).read_line(&mut line)?;
-    // A spec cut short by the holder's write timeout must not start a program the holder will start again.
-    let started = Some(&line)
+    // A spec cut short by the holder's write timeout must not start a program.
+    let command = Some(&line)
         .filter(|l| l.ends_with('\n'))
         .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
         .and_then(|l| serde_json::from_str::<Spec>(l).map_err(io::Error::from))
         .and_then(|spec| {
             launchd::restore_limits(&spec.limits)?;
-            let cmd =
-                if spec.exec { plain_command(&spec)? } else { pty_command(&spec.argv, &spec.env, &spec.cwd, &slave)? };
-            Ok((spec, cmd))
-        })
-        .map_err(|error| error.to_string());
-    let (spec, mut cmd) = match started {
-        Ok(started) => started,
-        Err(error) => return send_reply(&mut sock, &Reply::Refused(error)),
-    };
-    if spec.exec {
-        drop(slave);
-        send_reply(&mut sock, &Reply::Execing)?;
-        let error = cmd.exec();
-        return send_reply(
-            &mut sock,
-            &error.raw_os_error().map_or_else(|| Reply::Error(error.to_string()), Reply::Errno),
-        );
-    }
-    let child = cmd.spawn();
+            pty_command(&spec.argv, &spec.env, &spec.cwd, &slave)
+        });
+    let child = command.and_then(|mut cmd| cmd.spawn());
     // Only the program may hold the terminal open.
-    drop(cmd);
     drop(slave);
-    let mut child = match child {
-        Ok(child) => child,
+    match child {
+        Ok(child) => babysit(sock, child),
         Err(error) => {
-            let reply = error.raw_os_error().map_or_else(|| Reply::Error(error.to_string()), Reply::Errno);
-            return send_reply(&mut sock, &reply);
+            send_reply(&mut sock, &error.raw_os_error().map_or_else(|| Reply::Error(error.to_string()), Reply::Errno))
         }
-    };
-    send_reply(&mut sock, &Reply::Pid(child.id()))?;
-    // Not reaped yet: the pid stays the program's until the holder lets go.
-    let (code, signal) = ended(child.id());
-    let _ = send_reply(&mut sock, &Reply::Exit { code, signal });
-    let _ = sock.set_read_timeout(None);
-    let _ = io::Read::read(&mut &sock, &mut [0u8; 1]);
-    child.wait().map(drop)
+    }
 }
 
-fn plain_command(spec: &Spec) -> io::Result<Command> {
-    let program = spec.argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
-    let mut cmd = Command::new(program);
-    cmd.args(&spec.argv[1..]).env_clear().envs(&spec.env).current_dir(&spec.cwd);
-    Ok(cmd)
+/// Reports `child` to the holder until it ends. The holder going away first
+/// (it gave up on the start, or ended) ends the program: nobody could use it.
+fn babysit(mut sock: UnixStream, mut child: Child) -> io::Result<()> {
+    let pid = child.id();
+    let holder = sock.try_clone()?;
+    let _ = sock.set_read_timeout(None);
+    let watch = std::thread::spawn(move || {
+        let mut holder = holder;
+        // The holder says nothing after the spec: any end of the socket is its leaving.
+        while matches!(holder.read(&mut [0u8; 1]), Ok(1..)) {}
+        // Not reaped before this thread is joined, so the pid is still the program's.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    });
+    if send_reply(&mut sock, &Reply::Pid(pid)).is_ok() {
+        // Not reaped yet: the pid stays the program's until the holder lets go.
+        let (code, signal) = ended(pid);
+        let _ = send_reply(&mut sock, &Reply::Exit { code, signal });
+    } else {
+        let _ = child.kill();
+    }
+    let _ = watch.join();
+    child.wait().map(drop)
 }
 
 /// Waits for the process to end without reaping it.
@@ -418,14 +318,15 @@ fn recv_fd(sock: &UnixStream) -> io::Result<RawFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn spec() -> Spec {
-        Spec { argv: vec!["sh".into()], env: BTreeMap::new(), cwd: "/".into(), limits: Vec::new(), exec: false }
+        Spec { argv: vec!["sh".into()], env: BTreeMap::new(), cwd: "/".into(), limits: Vec::new() }
     }
 
     /// The holder's side against a fake stub that says `hello`, takes the slave
     /// and the spec, then runs `answer` on the socket.
-    fn against(hello: Option<Reply>, answer: impl FnOnce(&mut UnixStream) + Send + 'static) -> Launch {
+    fn against(hello: Option<Reply>, answer: impl FnOnce(&mut UnixStream) + Send + 'static) -> io::Result<Remote> {
         let (holder, mut stub) = UnixStream::pair().unwrap();
         let fake = std::thread::spawn(move || {
             if let Some(hello) = hello {
@@ -444,12 +345,10 @@ mod tests {
         launch
     }
 
-    #[test]
-    fn a_stub_that_refuses_leaves_the_program_to_the_holder() {
-        let refuse = |s: &mut UnixStream| send_reply(s, &Reply::Refused("old spec".into())).unwrap();
-        assert!(
-            matches!(against(Some(Reply::Hello(PROTOCOL)), refuse), Launch::Refused(reason) if reason == "old spec")
-        );
+    fn gone(pid: u32) -> bool {
+        unsafe {
+            libc::kill(pid as libc::pid_t, 0) != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        }
     }
 
     #[test]
@@ -458,56 +357,67 @@ mod tests {
             send_reply(s, &Reply::Pid(4242)).unwrap();
             send_reply(s, &Reply::Exit { code: Some(3), signal: None }).unwrap();
         };
-        let Launch::Started(mut remote) = against(Some(Reply::Hello(PROTOCOL)), started) else { panic!() };
+        let mut remote = against(Some(Reply::Hello(PROTOCOL)), started).unwrap();
         assert_eq!((remote.pid, remote.wait().unwrap()), (4242, (Some(3), None)));
     }
 
     #[test]
-    fn a_stub_that_dies_after_the_spec_never_leads_to_a_second_program() {
-        let Launch::Failed(error) = against(Some(Reply::Hello(PROTOCOL)), |_| {}) else { panic!() };
-        assert_eq!(error.to_string(), "launcher lost");
-    }
-
-    #[test]
-    fn a_stub_that_closes_after_announcing_the_exec_has_become_the_holder() {
-        let exec = Spec { exec: true, ..spec() };
-        let (holder, mut stub) = UnixStream::pair().unwrap();
-        let fake = std::thread::spawn(move || {
-            send_reply(&mut stub, &Reply::Hello(PROTOCOL)).unwrap();
-            recv_fd(&stub).unwrap();
-            BufReader::new(&stub).read_line(&mut String::new()).unwrap();
-            send_reply(&mut stub, &Reply::Execing).unwrap();
-        });
-        let slave = File::open("/dev/null").unwrap();
-        assert!(matches!(launch(holder, &slave, &exec, Duration::from_millis(300)), Launch::Execed));
-        fake.join().unwrap();
-        let eof = |_: &mut UnixStream| {};
-        assert!(
-            matches!(against(Some(Reply::Hello(PROTOCOL)), eof), Launch::Failed(_)),
-            "closing alone is not success"
-        );
+    fn a_stub_that_goes_quiet_after_the_spec_is_an_error_naming_launchd() {
+        let error = against(Some(Reply::Hello(PROTOCOL)), |_| {}).err().unwrap();
+        assert!(error.to_string().contains("launchd"), "{error}");
     }
 
     #[test]
     fn a_start_error_keeps_the_os_error_text() {
-        let Launch::Failed(error) = against(Some(Reply::Hello(PROTOCOL)), |s| send_reply(s, &Reply::Errno(2)).unwrap())
-        else {
-            panic!()
-        };
+        let error = against(Some(Reply::Hello(PROTOCOL)), |s| send_reply(s, &Reply::Errno(2)).unwrap()).err().unwrap();
         assert_eq!(error.to_string(), io::Error::from_raw_os_error(2).to_string());
     }
 
     #[test]
-    fn a_stub_of_another_protocol_or_none_means_direct_start() {
-        assert!(matches!(against(Some(Reply::Hello(PROTOCOL + 1)), |_| {}), Launch::Unavailable(_)));
-        assert!(matches!(against(None, |_| {}), Launch::Unavailable(_)));
+    fn a_stub_of_another_protocol_or_none_is_an_error() {
+        assert!(against(Some(Reply::Hello(PROTOCOL + 1)), |_| {}).is_err());
+        assert!(against(None, |_| {}).is_err());
     }
 
     #[test]
-    fn a_lost_stub_is_neither_an_exit_code_nor_a_signal() {
+    fn a_lost_stub_kills_its_program_and_reports_the_kill() {
+        let mut program = Command::new("sleep").arg("300").spawn().unwrap();
         let (holder, stub) = UnixStream::pair().unwrap();
         drop(stub);
-        let mut remote = Remote { pid: 1, reader: BufReader::new(holder) };
-        assert_eq!(remote.wait().unwrap(), (None, None));
+        let mut remote = Remote { pid: program.id(), reader: BufReader::new(holder) };
+        assert_eq!(remote.wait().unwrap(), (None, Some(libc::SIGKILL)));
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&program.wait().unwrap()), Some(libc::SIGKILL));
+    }
+
+    #[test]
+    fn a_program_ends_with_a_holder_that_answers_late_or_leaves() {
+        for read_the_pid in [false, true] {
+            let program = Command::new("sleep").arg("300").spawn().unwrap();
+            let pid = program.id();
+            let (mut holder, stub) = UnixStream::pair().unwrap();
+            let stub = std::thread::spawn(move || babysit(stub, program));
+            if read_the_pid {
+                assert_eq!(read_reply(&mut BufReader::new(&mut holder)).unwrap(), Reply::Pid(pid));
+            }
+            drop(holder);
+            stub.join().unwrap().unwrap();
+            assert!(gone(pid), "the program outlived its holder");
+        }
+    }
+
+    #[test]
+    fn a_program_that_ends_is_reported_then_reaped_when_the_holder_lets_go() {
+        let program = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
+        let pid = program.id();
+        let (holder, stub) = UnixStream::pair().unwrap();
+        let stub = std::thread::spawn(move || babysit(stub, program));
+        let mut reader = BufReader::new(holder);
+        assert_eq!(read_reply(&mut reader).unwrap(), Reply::Pid(pid));
+        let mut remote = Remote { pid, reader };
+        assert_eq!(remote.wait().unwrap(), (Some(3), None));
+        assert!(!gone(pid), "reaped before the holder let go");
+        drop(remote);
+        stub.join().unwrap().unwrap();
+        assert!(gone(pid));
     }
 }

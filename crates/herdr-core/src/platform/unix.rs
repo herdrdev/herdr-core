@@ -513,45 +513,21 @@ pub fn spawn_pty(
     cols: u16,
     rows: u16,
 ) -> io::Result<(Pty, Process)> {
-    if argv.is_empty() {
-        return Err(io::Error::other("empty argv"));
-    }
     let (mut master, mut slave) = (0, 0);
     let mut size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    // Terminals start on their own threads. openpty is not safe to call from several at once, and a
-    // program started directly meanwhile must not inherit another terminal's descriptors.
-    let (master, slave) = {
-        let _one = FORKING.lock().unwrap_or_else(|p| p.into_inner());
-        if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) }
-            != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        for fd in [master, slave] {
-            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-        }
-        unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
-    };
+    if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let (master, slave) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
+    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
     #[cfg(target_os = "macos")]
     let child = super::macos_stub::start(argv, env, cwd, &slave)?;
     #[cfg(not(target_os = "macos"))]
-    let child = spawn_direct(argv, env, cwd, &slave)?;
+    let child = pty_command(argv, env, cwd, &slave)?.spawn()?;
     Ok((Pty { master }, child))
-}
-
-/// Held while a terminal's descriptors are made and while a program is forked directly.
-pub(super) static FORKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Starts the program itself, as a child of this process.
-pub(super) fn spawn_direct(
-    argv: &[String],
-    env: &std::collections::BTreeMap<String, String>,
-    cwd: &str,
-    slave: &File,
-) -> io::Result<std::process::Child> {
-    let command = pty_command(argv, env, cwd, slave);
-    let _one = FORKING.lock().unwrap_or_else(|p| p.into_inner());
-    command?.spawn()
 }
 
 /// `argv` with `slave` as its terminal and controlling terminal.
