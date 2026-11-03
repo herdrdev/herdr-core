@@ -139,7 +139,7 @@ impl Draft {
         let Ok(params) = std::str::from_utf8(params) else { return };
         let fields: Vec<&str> = params.split(';').collect();
         let number = |i: usize| fields.get(i)?.split(':').next()?.parse::<u32>().ok();
-        let (code, ctrl, shift) = match kind {
+        let (code, ctrl, shift, alt) = match kind {
             // Kitty/CSI-u: release events do not type, nor do functional key codes.
             b'u' if !fields.get(1).is_some_and(|s| s.ends_with(":3")) => {
                 let code = match number(0) {
@@ -149,23 +149,23 @@ impl Draft {
                     _ => return,
                 };
                 let modifiers = number(1).unwrap_or(1).saturating_sub(1);
-                (code, modifiers & 4 != 0, modifiers & 1 != 0)
+                (code, modifiers & 4 != 0, modifiers & 1 != 0, modifiers & 2 != 0)
             }
             // xterm modifyOtherKeys.
             b'~' if number(0) == Some(27) => {
                 let Some(code) = number(2) else { return };
                 let modifiers = number(1).unwrap_or(1).saturating_sub(1);
-                (code, modifiers & 4 != 0, modifiers & 1 != 0)
+                (code, modifiers & 4 != 0, modifiers & 1 != 0, modifiers & 2 != 0)
             }
             // Win32-input-mode: Unicode character, key-down, control-state.
             b'_' if number(3) == Some(1) => {
                 let Some(code) = number(2) else { return };
                 let modifiers = number(4).unwrap_or(0);
-                (code, modifiers & 12 != 0, modifiers & 16 != 0)
+                (code, modifiers & 12 != 0, modifiers & 16 != 0, modifiers & 3 != 0)
             }
             _ => return,
         };
-        if code == 13 && shift {
+        if (code == 13 && shift) || (alt && matches!(code, 66 | 70 | 98 | 102)) {
             return;
         }
         self.key(if ctrl && (64..=127).contains(&code) { code & 31 } else { code });
@@ -589,12 +589,53 @@ mod tests {
 
     #[test]
     fn word_navigation_and_escape_then_arrows_do_not_create_drafts() {
-        for key in [b"\x1bb".as_slice(), b"\x1bf", b"\x1bB", b"\x1bF", b"\x1b\x1b[A", b"\x1b\x1bOD"] {
+        for key in [
+            b"\x1bb".as_slice(),
+            b"\x1bf",
+            b"\x1bB",
+            b"\x1bF",
+            b"\x1b\x1b[A",
+            b"\x1b\x1bOD",
+            b"\x1b[98;3u",
+            b"\x1b[102;3u",
+            b"\x1b[66;4u",
+            b"\x1b[70;4u",
+            b"\x1b[27;3;98~",
+            b"\x1b[27;3;102~",
+            b"\x1b[66;48;98;1;2;1_",
+            b"\x1b[70;33;102;1;1;1_",
+            b"\x1b[1;3D",
+            b"\x1b[1;3C",
+            b"\x1b[57350;3u",
+            b"\x1b[57351;3u",
+            b"\x1b[37;75;0;1;2;1_",
+            b"\x1b[39;77;0;1;2;1_",
+            b"\x01",
+            b"\x05",
+            b"\x1b[97;5u",
+            b"\x1b[101;5u",
+            b"\x1b[27;5;97~",
+            b"\x1b[27;5;101~",
+            b"\x1b[65;30;97;1;8;1_",
+            b"\x1b[69;18;101;1;4;1_",
+        ] {
             let mut draft = Draft::default();
             for byte in key {
                 draft.feed(&[*byte]);
             }
             assert!(!draft.pending, "{key:?}");
+            draft.feed(b"unfinished");
+            draft.feed(key);
+            assert!(draft.pending, "navigation must preserve an existing draft: {key:?}");
+        }
+    }
+
+    #[test]
+    fn other_alt_keys_still_create_drafts() {
+        for key in [b"\x1bx".as_slice(), b"\x1b[120;3u", b"\x1b[27;3;120~", b"\x1b[88;45;120;1;2;1_"] {
+            let mut draft = Draft::default();
+            draft.feed(key);
+            assert!(draft.pending, "{key:?}");
         }
     }
 
