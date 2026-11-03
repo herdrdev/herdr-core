@@ -162,15 +162,25 @@ impl Holder {
     }
 
     fn exit_if_drained(&self) {
-        // Not while a start is in flight: its terminal is not in the table yet.
-        let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
-        if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().terms.is_empty() {
+        if self.drained() {
             self.exit();
         }
     }
 
+    fn drained(&self) -> bool {
+        let (_settled, st) = self.settled();
+        self.draining.load(std::sync::atomic::Ordering::SeqCst) && st.terms.is_empty()
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The state once a start in flight has finished: its terminal is not in the table before, and a start held
+    /// the state lock for all of it. Everything that decides from the whole table takes it this way, `spawning` first.
+    fn settled(&self) -> (MutexGuard<'_, ()>, MutexGuard<'_, State>) {
+        let settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
+        (settled, self.lock())
     }
 
     /// Queues a frame for the current core.
@@ -215,9 +225,8 @@ impl Holder {
             _ => return Ok(()),
         };
         let generation = {
-            // A start in flight finishes first, as it did when it held the state lock: the welcome lists it.
-            let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
-            let mut st = self.lock();
+            // The welcome lists a start in flight.
+            let (_settled, mut st) = self.settled();
             if st.core.is_some() {
                 self.core_gone(&mut st, "crash");
             }
@@ -307,8 +316,7 @@ impl Holder {
                 }
                 proto::GOODBYE => {
                     let mode: Goodbye = proto::parse(&payload)?;
-                    let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
-                    let mut st = self.lock();
+                    let (_settled, mut st) = self.settled();
                     // Read late, after a newer core said hello: that one stays.
                     if st.core.as_ref().is_none_or(|c| c.generation != generation) {
                         return Ok(());
@@ -474,9 +482,7 @@ impl Holder {
     fn supervise(&self) {
         loop {
             std::thread::sleep(self.grace.min(Duration::from_millis(100)));
-            // Not while a start is in flight: its terminal is not in the table yet.
-            let settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
-            let mut st = self.lock();
+            let (settled, mut st) = self.settled();
             if st.core.is_some() || st.core_left.elapsed() < self.grace {
                 continue;
             }
@@ -497,5 +503,63 @@ impl Holder {
                 eprintln!("holder: cannot start core: {e:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn holder() -> Arc<Holder> {
+        let dir = std::env::temp_dir().join("hc-holder-unit");
+        Arc::new(Holder {
+            state: Mutex::new(State {
+                terms: HashMap::new(),
+                core: None,
+                generation: 0,
+                previous: "none",
+                core_left: Instant::now(),
+                restarts: Vec::new(),
+            }),
+            changed: Condvar::new(),
+            instance: String::new(),
+            grace: Duration::from_secs(3),
+            paths: Paths {
+                socket: dir.join("s"),
+                holder_socket: dir.join("h"),
+                state: dir.clone(),
+                config: dir.clone(),
+            },
+            socket: dir.join("h"),
+            draining: Default::default(),
+            sweeps: Default::default(),
+            spawning: Mutex::new(()),
+        })
+    }
+
+    /// Runs `ask` while a start is in flight: whether it waited, and what it answered once the start was done.
+    fn during_a_start<T: Send + 'static>(ask: impl FnOnce(&Holder) -> T + Send + 'static) -> (bool, T) {
+        let holder = holder();
+        holder.draining.store(true, Ordering::SeqCst);
+        let start = holder.spawning.lock().unwrap();
+        let (answered, answers) = std::sync::mpsc::channel();
+        let asked = holder.clone();
+        std::thread::spawn(move || answered.send(ask(&asked)).unwrap());
+        let early = answers.recv_timeout(Duration::from_millis(300));
+        drop(start);
+        (early.is_err(), early.or_else(|_| answers.recv_timeout(Duration::from_secs(5))).unwrap())
+    }
+
+    #[test]
+    fn what_looks_at_the_terminals_waits_for_a_start_in_flight() {
+        assert!(during_a_start(|h| drop(h.settled())).0, "the table was read in the middle of a start");
+    }
+
+    #[test]
+    fn a_drain_does_not_see_an_empty_holder_in_the_middle_of_a_start() {
+        let (waited, drained) = during_a_start(|h| h.drained());
+        assert!(waited, "a drain looked at the table in the middle of a start");
+        assert!(drained, "an empty holder, once nothing is starting, has drained");
     }
 }
