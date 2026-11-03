@@ -9,7 +9,7 @@
 //! its parent and reports its pid and, at the end, its exit.
 
 use super::macos_launchd::{self as launchd, Limits};
-use super::unix::pty_command;
+use super::unix::{pty_command, spawn_direct};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -115,7 +115,7 @@ impl Remote {
 
 /// Starts the program: in a job of its own when launchd allows, else directly.
 pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: &File) -> io::Result<Process> {
-    let direct = || Ok(Process::Direct(pty_command(argv, env, cwd, slave)?.spawn()?));
+    let direct = || Ok(Process::Direct(spawn_direct(argv, env, cwd, slave)?));
     if launchd::ssh() || cooling_down() {
         return direct();
     }

@@ -172,6 +172,15 @@ impl Holder {
         }
     }
 
+    /// The state once `id` is no longer being started: a signal or release must find its terminal.
+    fn lock_started(&self, id: u32) -> MutexGuard<'_, State> {
+        let mut st = self.lock();
+        while st.starting.contains(&id) {
+            st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
+        }
+        st
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -290,7 +299,7 @@ impl Holder {
                 }
                 proto::SIGNAL => {
                     let sig: proto::Signal = proto::parse(&payload)?;
-                    let st = self.lock();
+                    let st = self.lock_started(id);
                     // Never signal after reaping: the pid may belong to someone else now.
                     if let Some(t) = st.terms.get(&id).filter(|t| t.exit.is_none()) {
                         t.pty.signal(t.pid, sig.signal);
@@ -302,7 +311,7 @@ impl Holder {
                     self.to_core(&mut st, &proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
                 proto::RELEASE => {
-                    if let Some(t) = self.lock().terms.remove(&id)
+                    if let Some(t) = self.lock_started(id).terms.remove(&id)
                         && !t.reader_done
                     {
                         // Leftover background jobs still hold the PTY: hang them up.
@@ -328,6 +337,9 @@ impl Holder {
                     if mode == Goodbye::Shutdown {
                         // Whatever the core's stop missed (started since, or hiding) ends
                         // here, before the goodbye: the stop returns when all is gone.
+                        while !st.starting.is_empty() {
+                            st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
+                        }
                         let scopes: Vec<Option<String>> = st.terms.values().map(|t| t.scope.clone()).collect();
                         drop(st);
                         scopes.into_iter().for_each(|scope| self.sweep(scope));
@@ -406,6 +418,8 @@ impl Holder {
             }
         };
         self.to_core(&mut st, &frame);
+        drop(st);
+        self.exit_if_drained();
     }
 
     /// Always reads, core or not, so programs never stall on a full PTY.
