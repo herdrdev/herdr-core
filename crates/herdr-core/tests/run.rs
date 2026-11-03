@@ -34,6 +34,20 @@ fn initial_size_is_optional_and_applies_before_the_program_starts() {
 }
 
 #[test]
+fn initial_display_answers_the_programs_first_color_query() {
+    use serde_json::json;
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let mut conn = s.connect();
+    // Asks for the background at once, like a TUI at startup, before any viewer attaches.
+    let probe = "stty raw -echo min 0 time 10; printf '\\033]11;?\\033\\\\'; r=$(dd bs=256 count=1 2>/dev/null); \
+                 stty sane; printf '%s' \"$r\" | od -An -c | tr -d ' \\n'";
+    let params = json!({"argv": ["sh", "-c", probe], "wait": true, "display": {"bg": "#fbfcfb"}});
+    let reply = conn.call(1, "terminal.run", params);
+    assert!(reply["result"]["output"].as_str().unwrap().contains("fbfb/fcfc/fbfb"), "{reply}");
+}
+
+#[test]
 fn a_quick_command_returns_its_output_and_exit_code_and_leaves_no_note() {
     let mut s = Session::new();
     s.env.push(("HC_QUIET_MS".into(), "0".into()));
@@ -76,7 +90,7 @@ fn a_program_that_says_it_stopped_working_returns_and_a_slow_one_keeps_running()
     let s = Session::new();
     let (code, out) = hc(
         &s,
-        &["run", "sh", "-c", &script(&s, "r state=working; echo busy; sleep 0.4; r state=idle; echo ready; cat")],
+        &["run", "sh", "-c", &script(&s, "r state=working; echo busy; sleep 0.4; echo ready; r state=idle; cat")],
     );
     assert_eq!(code, 0);
     assert!(out.contains("ready") && out.contains("idle"), "back once idle, not at working: {out:?}");

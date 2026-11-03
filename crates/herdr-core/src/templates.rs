@@ -5,7 +5,7 @@ use crate::paths::Paths;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -110,7 +110,7 @@ pub fn list(paths: &Paths) -> Vec<TemplateInfo> {
         .collect()
 }
 
-#[derive(Serialize, JsonSchema, Debug)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FirstMessage {
     pub sent: bool,
     /// Whether the agent started working on it (see terminal.send).
@@ -125,7 +125,7 @@ pub struct FirstMessage {
 }
 
 pub(crate) fn ready_timeout() -> Duration {
-    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
     Duration::from_millis(ms)
 }
 
@@ -169,9 +169,21 @@ impl Core {
             return not_sent("it exited before it was ready".into());
         }
         let text = self.tagged(from, id, text, true);
-        match self.send(id, &text, false, None).await {
-            Ok(sent) => FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) },
-            Err(e) => not_sent(e.message),
+        loop {
+            match self.send_first_task(id, &text).await {
+                Ok(sent) => {
+                    return FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) };
+                }
+                // Only settle failures guarantee no input was typed. Never retry a paste.
+                Err(e)
+                    if e.kind == "unavailable"
+                        && e.message.ends_with("is still starting: its output has not settled")
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => return not_sent(format!("{}; {}", e.message, e.hint)),
+            }
         }
     }
 }

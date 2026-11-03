@@ -17,6 +17,7 @@ type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
 pub fn serve() -> io::Result<()> {
+    platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
     paths.create_dirs()?;
     let mut lock =

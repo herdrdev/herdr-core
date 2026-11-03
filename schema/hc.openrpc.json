@@ -891,6 +891,11 @@
               }
             ],
             "description": "With `wait`: how the wait ended (exit, a status, or timeout: still running)."
+          },
+          "waiting_for_person": {
+            "default": false,
+            "description": "An incoming message is held for the person's unsent draft (not composer detection).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -938,10 +943,15 @@
               }
             ],
             "description": "With `wait`: how that turn ended."
+          },
+          "waited_for_person": {
+            "description": "True when delivery was held for a person's unsent draft.",
+            "type": "boolean"
           }
         },
         "required": [
-          "turn"
+          "turn",
+          "waited_for_person"
         ],
         "type": "object"
       },
@@ -1176,6 +1186,17 @@
               "null"
             ]
           },
+          "first_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A template first message that was not sent; retained for later inspection."
+          },
           "foreground": {
             "anyOf": [
               {
@@ -1336,6 +1357,11 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "waiting_for_person": {
+            "default": false,
+            "description": "An incoming message is held for the person's unsent draft (not composer detection).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1659,6 +1685,22 @@
             "default": false,
             "description": "Ignored: children end with their parent unless `outlive_parent`.",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "name": "display",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Display"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
           }
         },
         {
@@ -2355,7 +2397,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after the person submits or clears their draft (up to 3 min), then ~3 s quiet; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
       "errors": [
         {
           "code": -32000,
@@ -2559,7 +2601,7 @@
           }
         },
         {
-          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).",
+          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.",
           "name": "children",
           "required": false,
           "schema": {
@@ -2571,7 +2613,7 @@
                 "type": "null"
               }
             ],
-            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`)."
+            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped."
           }
         },
         {
