@@ -380,10 +380,20 @@ fn ending_one_terminals_coalition_leaves_the_holder_and_other_terminals_alone() 
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
     wait_until("the terminal's processes are gone", || members(id).is_empty());
-    wait_until("the kept terminal is recovered", || {
+    let begun = std::time::Instant::now();
+    while !{
         let r = get(&s, &a);
         r["state"] == "live" && r["pid"].as_i64().is_some_and(|p| p != a_program)
-    });
+    } {
+        if begun.elapsed() > std::time::Duration::from_secs(10) {
+            let logs = ["core.log", "holder.log"].map(|f| {
+                let path = s.root.join("state/herdr-core/test").join(f);
+                format!("{f}: {}", std::fs::read_to_string(path).unwrap_or_default())
+            });
+            panic!("the kept terminal was not recovered: {}\n{}", get(&s, &a), logs.join("\n"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(pid_alive(holder) && pid_alive(core), "the holder and core outlived the force quit");
     assert!(pid_alive(b_program) && get(&s, &b)["state"] == "live", "another terminal outlived it");
     assert!(!pid_alive(a_child));
