@@ -127,6 +127,40 @@ pub fn file_identity(m: &std::fs::Metadata) -> String {
 
 // --- Processes -------------------------------------------------------------
 
+pub(super) fn raise_nofile_limit() -> io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let target = nofile_soft_limit(limit.rlim_cur, limit.rlim_max);
+    if target == limit.rlim_cur {
+        return Ok(());
+    }
+    limit.rlim_cur = target;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn nofile_soft_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
+    // Below Darwin's OPEN_MAX; requesting an unlimited soft limit fails there.
+    soft.max(hard.min(8192))
+}
+
+#[cfg(test)]
+mod nofile_tests {
+    use super::*;
+
+    #[test]
+    fn nofile_target_respects_hard_limit_cap_and_existing_soft_limit() {
+        assert_eq!(nofile_soft_limit(256, libc::RLIM_INFINITY), 8192);
+        assert_eq!(nofile_soft_limit(256, 1024), 1024);
+        assert_eq!(nofile_soft_limit(16384, 32768), 16384);
+        assert_eq!(nofile_soft_limit(256, 256), 256);
+    }
+}
+
 /// Starts `cmd` in its own session (ending the terminal it was started from
 /// won't end it), stdin/stdout to /dev/null, stderr to `log`.
 pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {

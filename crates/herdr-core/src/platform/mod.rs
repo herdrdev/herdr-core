@@ -33,6 +33,14 @@ pub fn prepare_core() {
     macos_launchd::prepare_core();
 }
 
+/// Daemons must not keep launchd's 256-fd or systemd's 1024-fd soft limit.
+pub(crate) fn raise_nofile_limit() {
+    #[cfg(unix)]
+    if let Err(error) = unix::raise_nofile_limit() {
+        eprintln!("cannot raise open file limit; using inherited limit: {error}");
+    }
+}
+
 /// macOS cores leave the app's process coalition; holders inherit the core's.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
