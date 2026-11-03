@@ -252,12 +252,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
   program up, then terminates it, then kills it, half a second apart, as the
   core's own cleanup does. The parent is the holder's own binary at its own
   path: if that path holds an older build or nothing, that holder's new starts
-  fail with `spawn_failed` until a holder of the build at that path takes over
-  (once that holder is empty, or on a restart: ask the user first). If launchd
-  cannot start the holder, it and its programs start directly and share the
-  core's coalition again, so a force quit of one app can end them all as
-  before; hc still starts, and only `holder.log` says so. A program whose job cannot start is a `spawn_failed`
-  error, never a silent direct start.
+  fail with `spawn_failed` until the core restarts on a binary there (ask the
+  user first). If launchd cannot start the holder, it and its programs start
+  directly and share the core's coalition again, so a force quit of one app can
+  end them all as before; hc still starts, and only `holder.log` says so. A
+  program whose job cannot start is a `spawn_failed` error, never a silent
+  direct start.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

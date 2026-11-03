@@ -184,7 +184,7 @@ pub fn prepare_core() {
         Ok(()) => std::process::exit(0),
         Err(error) => {
             if let Ok(paths) = crate::paths::Paths::from_env() {
-                fallback(&paths.state.join("core.log"), &error);
+                fallback(&paths.state.join("core.log"), true, &error);
             } else {
                 eprintln!("hc: cannot move core startup to launchd: {error}");
             }
@@ -206,7 +206,7 @@ pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
     match launch(cmd, if serve { SENTINEL } else { HOLD }, log) {
         Ok(()) => true,
         Err(error) => {
-            fallback(log, &error);
+            fallback(log, serve, &error);
             if serve {
                 // Do not retry in a directly spawned fixed binary after a failure.
                 cmd.env(DIRECT, std::process::id().to_string());
@@ -216,8 +216,9 @@ pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
     }
 }
 
-fn fallback(log: &Path, error: &io::Error) {
-    let reason = format!("hc: launchd startup failed; starting directly (may end with the launching app): {error}");
+fn fallback(log: &Path, serve: bool, error: &io::Error) {
+    let risk = if serve { "may end with the launching app" } else { "its programs share the core's coalition" };
+    let reason = format!("hc: launchd startup failed; starting directly ({risk}): {error}");
     eprintln!("{reason}");
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
         let _ = writeln!(file, "{reason}");

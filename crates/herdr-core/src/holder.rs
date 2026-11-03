@@ -162,6 +162,8 @@ impl Holder {
     }
 
     fn exit_if_drained(&self) {
+        // Not while a start is in flight: its terminal is not in the table yet.
+        let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
         if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().terms.is_empty() {
             self.exit();
         }
@@ -305,6 +307,7 @@ impl Holder {
                 }
                 proto::GOODBYE => {
                     let mode: Goodbye = proto::parse(&payload)?;
+                    let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
                     let mut st = self.lock();
                     // Read late, after a newer core said hello: that one stays.
                     if st.core.as_ref().is_none_or(|c| c.generation != generation) {

@@ -510,10 +510,15 @@ mod tests {
 
     #[test]
     fn a_program_whose_start_the_holder_gave_up_on_is_killed_at_once() {
-        let program = Command::new("sh").args(["-c", "trap '' HUP; exec sleep 300"]).spawn().unwrap();
+        let ready = std::env::temp_dir().join(format!("hc-stub-gave-up-{}", std::process::id()));
+        let script = format!("trap '' HUP; touch {}; while :; do sleep 0.05; done", ready.display());
+        let program = Command::new("sh").args(["-c", &script]).spawn().unwrap();
         let pid = program.id();
-        // Let the shell set its trap: before it, a hangup ends it anyway.
-        std::thread::sleep(Duration::from_millis(300));
+        // Before the trap is set, a hangup would end it anyway.
+        while !ready.exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(&ready);
         let (holder, stub) = UnixStream::pair().unwrap();
         drop(holder);
         let began = Instant::now();
