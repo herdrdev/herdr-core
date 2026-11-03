@@ -28,8 +28,9 @@ pub const SENTINEL: &str = "--hc-launchd-spawn";
 const PROTOCOL: u32 = 1;
 /// From starting the job to the stub's hello.
 const JOB: Duration = Duration::from_secs(3);
-/// How long a program may take to end on its holder's hangup before it is killed.
-const HANGUP: Duration = Duration::from_secs(1);
+/// How long a program gets to end on each of its holder's hangup and terminate before it is killed: a lost holder
+/// ended its programs the same way on Linux (the core's sweep: hangup, terminate, kill at 0.5 s apart).
+const HANGUP: Duration = Duration::from_millis(500);
 /// A start as a whole, from the job to the program's pid: the core gives up on it at 10 s.
 const START: Duration = Duration::from_secs(9);
 /// How long the stub waits for what the holder sends it.
@@ -251,24 +252,31 @@ fn babysit(mut sock: UnixStream, mut child: Child) -> io::Result<()> {
     let pid = child.id();
     let holder = sock.try_clone()?;
     let _ = sock.set_read_timeout(None);
+    // The holder gave up on the start before the pid reached it: nobody has this program, so it does not run on.
+    if send_reply(&mut sock, &Reply::Pid(pid)).is_err() {
+        let _ = child.kill();
+        return child.wait().map(drop);
+    }
     let watch = std::thread::spawn(move || {
         let mut holder = holder;
         // The holder says nothing after the spec: any end of the socket is its leaving.
         while matches!(holder.read(&mut [0u8; 1]), Ok(1..)) {}
         // Not reaped before this thread is joined, so the pid is still the program's.
-        // As on a closed terminal: a hangup first, a kill only for a program that ignores it.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) };
-        let deadline = Instant::now() + HANGUP;
-        while !has_ended(pid) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
+        // As on a closed terminal: a hangup, then a terminate, a kill only for a program that ignores both.
+        for signal in [libc::SIGHUP, libc::SIGTERM, libc::SIGKILL] {
+            unsafe { libc::kill(pid as libc::pid_t, signal) };
+            let deadline = Instant::now() + HANGUP;
+            while !has_ended(pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if has_ended(pid) {
+                break;
+            }
         }
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
     });
-    if send_reply(&mut sock, &Reply::Pid(pid)).is_ok() {
-        // Not reaped yet: the pid stays the program's until the holder lets go.
-        let (code, signal) = ended(pid);
-        let _ = send_reply(&mut sock, &Reply::Exit { code, signal });
-    }
+    // Not reaped yet: the pid stays the program's until the holder lets go.
+    let (code, signal) = ended(pid);
+    let _ = send_reply(&mut sock, &Reply::Exit { code, signal });
     let _ = watch.join();
     child.wait().map(drop)
 }
@@ -463,16 +471,20 @@ mod tests {
     }
 
     #[test]
-    fn a_program_gets_a_hangup_when_its_holder_leaves_and_a_kill_when_it_ignores_it() {
+    fn a_program_gets_a_hangup_then_a_terminate_when_its_holder_leaves_and_a_kill_when_it_ignores_them() {
         let dir = std::env::temp_dir().join(format!("hc-stub-hup-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // The first program saves its work on a hangup; the second shrugs it off.
+        // The first program saves its work on a hangup, the second on a terminate; the third shrugs both off.
         let scripts = [
             format!(
                 "trap 'touch {0}/saved; exit 0' HUP; touch {0}/ready1; while :; do sleep 0.05; done",
                 dir.display()
             ),
-            format!("trap '' HUP; touch {0}/ready2; exec sleep 300", dir.display()),
+            format!(
+                "trap '' HUP; trap 'touch {0}/saved; exit 0' TERM; touch {0}/ready2; while :; do sleep 0.05; done",
+                dir.display()
+            ),
+            format!("trap '' HUP TERM; touch {0}/ready3; while :; do sleep 0.05; done", dir.display()),
         ];
         for (n, script) in scripts.iter().enumerate() {
             let program = Command::new("sh").args(["-c", script]).spawn().unwrap();
@@ -480,19 +492,37 @@ mod tests {
             while !dir.join(format!("ready{}", n + 1)).exists() {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let (holder, stub) = UnixStream::pair().unwrap();
+            let (mut holder, stub) = UnixStream::pair().unwrap();
             let (done, ended) = std::sync::mpsc::channel();
             std::thread::spawn(move || done.send(babysit(stub, program)).unwrap());
+            assert_eq!(read_reply(&mut BufReader::new(&mut holder)).unwrap(), Reply::Pid(pid));
             drop(holder);
             let result = ended.recv_timeout(Duration::from_secs(10));
             if result.is_err() {
                 unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
             }
             result.expect("the program outlived its holder").unwrap();
-            assert_eq!(dir.join("saved").exists(), n == 0, "program {n}: hangup before kill");
+            assert_eq!(dir.join("saved").exists(), n < 2, "program {n}: hangup, then terminate, then kill");
             let _ = std::fs::remove_file(dir.join("saved"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_program_whose_start_the_holder_gave_up_on_is_killed_at_once() {
+        let program = Command::new("sh").args(["-c", "trap '' HUP; exec sleep 300"]).spawn().unwrap();
+        let pid = program.id();
+        // Let the shell set its trap: before it, a hangup ends it anyway.
+        std::thread::sleep(Duration::from_millis(300));
+        let (holder, stub) = UnixStream::pair().unwrap();
+        drop(holder);
+        let began = Instant::now();
+        let result = babysit(stub, program);
+        if began.elapsed() > Duration::from_millis(500) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+        result.unwrap();
+        assert!(began.elapsed() < Duration::from_millis(500), "ran on for {:?} after the holder left", began.elapsed());
     }
 
     #[test]
