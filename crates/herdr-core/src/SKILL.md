@@ -90,9 +90,12 @@ children finish:
   it is not output to fetch with `hc read`. Process it and wait again if needed.
 - `reason: timeout` (default 180 seconds): a check-in, not failure; wait again.
 - A child with a sent launch task counts as working until its turn advances
-  past delivery, or it reports done, blocked, error, or exits. Startup idle
-  does not complete that task in either children mode. Without a launch task,
-  startup idle still counts as stopped.
+  past delivery, its root reports done, blocked, error after delivery, or it
+  exits. Startup words and child records do not complete that task in either
+  children mode. Without a launch task, startup idle still counts as stopped.
+  After a core crash, an unchanged final root word/turn cannot prove completion:
+  a repeated done, or done followed by idle while core was absent, may leave
+  the task pending until another root report or exit.
 - `not_started` from `send --wait`: it hasn't begun; read before deciding.
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.

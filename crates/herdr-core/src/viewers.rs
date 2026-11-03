@@ -201,7 +201,9 @@ impl Core {
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
         let t = st.reg.terminals.get_mut(&id).expect("reported terminal");
         let first_task_finished = t.first_task_turn.is_some_and(|turn| {
-            t.turn > turn || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error"))
+            t.turn > turn
+                || (change.root_report
+                    && t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error")))
         });
         if first_task_finished {
             t.first_task_turn = None;

@@ -127,6 +127,72 @@ command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; w
 }
 
 #[test]
+fn first_task_startup_done_is_not_completion_after_recovery() {
+    for recovery in ["restart", "crash"] {
+        startup_done_stays_pending(Some(recovery));
+    }
+}
+
+#[test]
+fn first_task_startup_done_is_not_completion_after_a_child_report() {
+    startup_done_stays_pending(None);
+}
+
+fn startup_done_stays_pending(recovery: Option<&str>) {
+    for mode in ["all", "any"] {
+        let mut s = session();
+        s.env.push(("HC_STARTED_MS".into(), "100".into()));
+        s.env.push(("HC_HOLDER_GRACE_MS".into(), "60000".into()));
+        let child_gate = s.root.join("child-report");
+        let finish = s.root.join("finish");
+        template(
+            &s,
+            "worker",
+            &format!(
+                r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done:id=sub\033\\"; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; sleep 100'
+---
+"#,
+                child_gate.display(),
+                finish.display()
+            ),
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let child = r["address"].as_str().unwrap();
+        if recovery == Some("restart") {
+            s.json(&["server", "restart"]);
+        } else if recovery == Some("crash") {
+            let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+            wait_until("core absent", || !s.connect_ok());
+        } else {
+            std::fs::write(&child_gate, "").unwrap();
+            wait_until("child report", || s.json(&["get", child])["records"]["sub"]["state"] == "done");
+        }
+        let wait = |timeout: &str| {
+            let out = s
+                .cmd()
+                .env("HC_TERMINAL_ID", &parent)
+                .args(["--json", "wait", "--children", mode, "--timeout", timeout])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            serde_json::from_slice::<Value>(&out.stdout).unwrap()
+        };
+        let r = wait("0.1");
+        assert_eq!(r["reason"], "timeout", "{mode}: startup done is not task completion: {r}");
+        assert_eq!(r["children"][0]["ended"], false, "{r}");
+        std::fs::write(child_gate, "").unwrap();
+        std::fs::write(finish, "").unwrap();
+        let r = wait("5");
+        assert_eq!(r["reason"], "children", "{mode}: fresh root done completes the task: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+    }
+}
+
+#[test]
 fn first_task_completed_while_core_was_absent_is_reconciled() {
     for mode in ["all", "any"] {
         let mut s = session();

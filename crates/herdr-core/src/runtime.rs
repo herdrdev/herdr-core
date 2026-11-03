@@ -470,9 +470,14 @@ impl Core {
             rec.rows = h.rows;
             rec.screen = if exact { "exact" } else { "inexact" }.into();
             let spawning = rec.reason.is_some() || st.pending.contains_key(&id);
-            // Crash tails can replay pre-delivery endpoints: only the normalized final word/turn is reliable.
-            // A done -> idle entirely during downtime is consequently not observable here.
-            self.status_changed(st, id, crate::status::Change::default());
+            // Crash tails replay pre-delivery reports: only a changed final word/turn proves new activity.
+            // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
+            let root_report = if exact {
+                reports.iter().any(|r| r.id.is_empty())
+            } else {
+                rec.turn != turn || rec.status.as_ref().map(|s| s.state.as_str()) != was.as_deref()
+            };
+            self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
             if spawning {
                 self.spawn_result(st, instance, id, Ok(h.pid));
             }
