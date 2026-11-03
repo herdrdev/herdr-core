@@ -22,6 +22,9 @@ const DIRECT: &str = "HC_LAUNCHD_DIRECT";
 const LAUNCHCTL: &str = "/bin/launchctl";
 const PREFIX: &str = "dev.herdr.core.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a launchctl call on the way to a holder may take before it is killed: a launchd that does not answer
+/// then fails the start, and hc starts directly (as it does when launchd refuses the job).
+const LAUNCHCTL_LIMIT: Duration = Duration::from_secs(5);
 
 pub(super) type Limits = Vec<(libc::c_int, libc::rlim_t, libc::rlim_t)>;
 
@@ -250,7 +253,7 @@ fn launch(cmd: &Command, sentinel: &str, log: &Path) -> io::Result<()> {
     // Create the log ourselves: same ownership, mask and append behavior as
     // direct startup, even before launchd has run the job for the first time.
     std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    let (mut job, listener) = start_job(cmd.get_program(), sentinel, &cwd, log, mask, None)?;
+    let (mut job, listener) = start_job(cmd.get_program(), sentinel, &cwd, log, mask, Some(LAUNCHCTL_LIMIT))?;
     let mut ready = accept(&listener, HANDSHAKE_TIMEOUT).map_err(|e| match e.kind() {
         io::ErrorKind::TimedOut => io::Error::new(
             io::ErrorKind::TimedOut,
@@ -429,11 +432,15 @@ fn launchctl(args: &[&OsStr], limit: Option<Duration>) -> io::Result<String> {
 }
 
 fn remove_stale(domain: &str, now: Duration) {
-    let Ok(list) = launchctl(&[OsStr::new("list")], None) else { return };
+    let Ok(list) = launchctl(&[OsStr::new("list")], Some(LAUNCHCTL_LIMIT)) else { return };
     for label in stale_labels(&list, now) {
         let target = format!("{domain}/{label}");
-        if let Err(error) = launchctl(&[OsStr::new("bootout"), OsStr::new(&target)], None) {
+        if let Err(error) = launchctl(&[OsStr::new("bootout"), OsStr::new(&target)], Some(LAUNCHCTL_LIMIT)) {
             eprintln!("hc: cannot remove finished launchd job {target}: {error}");
+            // A launchd that does not answer would make every other job wait as long.
+            if error.kind() == io::ErrorKind::TimedOut {
+                return;
+            }
         }
     }
 }
