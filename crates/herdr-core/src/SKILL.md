@@ -242,8 +242,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   one in a folder you can't write (Unix) the way it was installed.
 - On macOS, privacy requests from terminal programs belong to Herdr Core,
   not Herdr.app. Existing Herdr.app grants do not transfer to the core.
-- macOS installs use immutable `~/.local/share/herdr-core/versions/*/Herdr Core.app`
-  bundles, selected by a `current` symlink, with `hc` and `herdr-core` links in
+- macOS installs keep the newest bundle at the fixed physical path
+  `~/.local/share/herdr-core/active/Herdr Core.app`, selected by a `current`
+  symlink, with `hc` and `herdr-core` links in
   `~/.local/bin` (`HC_INSTALL_DIR` overrides the links'
   folder). Updates keep running terminals. A bundled install's `update --from`
   needs a complete signed `.app` (or its `Contents/MacOS/herdr-core`), not a bare

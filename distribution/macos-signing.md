@@ -33,18 +33,20 @@ without consent. There is no App Sandbox.
 its executable. `scripts/mac-sign` signs the executable and then the bundle.
 `scripts/mac-notarize` submits the bundle zip, waits for acceptance, and staples
 and validates its ticket. The existing macOS archive names contain the complete
-bundle plus an identical root executable for released updaters.
+bundle plus a root executable for released updaters. The root and bundled
+executables are independently signed and notarized.
 
 The installer and new `hc update` stage and verify the complete bundle, check
 that it runs, then atomically exchange it with the installed bundle. They do
 not re-sign, strip, or add quarantine. Entry points in `HC_INSTALL_DIR` (default
-`~/.local/bin`) point into `~/.local/share/herdr-core/Herdr Core.app`.
-Old updaters that copy only the executable remain compatible: a legacy core
-starts immediately and downloads its matching bundle in the background,
-checks the release checksum and signature, installs it, and requests a planned
-core restart that keeps terminals. The restart is required because bare and
-bundled executables have different inode-based holder build identities.
-An offline failure leaves the core running and retries on the next startup.
+`~/.local/bin`) resolve to the newest bundle at the fixed physical path
+`~/.local/share/herdr-core/active/Herdr Core.app`, via the `current` symlink.
+Previous bundles are kept aside while their cores or holders run; later installs
+reclaim unused previous bundles.
+Old updaters that copy only the executable remain compatible. Run `hc update`
+to complete a bare install with the bundle, even if the version is already
+current; the app completes this during its update. Startup never downloads
+updates. Updates keep running terminals.
 
 After launchd detachment the core uses a SETEXEC responsibility disclaimer;
 each holder does the same. Terminal programs never disclaim: the live holder
