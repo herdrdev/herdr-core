@@ -251,8 +251,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   alone ends the terminal too. If the holder goes away, the parent hangs the
   program up and kills it a second later if it is still there. The parent is
   the holder's own binary at its own path: if that path holds an older build
-  or nothing, that holder's new starts fail with `spawn_failed`, and a new
-  holder starts them again. If launchd cannot start the holder, it and its
+  or nothing, that holder's new starts fail with `spawn_failed`, until the core
+  restarts (ask the user first). If launchd cannot start the holder, it and its
   programs start directly (the reason goes to `holder.log`). A program whose job
   cannot start is a `spawn_failed` error, never a silent direct start.
 - Never `hc server stop` or restart the user's core unless asked. It affects
