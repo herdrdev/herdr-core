@@ -181,6 +181,18 @@ pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
 /// Puts the hc at `from` where `dest` is: a copy beside it that `works`,
 /// then renamed over it (InvalidData: the copy doesn't run).
 pub fn swap_in(from: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if super::macos_bundle::source_is_bundle(from) {
+            return super::macos_bundle::install(from, dest, works);
+        }
+        if super::macos_bundle::source_is_bundle(dest) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a bundled core needs a complete signed bundle, not a bare executable",
+            ));
+        }
+    }
     let tmp = dest.with_file_name(format!(".herdr-core.new.{}", std::process::id()));
     let staged = std::fs::copy(from, &tmp).and_then(|_| make_executable(&tmp));
     if staged.is_err() || !works(&tmp) {

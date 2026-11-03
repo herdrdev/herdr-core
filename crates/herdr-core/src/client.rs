@@ -23,7 +23,11 @@ pub fn remember_exe() {
 /// compatibility marker when its folder isn't writable. None for a replaceable install.
 pub fn installed_by() -> Option<&'static str> {
     let exe = EXE.get().cloned().or_else(|| std::env::current_exe().ok())?;
-    let path = exe.canonicalize().unwrap_or(exe);
+    installed_by_path(&exe)
+}
+
+pub(crate) fn installed_by_path(exe: &std::path::Path) -> Option<&'static str> {
+    let path = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     manager_of(&path.to_string_lossy()).or_else(|| (!platform::can_replace(&path)).then_some("system package manager"))
 }
 
@@ -174,6 +178,7 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
     paths.create_dirs()?;
     let log = paths.state.join(log);
     let exe = EXE.get().cloned().map_or_else(std::env::current_exe, Ok)?;
+    let exe = if args.first() == Some(&"serve") { platform::core_executable(&exe) } else { exe };
     let mut cmd = Command::new(exe);
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.

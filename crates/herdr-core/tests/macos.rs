@@ -18,6 +18,13 @@ fn coalition(pid: i64) -> u64 {
     info[0]
 }
 
+fn responsible(pid: i64) -> i64 {
+    let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr()) };
+    assert!(!symbol.is_null(), "responsibility lookup unavailable");
+    let lookup: unsafe extern "C" fn(libc::pid_t) -> libc::pid_t = unsafe { std::mem::transmute(symbol) };
+    unsafe { lookup(pid as libc::pid_t) as i64 }
+}
+
 fn gui() -> bool {
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let available = Command::new("/bin/launchctl").args(["print", &domain]).output().unwrap().status.success();
@@ -39,6 +46,17 @@ fn independent(s: &Session, pid: i64) -> bool {
         return false;
     }
     panic!("core did not leave caller's coalition: {log}");
+}
+
+#[test]
+fn executable_has_bound_core_identity_and_usage_descriptions() {
+    let output = Command::new("/usr/bin/otool").args(["-P", BIN]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let plist = String::from_utf8(output.stdout).unwrap();
+    for value in ["dev.herdr.core", "Herdr Core", "NSLocalNetworkUsageDescription", "NSAppleEventsUsageDescription"] {
+        assert!(plist.contains(value), "{plist}");
+    }
+    assert!(!plist.contains("@VERSION@"), "{plist}");
 }
 
 #[test]
@@ -75,9 +93,14 @@ fn launchd_core_and_program_survive_the_launcher_and_leave_no_job() {
     });
     let program: i64 = line.split_whitespace().next().unwrap().parse().unwrap();
     assert_eq!(coalition(program), coalition(core));
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    assert_eq!(responsible(core), core, "detached core is live and responsible");
+    assert_eq!(responsible(holder), holder, "holder owns its responsibility");
+    assert_eq!(responsible(program), holder, "terminal programs must not disclaim");
     s.json(&["server", "restart"]);
     wait_until("new core", || s.json(&["server", "status"])["pid"].as_i64() != Some(core));
     assert!(pid_alive(program), "holder kept the terminal across handover");
+    assert_eq!(responsible(program), holder, "responsibility survives the old core exiting");
     s.json(&["server", "stop"]);
     wait_until("program stopped", || !pid_alive(program));
     assert!(!s.socket().exists());
