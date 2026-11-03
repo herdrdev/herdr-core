@@ -248,14 +248,14 @@ paths start at your current folder. Prefer explicit paths for remote work.
   small `herdr-core --hc-launchd-spawn` process is its parent), so macOS
   force-quitting an app a terminal started (it ends the app's whole coalition)
   ends only that terminal, never the holder or the others. Killing that parent
-  alone ends the terminal too. If the holder goes away, the parent hangs the
+  alone (SIGKILL; it ignores the gentler signals) ends the terminal too. If the holder goes away, the parent hangs the
   program up, then terminates it, then kills it, half a second apart, as the
   core's own cleanup does. The parent is the holder's own binary at its own
   path: if that path holds an older build or nothing, that holder's new starts
   fail with `spawn_failed` until the core restarts on a binary there (ask the
   user first). If launchd cannot start the holder, it and its programs start
   directly and share the core's coalition again, so a force quit of one app can
-  end them all as before; hc still starts, and only `holder.log` says so. A
+  end them all as before; hc still starts, and only `holder.log` and `core.log` say so. A
   program whose job cannot start is a `spawn_failed` error, never a silent
   direct start.
 - Never `hc server stop` or restart the user's core unless asked. It affects

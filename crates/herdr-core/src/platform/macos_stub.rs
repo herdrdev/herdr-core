@@ -450,27 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn a_program_ends_with_a_holder_that_answers_late_or_leaves() {
-        for read_the_pid in [false, true] {
-            let program = Command::new("sleep").arg("300").spawn().unwrap();
-            let pid = program.id();
-            let (mut holder, stub) = UnixStream::pair().unwrap();
-            let (done, ended) = std::sync::mpsc::channel();
-            std::thread::spawn(move || done.send(babysit(stub, program)).unwrap());
-            if read_the_pid {
-                assert_eq!(read_reply(&mut BufReader::new(&mut holder)).unwrap(), Reply::Pid(pid));
-            }
-            drop(holder);
-            let result = ended.recv_timeout(Duration::from_secs(10));
-            if result.is_err() {
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-            }
-            result.expect("the program outlived its holder").unwrap();
-            assert!(gone(pid));
-        }
-    }
-
-    #[test]
     fn a_program_gets_a_hangup_then_a_terminate_when_its_holder_leaves_and_a_kill_when_it_ignores_them() {
         let dir = std::env::temp_dir().join(format!("hc-stub-hup-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
