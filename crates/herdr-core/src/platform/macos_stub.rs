@@ -171,6 +171,7 @@ fn connect(log: &Path) -> io::Result<UnixStream> {
 /// Hello, then the slave and the spec, then the stub's answer. Whatever fails
 /// after the spec is sent, the stub ends the program once the socket closes.
 fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> io::Result<Remote> {
+    no_sigpipe(&sock);
     let mut reader = BufReader::new(sock);
     match read_reply(&mut reader).map_err(unavailable)? {
         Reply::Hello(PROTOCOL) => {}
@@ -194,6 +195,22 @@ fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> io::
         Ok(other) => Err(unavailable(io::Error::other(format!("unexpected stub answer {other:?}")))),
         Err(error) => Err(unavailable(error)),
     }
+}
+
+/// A write to a peer that has gone is an error to handle, whatever the process does with SIGPIPE
+/// (a failed exec in the same process puts it back to the default). Darwin refuses it on a socket
+/// whose peer has already gone, and then the write fails the same way.
+fn no_sigpipe(sock: &UnixStream) {
+    let on: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw const on).cast(),
+            std::mem::size_of_val(&on) as libc::socklen_t,
+        )
+    };
 }
 
 fn read_reply(reader: &mut impl BufRead) -> io::Result<Reply> {
@@ -222,6 +239,7 @@ pub fn serve(socket: &Path) -> io::Result<()> {
 }
 
 fn run(mut sock: UnixStream) -> io::Result<()> {
+    no_sigpipe(&sock);
     send_reply(&mut sock, &Reply::Hello(PROTOCOL))?;
     sock.set_read_timeout(Some(ANSWER))?;
     let slave = unsafe { File::from_raw_fd(recv_fd(&sock)?) };
@@ -252,6 +270,7 @@ fn run(mut sock: UnixStream) -> io::Result<()> {
 /// Reports `child` to the holder until it ends. The holder going away first
 /// (it gave up on the start, or ended) ends the program: nobody could use it.
 fn babysit(mut sock: UnixStream, mut child: Child) -> io::Result<()> {
+    no_sigpipe(&sock);
     let pid = child.id();
     let holder = sock.try_clone()?;
     let _ = sock.set_read_timeout(None);
@@ -524,6 +543,7 @@ mod tests {
         }
         let _ = std::fs::remove_file(&ready);
         let (holder, stub) = UnixStream::pair().unwrap();
+        no_sigpipe(&stub);
         drop(holder);
         let began = Instant::now();
         let result = babysit(stub, program);
