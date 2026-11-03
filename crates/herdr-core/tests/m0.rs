@@ -112,7 +112,7 @@ fn the_schema_is_openrpc_and_the_committed_file_matches_the_code() {
         let name = &r[..r.find('"').unwrap()];
         assert!(defs.contains_key(name), "dangling $ref {name}");
     }
-    assert_eq!(text.matches("\"first_message\"").count(), 1, "RunResult once");
+    assert_eq!(text.matches("\"first_message\"").count(), 2, "RunResult and retained Terminal failure");
     let run = full["methods"].as_array().unwrap().iter().find(|m| m["name"] == "terminal.run").unwrap();
     let argv = run["params"].as_array().unwrap().iter().find(|p| p["name"] == "argv").unwrap();
     assert_eq!(argv["required"], false, "none: that machine's own shell: {argv}");

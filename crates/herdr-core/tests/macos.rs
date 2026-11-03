@@ -149,7 +149,7 @@ fn a_direct_serve_from_an_old_launcher_relaunches_before_taking_the_lock() {
 }
 
 #[test]
-fn launchd_preserves_environment_bytes_and_file_limits_without_its_own_variables() {
+fn launchd_preserves_environment_bytes_and_hard_file_limit_without_its_own_variables() {
     if !gui() {
         return;
     }
@@ -175,11 +175,11 @@ fn launchd_preserves_environment_bytes_and_file_limits_without_its_own_variables
     }
     let out = s.hc(&["exec", "sh", "-c", "ulimit -Sn; ulimit -Hn; printf '%s' \"$LESS_TERMCAP_md\"; printf '\\n%s %s %s' \"${HC_LAUNCHD_DETACH-unset}\" \"${HC_LAUNCHD_DIRECT-unset}\" \"$XPC_SERVICE_NAME\""]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(out.stdout, b"512\n1024\n\x1b[1m\r\nunset unset 0");
+    assert_eq!(out.stdout, b"1024\n1024\n\x1b[1m\r\nunset unset 0");
 }
 
 #[test]
-fn every_resource_limit_survives_launchd() {
+fn resource_limits_survive_launchd_except_the_raised_nofile_soft_limit() {
     if !gui() {
         return;
     }
@@ -240,11 +240,17 @@ fn every_resource_limit_survives_launchd() {
     ]);
     assert!(out.status.success(), "{out:?}");
     let actual: Vec<(i64, i64)> = serde_json::from_slice(&out.stdout).unwrap();
-    let expected: Vec<_> = limits.iter().map(|&(_, soft, hard)| (soft as i64, hard as i64)).collect();
+    let expected: Vec<_> = limits
+        .iter()
+        .map(|&(resource, soft, hard)| {
+            let soft = if resource == libc::RLIMIT_NOFILE { soft.max(hard.min(8192)) } else { soft };
+            (soft as i64, hard as i64)
+        })
+        .collect();
     for (name, resource) in [("CORE", libc::RLIMIT_CORE), ("CPU", libc::RLIMIT_CPU), ("STACK", libc::RLIMIT_STACK)] {
         eprintln!("{name}: starter {:?}, program {:?}", expected[resource as usize], actual[resource as usize]);
     }
-    assert_eq!(actual, expected, "every Darwin resource limit is inherited");
+    assert_eq!(actual, expected, "Darwin limits are inherited, except the raised NOFILE soft limit");
 }
 
 #[test]
