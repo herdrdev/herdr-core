@@ -430,6 +430,50 @@ mod tests {
 
     const W: usize = 20;
 
+    #[tokio::test]
+    async fn an_unsafe_wait_stays_distinct_from_interruption_after_the_app_is_idle() {
+        let root = std::env::temp_dir().join(format!("hc-stitch-{}", crate::platform::random_hex()));
+        let paths = crate::paths::Paths {
+            state: root.join("state"),
+            config: root.join("config.toml"),
+            socket: root.join("run/core.sock"),
+            holder_socket: root.join("run/core.holder.sock"),
+        };
+        paths.create_dirs().unwrap();
+        let core = Core::start(paths, crate::api::CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+        let id = {
+            let mut st = core.lock();
+            let id = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0)
+                .unwrap();
+            st.reg.terminals.get_mut(&id).unwrap().status =
+                Some(serde_json::from_value(serde_json::json!({"state": "working"})).unwrap());
+            let mut screen = ghostty_vt::Terminal::new(20, 4, 4096);
+            screen.write(b"\x1b[?1049h\x1b[?1000h\x1b[?1006hready");
+            st.screens.insert(id, screen);
+            id
+        };
+        let mut pace = STEP;
+        let unsafe_stop = core.next_page(id, Instant::now(), &mut pace, Instant::now() + MAX_PACE, false).await;
+        {
+            let mut st = core.lock();
+            st.reg.terminals.get_mut(&id).unwrap().status = None;
+            let gate = st.gates.entry(id).or_default();
+            gate.set_busy(true);
+            gate.viewer(b"x", true);
+        }
+        let interrupted = core.next_page(id, Instant::now(), &mut pace, Instant::now() + MAX_PACE, true).await;
+        drop(core);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            format!("{unsafe_stop:?}"),
+            "Err(Unsafe)",
+            "an observed unsafe stop must keep its reason after idle, so restoration cannot revive the read"
+        );
+        assert_eq!(format!("{interrupted:?}"), "Err(Interrupted)", "a person's keys must still allow restoration");
+    }
+
     fn page(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|l| format!("{l:<W$}")).collect()
     }
