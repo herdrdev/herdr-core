@@ -222,6 +222,10 @@ impl Holder {
             if st.core.is_some() {
                 self.core_gone(&mut st, "crash");
             }
+            // A program still starting is part of what a new core must be told about.
+            while !st.starting.is_empty() {
+                st = self.changed.wait(st).unwrap_or_else(|p| p.into_inner());
+            }
             st.generation += 1;
             let mut ids: Vec<u32> = st.terms.keys().copied().collect();
             ids.sort();
@@ -265,7 +269,11 @@ impl Holder {
     fn commands(self: &Arc<Self>, stream: &mut Stream, generation: u64) -> io::Result<()> {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             match kind {
-                proto::SPAWN => self.spawn(id, proto::parse(&payload)?),
+                proto::SPAWN => {
+                    // Starting a program can take a while: the other terminals' frames must not wait.
+                    let (holder, spec) = (self.clone(), proto::parse(&payload)?);
+                    std::thread::spawn(move || holder.spawn(id, spec));
+                }
                 proto::INPUT => {
                     if let Some(t) = self.lock().terms.get(&id) {
                         let _ = t.input.send(payload);
@@ -353,12 +361,12 @@ impl Holder {
         if !st.starting.insert(id) {
             return;
         }
-        // Starting a program can take a while: the others' input must not wait.
         drop(st);
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
         let mut st = self.lock();
         st.starting.remove(&id);
+        self.changed.notify_all();
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));

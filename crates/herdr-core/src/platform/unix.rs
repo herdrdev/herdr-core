@@ -518,8 +518,13 @@ pub fn spawn_pty(
     }
     let (mut master, mut slave) = (0, 0);
     let mut size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) } != 0
-    {
+    // Terminals start on their own threads, and openpty is not safe to call from several at once.
+    static OPENPTY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let opened = {
+        let _one = OPENPTY.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) }
+    };
+    if opened != 0 {
         return Err(io::Error::last_os_error());
     }
     let (master, slave) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };

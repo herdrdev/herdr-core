@@ -16,9 +16,10 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -28,8 +29,9 @@ pub const SENTINEL: &str = "--hc-launchd-spawn";
 const PROTOCOL: u32 = 1;
 /// From starting the job to the stub's hello: past it, programs start directly.
 const JOB: Duration = Duration::from_secs(2);
-/// For the stub's answer once it has the spec; below the core's own spawn wait.
-const ANSWER: Duration = Duration::from_secs(8);
+/// For the stub's answer once it has the spec. With the job start and its two removals (`JOB` each at most)
+/// it stays below the core's own spawn wait.
+const ANSWER: Duration = Duration::from_secs(3);
 /// After launchd failed to start a stub, programs start directly this long.
 const COOLDOWN: Duration = Duration::from_secs(60);
 /// How long a dropped program waits for its stub to reap it.
@@ -54,6 +56,8 @@ enum Reply {
     Hello(u32),
     /// Nothing was started: the holder may start the program itself.
     Refused(String),
+    /// The stub is about to `exec` the holder: the socket closing next is the success.
+    Execing,
     Pid(u32),
     /// The program could not start: the OS error the holder would have had.
     Errno(i32),
@@ -117,20 +121,23 @@ pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: 
     }
     let Ok(limits) = launchd::limits() else { return direct() };
     let spec = Spec { argv: argv.to_vec(), env: env.clone(), cwd: cwd.into(), limits, exec: false };
-    let sock = match connect(Path::new("/dev/null")) {
+    let sock = match connect(&stderr_path()) {
         Ok(sock) => sock,
         Err(error) => {
-            cool_down(&error);
+            cool_down("a program", &error);
             return direct();
         }
     };
     match launch(sock, slave, &spec, ANSWER) {
         Launch::Started(remote) => Ok(Process::Stub(remote)),
         Launch::Unavailable(error) => {
-            cool_down(&error);
+            cool_down("a program", &error);
             direct()
         }
-        Launch::Refused => direct(),
+        Launch::Refused(reason) => {
+            cool_down("a program", &io::Error::other(reason));
+            direct()
+        }
         Launch::Failed(error) => Err(error),
         Launch::Execed => unreachable!("only a holder's job replaces itself"),
     }
@@ -158,18 +165,18 @@ pub fn start_exec(cmd: &Command, log: &Path) -> bool {
     })();
     let Some(spec) = spec else { return false };
     let nothing = File::open("/dev/null").ok();
-    let launched =
-        connect(log).map_err(Some).and_then(|sock| match launch(sock, nothing.as_ref().ok_or(None)?, &spec, ANSWER) {
+    let launched = connect(log).and_then(|sock| {
+        match launch(sock, nothing.as_ref().ok_or(io::Error::other("no /dev/null"))?, &spec, ANSWER) {
             Launch::Execed => Ok(()),
-            Launch::Unavailable(error) | Launch::Failed(error) => Err(Some(error)),
-            Launch::Refused | Launch::Started(_) => Err(None),
-        });
+            Launch::Unavailable(error) | Launch::Failed(error) => Err(error),
+            Launch::Refused(reason) => Err(io::Error::other(reason)),
+            Launch::Started(_) => Err(io::Error::other("a stub started the holder as a program")),
+        }
+    });
     match launched {
         Ok(()) => true,
         Err(error) => {
-            if let Some(error) = error {
-                cool_down(&error);
-            }
+            cool_down("the holder", &error);
             false
         }
     }
@@ -181,8 +188,8 @@ fn cooling_down() -> bool {
     COOL_UNTIL.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|until| Instant::now() < until)
 }
 
-fn cool_down(error: &io::Error) {
-    eprintln!("holder: no launchd job for a program ({error}); starting programs directly for a minute");
+fn cool_down(what: &str, error: &io::Error) {
+    eprintln!("hc: no launchd job for {what} ({error}); starting programs directly for a minute");
     *COOL_UNTIL.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + COOLDOWN);
 }
 
@@ -194,6 +201,16 @@ fn umask() -> libc::mode_t {
         libc::umask(mask);
         mask
     })
+}
+
+/// Where this process's stderr goes (the holder's log), so a stub's own errors land there too.
+fn stderr_path() -> PathBuf {
+    let mut path = [0 as libc::c_char; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(2, libc::F_GETPATH, path.as_mut_ptr()) } == 0 {
+        let path = unsafe { std::ffi::CStr::from_ptr(path.as_ptr()) };
+        return PathBuf::from(OsStr::from_bytes(path.to_bytes()));
+    }
+    PathBuf::from("/dev/null")
 }
 
 /// A stub is running and has connected back; its job is gone.
@@ -214,8 +231,8 @@ enum Launch {
     /// No usable stub: launchd or the binary is at fault; nothing was started.
     Unavailable(io::Error),
     /// The stub declined before starting anything.
-    Refused,
-    /// The stub became the program (no answer: its socket closed on exec).
+    Refused(String),
+    /// The stub became the program (its socket closed on exec).
     Execed,
     /// The program was (or may have been) started and did not come up.
     Failed(io::Error),
@@ -243,10 +260,15 @@ fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> Laun
     sock.set_read_timeout(Some(answer)).ok();
     match read_reply(&mut reader) {
         Ok(Reply::Pid(pid)) => Launch::Started(Remote { pid, reader }),
-        Ok(Reply::Refused(_)) => Launch::Refused,
+        Ok(Reply::Refused(reason)) => Launch::Refused(reason),
+        Ok(Reply::Execing) if spec.exec => match read_reply(&mut reader) {
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Launch::Execed,
+            Ok(Reply::Errno(errno)) => Launch::Failed(io::Error::from_raw_os_error(errno)),
+            Ok(Reply::Error(text)) => Launch::Failed(io::Error::other(text)),
+            _ => Launch::Failed(io::Error::other("launcher lost")),
+        },
         Ok(Reply::Errno(errno)) => Launch::Failed(io::Error::from_raw_os_error(errno)),
         Ok(Reply::Error(text)) => Launch::Failed(io::Error::other(text)),
-        Err(error) if spec.exec && error.kind() == io::ErrorKind::UnexpectedEof => Launch::Execed,
         _ => Launch::Failed(io::Error::other("launcher lost")),
     }
 }
@@ -288,8 +310,8 @@ pub fn serve(socket: &Path) -> io::Result<()> {
         Err(error) => return send_reply(&mut sock, &Reply::Refused(error)),
     };
     if spec.exec {
-        // The socket closes on exec: the holder reads that as success.
         drop(slave);
+        send_reply(&mut sock, &Reply::Execing)?;
         let error = cmd.exec();
         return send_reply(
             &mut sock,
@@ -416,7 +438,9 @@ mod tests {
     #[test]
     fn a_stub_that_refuses_leaves_the_program_to_the_holder() {
         let refuse = |s: &mut UnixStream| send_reply(s, &Reply::Refused("old spec".into())).unwrap();
-        assert!(matches!(against(Some(Reply::Hello(PROTOCOL)), refuse), Launch::Refused));
+        assert!(
+            matches!(against(Some(Reply::Hello(PROTOCOL)), refuse), Launch::Refused(reason) if reason == "old spec")
+        );
     }
 
     #[test]
@@ -433,6 +457,26 @@ mod tests {
     fn a_stub_that_dies_after_the_spec_never_leads_to_a_second_program() {
         let Launch::Failed(error) = against(Some(Reply::Hello(PROTOCOL)), |_| {}) else { panic!() };
         assert_eq!(error.to_string(), "launcher lost");
+    }
+
+    #[test]
+    fn a_stub_that_closes_after_announcing_the_exec_has_become_the_holder() {
+        let exec = Spec { exec: true, ..spec() };
+        let (holder, mut stub) = UnixStream::pair().unwrap();
+        let fake = std::thread::spawn(move || {
+            send_reply(&mut stub, &Reply::Hello(PROTOCOL)).unwrap();
+            recv_fd(&stub).unwrap();
+            BufReader::new(&stub).read_line(&mut String::new()).unwrap();
+            send_reply(&mut stub, &Reply::Execing).unwrap();
+        });
+        let slave = File::open("/dev/null").unwrap();
+        assert!(matches!(launch(holder, &slave, &exec, Duration::from_millis(300)), Launch::Execed));
+        fake.join().unwrap();
+        let eof = |_: &mut UnixStream| {};
+        assert!(
+            matches!(against(Some(Reply::Hello(PROTOCOL)), eof), Launch::Failed(_)),
+            "closing alone is not success"
+        );
     }
 
     #[test]

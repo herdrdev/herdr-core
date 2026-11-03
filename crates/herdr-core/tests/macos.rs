@@ -400,7 +400,9 @@ fn a_force_quit_of_an_unkept_terminal_is_an_exit() {
     if !independent(&s, core) {
         return;
     }
-    for pid in members(coalitions(a_program)[0]) {
+    let all = members(coalitions(a_program)[0]);
+    assert!(!all.contains(&core) && !all.contains(&holder_of(&s)), "{all:?}");
+    for pid in all {
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
     wait_until("exit reported", || get(&s, &a)["state"] == "finished");
