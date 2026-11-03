@@ -213,6 +213,8 @@ impl Holder {
             _ => return Ok(()),
         };
         let generation = {
+            // A start in flight finishes first, as it did when it held the state lock: the welcome lists it.
+            let _settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
             let mut st = self.lock();
             if st.core.is_some() {
                 self.core_gone(&mut st, "crash");
@@ -469,6 +471,8 @@ impl Holder {
     fn supervise(&self) {
         loop {
             std::thread::sleep(self.grace.min(Duration::from_millis(100)));
+            // Not while a start is in flight: its terminal is not in the table yet.
+            let settled = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
             let mut st = self.lock();
             if st.core.is_some() || st.core_left.elapsed() < self.grace {
                 continue;
@@ -485,6 +489,7 @@ impl Holder {
             st.restarts.push(now);
             st.core_left = now;
             drop(st);
+            drop(settled);
             if let Err(e) = crate::client::spawn_core(&self.paths) {
                 eprintln!("holder: cannot start core: {e:?}");
             }

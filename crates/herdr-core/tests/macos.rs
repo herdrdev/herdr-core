@@ -3,6 +3,7 @@
 mod common;
 
 use common::*;
+use herdr_core::holder_proto as proto;
 use serde_json::Value;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
@@ -619,6 +620,44 @@ fn a_slow_program_start_does_not_stop_the_output_of_other_terminals() {
         start.join().unwrap()
     });
     assert_eq!(failing.1["error"]["kind"], "spawn_failed");
+}
+
+/// A core that connects while a program is starting (an update does) is welcomed after the start, not in the middle
+/// of it, as when starting held the holder's state lock: otherwise its welcome and a drain could miss the program.
+#[test]
+fn a_core_connecting_during_a_start_is_welcomed_after_it() {
+    if !gui() {
+        return;
+    }
+    let mut s = Session::new();
+    let (holder, _) = holder_with_an_older_build_at_its_path(&mut s);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let socket = std::fs::read_dir(s.root.join("run/herdr-core"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains(".holder.") && p.extension().is_some_and(|e| e == "sock"))
+        .expect("the holder's socket");
+    // The start that follows waits several seconds for a job that never answers.
+    std::thread::scope(|scope| {
+        scope.spawn(|| s.err(&["run", "--bg", "true"]));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut newer = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        newer.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+        let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
+        std::io::Write::write_all(&mut newer, &hello).unwrap();
+        let asked = std::time::Instant::now();
+        assert_eq!(proto::read(&mut newer).unwrap().unwrap().0, proto::WELCOME);
+        assert!(
+            asked.elapsed() > std::time::Duration::from_secs(1),
+            "welcomed in {:?}, in the middle of a start",
+            asked.elapsed()
+        );
+        assert!(pid_alive(holder));
+    });
 }
 
 #[test]
