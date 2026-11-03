@@ -450,19 +450,6 @@ impl Core {
             if let Some(on) = relay.win32_input {
                 rec.win32_input = on;
             }
-            // A crash tail repeats reports we already counted: take its final word,
-            // but count at most the one turn that may have ended while we were down.
-            let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
-            for r in &reports {
-                crate::status::apply(rec, r);
-            }
-            if !exact {
-                let now = rec.status.as_ref().map(|s| s.state.clone());
-                rec.turn = turn + (was.as_deref() == Some("working") && now.as_deref() != Some("working")) as u64;
-                if now == was {
-                    rec.status_ms = since;
-                }
-            }
             st.screens.insert(id, screen);
             st.relays.remove(&id); // half a sequence from the old link must not prefix the new
             rec.pid = Some(h.pid);
@@ -470,14 +457,30 @@ impl Core {
             rec.rows = h.rows;
             rec.screen = if exact { "exact" } else { "inexact" }.into();
             let spawning = rec.reason.is_some() || st.pending.contains_key(&id);
-            // Crash tails replay pre-delivery reports: only a changed final word/turn proves new activity.
-            // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
-            let root_report = if exact {
-                reports.iter().any(|r| r.id.is_empty())
+            if exact {
+                // Every handover report is fresh, including endpoints followed by idle.
+                for r in &reports {
+                    let rec = st.reg.terminals.get_mut(&id).expect("live id");
+                    let change = crate::status::apply(rec, r);
+                    self.status_changed(st, id, change);
+                }
             } else {
-                rec.turn != turn || rec.status.as_ref().map(|s| s.state.as_str()) != was.as_deref()
-            };
-            self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
+                // A crash tail repeats reports we already counted: take its final word,
+                // but count at most the one turn that may have ended while we were down.
+                let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
+                for r in &reports {
+                    crate::status::apply(rec, r);
+                }
+                let now = rec.status.as_ref().map(|s| s.state.clone());
+                rec.turn = turn + (was.as_deref() == Some("working") && now.as_deref() != Some("working")) as u64;
+                if now == was {
+                    rec.status_ms = since;
+                }
+                // Only a changed final word/turn proves new activity in a crash replay.
+                // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
+                let root_report = rec.turn != turn || now != was;
+                self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
+            }
             if spawning {
                 self.spawn_result(st, instance, id, Ok(h.pid));
             }

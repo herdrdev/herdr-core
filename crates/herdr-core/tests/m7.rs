@@ -245,6 +245,50 @@ command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; w
 }
 
 #[test]
+fn first_task_done_then_idle_during_handover_is_not_forgotten() {
+    for mode in ["all", "any"] {
+        let mut s = session();
+        s.env.push(("HC_HOLDER_GRACE_MS".into(), "60000".into()));
+        s.env.push(("HC_STARTED_MS".into(), "100".into()));
+        let gate = s.root.join("finish");
+        let finished = s.root.join("finished");
+        template(
+            &s,
+            "worker",
+            &format!(
+                r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; printf "\033]7501;state=idle\033\\"; touch "{}"; sleep 100'
+---
+"#,
+                gate.display(),
+                finished.display()
+            ),
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let child = r["address"].as_str().unwrap();
+        let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+        wait_until("core exited gracefully", || !pid_alive(pid));
+        std::fs::write(gate, "").unwrap();
+        wait_until("task finished without core", || finished.exists());
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "wait", "--children", mode, "--timeout", "0.1"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(r["reason"], "children", "{mode}: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+        assert_eq!(r["children"][0]["status"], "idle", "{r}");
+        assert_eq!(s.json(&["get", child])["screen"], "exact");
+    }
+}
+
+#[test]
 fn children_wait_for_a_sent_first_task_not_startup_idle() {
     for mode in ["all", "any"] {
         let s = session();
