@@ -502,6 +502,10 @@ pub struct WaitParams {
     /// yet counts as working). `any`: the parent's unseen news (a turn ended, it
     /// blocked, it hit an error, it exited), else the next child to stop working; for the parent
     /// itself, also a message typed into it while it worked (reason `message`).
+    /// A child with a sent launch task counts as working until its turn advances
+    /// past delivery, or it reports done, blocked, error, or exits. Startup idle
+    /// does not complete that task in either mode. Without a launch task, idle
+    /// still counts as stopped.
     #[arg(long)]
     pub children: Option<Children>,
     /// For programs, not agents: end when output printed after the wait started

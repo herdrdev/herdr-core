@@ -24,6 +24,87 @@ fn template(s: &Session, name: &str, body: &str) {
 const ECHO_AGENT: &str = r#"sh -c 'printf "\033]7501;state=idle\033\\"; stty -echo; while read -r l; do printf "\033]7501;state=working\033\\"; echo "got:$l"; printf "\033]7501;state=done\033\\"; done'"#;
 
 #[test]
+fn first_task_can_finish_without_a_working_report() {
+    for mode in ["all", "any"] {
+        for state in ["done", "blocked", "error", "exit"] {
+            let mut s = session();
+            s.env.push(("HC_STARTED_MS".into(), "100".into()));
+            let gate = s.root.join("finish");
+            let end = if state == "exit" {
+                "exit 7".to_string()
+            } else {
+                format!(r#"printf "\033]7501;state={state}\033\\"; sleep 100"#)
+            };
+            let command = format!(
+                r#"sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; {end}'"#,
+                gate.display()
+            );
+            template(&s, "worker", &format!("---\ncommand: {command}\n---\n"));
+            let parent = s.json(&["run", "--bg", "sh", "-c", "sleep 100"])["address"].as_str().unwrap().to_string();
+            let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+            assert_eq!(r["first_message"]["sent"], true, "{r}");
+            std::fs::write(gate, "").unwrap();
+            let out = s
+                .cmd()
+                .env("HC_TERMINAL_ID", &parent)
+                .args(["--json", "wait", "--children", mode, "--timeout", "5"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(r["reason"], "children", "{mode} {state}: {r}");
+            assert_eq!(r["children"][0]["ended"], true, "{r}");
+            if state == "exit" {
+                assert_eq!(r["children"][0]["exit_code"], 7, "{r}");
+            } else {
+                assert_eq!(r["children"][0]["status"], state, "{r}");
+            }
+        }
+    }
+}
+
+#[test]
+fn children_wait_for_a_sent_first_task_not_startup_idle() {
+    for mode in ["all", "any"] {
+        let s = session();
+        let gate = s.root.join("start");
+        let finish = s.root.join("finish");
+        let command = format!(
+            r#"sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=working\033\\"; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=idle\033\\"; sleep 100'"#,
+            gate.display(),
+            finish.display()
+        );
+        template(&s, "worker", &format!("---\ncommand: {command}\n---\n"));
+        let parent = s.json(&["run", "--bg", "sh", "-c", "sleep 100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        assert_eq!(r["first_message"]["started"], false, "{r}");
+        let child = r["address"].as_str().unwrap();
+        let wait = |timeout: &str| {
+            let out = s
+                .cmd()
+                .env("HC_TERMINAL_ID", &parent)
+                .args(["--json", "wait", "--children", mode, "--timeout", timeout])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            serde_json::from_slice::<Value>(&out.stdout).unwrap()
+        };
+        let r = wait("0.1");
+        assert_eq!(r["reason"], "timeout", "{mode}: startup idle is not task completion: {r}");
+        assert_eq!(r["children"][0]["ended"], false, "{r}");
+        std::fs::write(gate, "").unwrap();
+        wait_until("first task working", || s.json(&["get", child])["status"]["state"] == "working");
+        assert_eq!(wait("0.1")["reason"], "timeout");
+        std::fs::write(finish, "").unwrap();
+        let r = wait("5");
+        assert_eq!(r["reason"], "children", "{r}");
+        assert_eq!(r["children"][0]["turn"], 1, "{r}");
+        assert_eq!(r["children"][0]["status"], "idle", "{r}");
+    }
+}
+
+#[test]
 fn a_template_starts_its_command_and_sends_body_and_prompt_first() {
     let s = session();
     template(

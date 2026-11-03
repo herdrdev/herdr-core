@@ -5,7 +5,7 @@ use crate::paths::Paths;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -110,7 +110,7 @@ pub fn list(paths: &Paths) -> Vec<TemplateInfo> {
         .collect()
 }
 
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+#[derive(Serialize, JsonSchema, Debug)]
 pub struct FirstMessage {
     pub sent: bool,
     /// Whether the agent started working on it (see terminal.send).
@@ -125,7 +125,7 @@ pub struct FirstMessage {
 }
 
 pub(crate) fn ready_timeout() -> Duration {
-    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
+    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     Duration::from_millis(ms)
 }
 
@@ -169,21 +169,28 @@ impl Core {
             return not_sent("it exited before it was ready".into());
         }
         let text = self.tagged(from, id, text, true);
-        loop {
-            match self.send(id, &text, false, None).await {
-                Ok(sent) => {
-                    return FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) };
-                }
-                // Only settle failures guarantee no input was typed. Never retry a paste.
-                Err(e)
-                    if e.kind == "unavailable"
-                        && e.message.ends_with("is still starting: its output has not settled")
-                        && tokio::time::Instant::now() < deadline =>
+        match self.send(id, &text, false, None).await {
+            Ok(sent) => {
+                let mut st = self.lock();
+                if let Some(t) = st.reg.terminals.get_mut(&id)
+                    && t.is_live()
+                    && !t.program_lost()
+                    && t.turn <= sent.turn
+                    && !t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error"))
                 {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    t.first_task_turn = Some(sent.turn);
+                    self.save(&st);
+                    self.changed.notify_waiters();
+                } else if st.reg.terminals.get(&id).is_some_and(|t| {
+                    t.is_live() && t.turn == sent.turn && t.status.as_ref().is_some_and(|s| s.state == "done")
+                }) {
+                    // A task can report done without ever reporting working.
+                    self.news(&mut st, id);
+                    self.save(&st);
                 }
-                Err(e) => return not_sent(format!("{}; {}", e.message, e.hint)),
+                FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) }
             }
+            Err(e) => not_sent(e.message),
         }
     }
 }

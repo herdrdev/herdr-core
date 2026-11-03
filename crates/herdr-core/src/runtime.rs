@@ -691,6 +691,7 @@ impl Core {
             reason
         };
         if let Some(t) = st.reg.terminals.get_mut(&id) {
+            t.first_task_turn = None;
             let change = crate::status::reset(t);
             self.status_changed(st, id, change);
         }
