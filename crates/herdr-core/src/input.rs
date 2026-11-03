@@ -62,6 +62,7 @@ impl Gate {
 }
 
 pub enum Step {
+    FirstTask(Vec<u8>),
     Write(Vec<u8>),
     Pause(Duration),
 }
@@ -142,6 +143,17 @@ impl Core {
         };
         for step in steps {
             match step {
+                Step::FirstTask(bytes) => {
+                    let mut st = self.lock();
+                    if st.link(id).is_some() {
+                        if let Some(t) = st.reg.terminals.get_mut(&id) {
+                            t.first_task_turn = Some(t.turn);
+                        }
+                        st.link(id).expect("delivery link").input(id, &bytes);
+                        self.save(&st);
+                        self.changed.notify_waiters();
+                    }
+                }
                 Step::Write(bytes) => {
                     if let Some(link) = self.lock().link(id) {
                         link.input(id, &bytes);
@@ -162,6 +174,21 @@ impl Core {
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
     /// program (typing would answer its dialog) unless `force`.
     pub async fn send(&self, id: u32, text: &str, force: bool, only_if: Option<&str>) -> Result<Sent, RpcError> {
+        self.send_message(id, text, force, only_if, false).await
+    }
+
+    pub(crate) async fn send_first_task(&self, id: u32, text: &str) -> Result<Sent, RpcError> {
+        self.send_message(id, text, false, None, true).await
+    }
+
+    async fn send_message(
+        &self,
+        id: u32,
+        text: &str,
+        force: bool,
+        only_if: Option<&str>,
+        first_task: bool,
+    ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
             t.check_program()?;
         }
@@ -203,8 +230,9 @@ impl Core {
                     None => b"\r".to_vec(),
                 };
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
-                let steps =
-                    vec![Step::Write(paste(screen.dec_mode(2004), text)), Step::Pause(gap), Step::Write(submit)];
+                let bytes = paste(screen.dec_mode(2004), text);
+                let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
+                let steps = vec![paste, Step::Pause(gap), Step::Write(submit)];
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;

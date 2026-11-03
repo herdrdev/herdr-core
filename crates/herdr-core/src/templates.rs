@@ -169,27 +169,8 @@ impl Core {
             return not_sent("it exited before it was ready".into());
         }
         let text = self.tagged(from, id, text, true);
-        match self.send(id, &text, false, None).await {
-            Ok(sent) => {
-                let mut st = self.lock();
-                if let Some(t) = st.reg.terminals.get_mut(&id)
-                    && t.is_live()
-                    && !t.program_lost()
-                    && t.turn <= sent.turn
-                    && !t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error"))
-                {
-                    t.first_task_turn = Some(sent.turn);
-                    self.save(&st);
-                    self.changed.notify_waiters();
-                } else if st.reg.terminals.get(&id).is_some_and(|t| {
-                    t.is_live() && t.turn == sent.turn && t.status.as_ref().is_some_and(|s| s.state == "done")
-                }) {
-                    // A task can report done without ever reporting working.
-                    self.news(&mut st, id);
-                    self.save(&st);
-                }
-                FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) }
-            }
+        match self.send_first_task(id, &text).await {
+            Ok(sent) => FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) },
             Err(e) => not_sent(e.message),
         }
     }

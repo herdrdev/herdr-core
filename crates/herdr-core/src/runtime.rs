@@ -469,7 +469,11 @@ impl Core {
             rec.cols = h.cols;
             rec.rows = h.rows;
             rec.screen = if exact { "exact" } else { "inexact" }.into();
-            if rec.reason.is_some() || st.pending.contains_key(&id) {
+            let spawning = rec.reason.is_some() || st.pending.contains_key(&id);
+            // Crash tails can replay pre-delivery endpoints: only the normalized final word/turn is reliable.
+            // A done -> idle entirely during downtime is consequently not observable here.
+            self.status_changed(st, id, crate::status::Change::default());
+            if spawning {
                 self.spawn_result(st, instance, id, Ok(h.pid));
             }
             match h.exit {
