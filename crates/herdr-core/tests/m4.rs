@@ -234,6 +234,67 @@ fn clearing_a_draft_releases_the_message_without_dropping_it() {
 }
 
 #[test]
+fn held_messages_allow_interrupts_and_keys_without_losing_the_draft_or_message_order() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = run(&s, "stty raw -echo; r state=working; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done");
+    wait_until("working", || status(&s, &t) == "working");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"q");
+    shows(&s, &t, "71");
+    let mut conn = s.connect();
+    let target = t.clone();
+    let first = std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "a"})));
+    wait_until("draft held", || s.json(&["get", &t])["waiting_for_person"] == true);
+    let mut conn = s.connect();
+    let target = t.clone();
+    let second = std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "b"})));
+    let start = Instant::now();
+    s.json(&["interrupt", &t, "--timeout", "0"]);
+    assert!(start.elapsed() < Duration::from_secs(2), "interrupt waited behind the held message");
+    s.json(&["keys", &t, "up"]);
+    shows(&s, &t, "5b");
+    assert!(!first.is_finished());
+    assert!(!second.is_finished());
+    assert_eq!(s.json(&["get", &t])["waiting_for_person"], true);
+    person.typed(b"\x15");
+    for sending in [first, second] {
+        let sent = sending.join().unwrap();
+        assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    }
+    shows(&s, &t, "62");
+    let screen = text(&s, &t);
+    assert_eq!(screen.matches("61").count(), 1, "{screen}");
+    assert_eq!(screen.matches("62").count(), 1, "{screen}");
+    assert!(screen.find("61").unwrap() < screen.find("62").unwrap(), "{screen}");
+}
+
+#[test]
+fn multiline_newlines_hold_messages_after_the_person_pauses() {
+    for newline in [b"\n".as_slice(), b"\x1b[13;2u"] {
+        let s = session();
+        let t = run(&s, "stty raw -echo; r state=idle; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done");
+        wait_until("idle", || status(&s, &t) == "idle");
+        let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+        person.typed(b"q");
+        person.typed(newline);
+        shows(&s, &t, "71");
+        let mut conn = s.connect();
+        let target = t.clone();
+        let sending =
+            std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "a"})));
+        std::thread::sleep(Duration::from_millis(1000));
+        assert_eq!(s.json(&["get", &t])["waiting_for_person"], true, "{newline:?}");
+        assert!(!sending.is_finished(), "{newline:?}");
+        assert!(!text(&s, &t).contains("61"), "message entered the multiline draft: {newline:?}");
+        person.typed(b"\r");
+        let sent = sending.join().unwrap();
+        assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+        shows(&s, &t, "61");
+    }
+}
+
+#[test]
 fn a_draft_hold_has_a_cap_and_still_delivers_the_message() {
     let mut s = session();
     s.env.push(("HC_DRAFT_MS".into(), "1200".into()));

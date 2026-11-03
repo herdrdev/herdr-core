@@ -1,5 +1,5 @@
-//! Input from agents: one queue per terminal, so send, keys and interrupt
-//! never interleave with each other, and never with a person typing.
+//! Input from agents: messages stay ordered while controls can pass draft holds.
+//! Actual delivery never interleaves operations or a person's typing.
 
 use crate::holder_proto as proto;
 use crate::rpc::RpcError;
@@ -19,6 +19,12 @@ const STARTUP_MS: u64 = 10_000;
 const SETTLE_MAX: Duration = Duration::from_secs(5);
 /// Maximum extra hold for an unsent human draft; remote calls budget for it too.
 pub const DRAFT_MAX_MS: u64 = 180_000;
+
+#[derive(Default)]
+pub struct Queue {
+    messages: tokio::sync::Mutex<()>,
+    pub(crate) delivery: tokio::sync::Mutex<()>,
+}
 
 /// A person's typing, as it affects agent input to one terminal.
 #[derive(Default)]
@@ -78,7 +84,23 @@ struct Draft {
 impl Draft {
     fn feed(&mut self, bytes: &[u8]) {
         for &byte in bytes {
-            if !self.escape.is_empty() {
+            if self.pasted {
+                // Only the end marker has meaning inside paste; retain overlapping ESCs.
+                self.escape.push(byte);
+                while !b"\x1b[201~".starts_with(&self.escape) {
+                    self.pending = true;
+                    self.escape.remove(0);
+                }
+                if self.escape == b"\x1b[201~" {
+                    self.pasted = false;
+                    self.escape.clear();
+                }
+                continue;
+            }
+            if byte == 0x1b {
+                self.escape.clear();
+                self.escape.push(byte);
+            } else if !self.escape.is_empty() {
                 self.escape.push(byte);
                 if self.escape.len() == 2 && matches!(byte, b'[' | b'O') {
                     continue;
@@ -92,15 +114,11 @@ impl Draft {
                 match self.escape.as_slice() {
                     b"\x1b[200~" => self.pasted = true,
                     b"\x1b[201~" => self.pasted = false,
-                    // Alt+text is still text; CSI and SS3 navigation are not.
+                    [0x1b, b'b' | b'f' | b'B' | b'F'] => {} // Alt word navigation.
                     [0x1b, b] => self.key(u32::from(*b)),
                     _ => self.encoded_key(),
                 }
                 self.escape.clear();
-            } else if byte == 0x1b {
-                self.escape.push(byte);
-            } else if self.pasted {
-                self.pending = true;
             } else {
                 self.key(u32::from(byte));
             }
@@ -109,7 +127,7 @@ impl Draft {
 
     fn key(&mut self, code: u32) {
         match code {
-            10 | 13 | 3 | 21 if !self.pasted => self.pending = false,
+            13 | 3 | 21 if !self.pasted => self.pending = false,
             9 | 32..=126 | 128..=0x10ffff => self.pending = true,
             _ => {}
         }
@@ -121,7 +139,7 @@ impl Draft {
         let Ok(params) = std::str::from_utf8(params) else { return };
         let fields: Vec<&str> = params.split(';').collect();
         let number = |i: usize| fields.get(i)?.split(':').next()?.parse::<u32>().ok();
-        let (code, ctrl) = match kind {
+        let (code, ctrl, shift) = match kind {
             // Kitty/CSI-u: release events do not type, nor do functional key codes.
             b'u' if !fields.get(1).is_some_and(|s| s.ends_with(":3")) => {
                 let code = match number(0) {
@@ -130,20 +148,26 @@ impl Draft {
                     Some(code) if !(57344..=63743).contains(&code) => code,
                     _ => return,
                 };
-                (code, number(1).unwrap_or(1).saturating_sub(1) & 4 != 0)
+                let modifiers = number(1).unwrap_or(1).saturating_sub(1);
+                (code, modifiers & 4 != 0, modifiers & 1 != 0)
             }
             // xterm modifyOtherKeys.
             b'~' if number(0) == Some(27) => {
                 let Some(code) = number(2) else { return };
-                (code, number(1).unwrap_or(1).saturating_sub(1) & 4 != 0)
+                let modifiers = number(1).unwrap_or(1).saturating_sub(1);
+                (code, modifiers & 4 != 0, modifiers & 1 != 0)
             }
             // Win32-input-mode: Unicode character, key-down, control-state.
             b'_' if number(3) == Some(1) => {
                 let Some(code) = number(2) else { return };
-                (code, number(4).unwrap_or(0) & 12 != 0)
+                let modifiers = number(4).unwrap_or(0);
+                (code, modifiers & 12 != 0, modifiers & 16 != 0)
             }
             _ => return,
         };
+        if code == 13 && shift {
+            return;
+        }
         self.key(if ctrl && (64..=127).contains(&code) { code & 31 } else { code });
     }
 }
@@ -229,10 +253,11 @@ impl Core {
             let draft = protect_draft && st.gates.get(&id).is_some_and(|g| g.draft.pending);
             (st.queues.entry(id).or_default().clone(), draft)
         };
-        let _turn = queue.lock().await;
-        let _waiting = PersonWait { core: self, id };
+        let _message = if protect_draft { Some(queue.messages.lock().await) } else { None };
+        let _waiting = protect_draft.then(|| PersonWait { core: self, id });
         let mut prepare = Some(prepare);
-        let (out, steps) = loop {
+        let (out, steps, _delivery) = loop {
+            let delivery = queue.delivery.lock().await;
             let prepared = {
                 let mut st = self.lock();
                 let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or_else(|| {
@@ -245,7 +270,9 @@ impl Core {
                 t.check_program()?;
                 let gate = st.gates.entry(id).or_default();
                 let draft = protect_draft && gate.draft.pending && Instant::now() < deadline;
-                gate.waiting_for_person = draft;
+                if protect_draft {
+                    gate.waiting_for_person = draft;
+                }
                 waited_for_person |= draft;
                 let left = gate.last_human.map_or(Duration::ZERO, |t| quiet.saturating_sub(t.elapsed()));
                 if draft || !left.is_zero() {
@@ -258,8 +285,9 @@ impl Core {
                 }
             };
             if let Some(prepared) = prepared {
-                break prepared;
+                break (prepared.0, prepared.1, delivery);
             }
+            drop(delivery);
             // Also notice submit/clear or an exit while waiting.
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
@@ -506,7 +534,6 @@ mod tests {
     fn drafts_clear_only_on_submit_or_unambiguous_clear_keys() {
         for clear in [
             b"\r".as_slice(),
-            b"\n",
             b"\x03",
             b"\x15",
             b"\x1b[13u",
@@ -533,6 +560,8 @@ mod tests {
     #[test]
     fn paste_newlines_and_navigation_do_not_release_a_draft() {
         let mut draft = Draft::default();
+        draft.feed(b"\x1b[200~\x1b[201~");
+        assert!(!draft.pending, "an empty paste is not a draft");
         draft.feed(b"\x1b[A\x1b[<64;5;5M\x7f\x08");
         assert!(!draft.pending);
         for byte in b"\x1b[200~a\nb\r\x1b[201~" {
@@ -545,6 +574,41 @@ mod tests {
             draft.feed(key);
             assert!(draft.pending, "{key:?}");
             draft.feed(b"\x15");
+        }
+    }
+
+    #[test]
+    fn multiline_keys_do_not_release_drafts() {
+        for key in [b"\n".as_slice(), b"\x1b[13;2u", b"\x1b[57414;2u", b"\x1b[27;2;13~"] {
+            let mut draft = Draft::default();
+            draft.feed(b"unfinished");
+            draft.feed(key);
+            assert!(draft.pending, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn word_navigation_and_escape_then_arrows_do_not_create_drafts() {
+        for key in [b"\x1bb".as_slice(), b"\x1bf", b"\x1bB", b"\x1bF", b"\x1b\x1b[A", b"\x1b\x1bOD"] {
+            let mut draft = Draft::default();
+            for byte in key {
+                draft.feed(&[*byte]);
+            }
+            assert!(!draft.pending, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn paste_ending_in_escape_still_recognizes_the_end_marker() {
+        for clear in [b'\r', 3, 21] {
+            let mut draft = Draft::default();
+            for byte in b"\x1b[200~abc\x1b\x1b[201~" {
+                draft.feed(&[*byte]);
+            }
+            assert!(draft.pending);
+            assert!(!draft.pasted);
+            draft.feed(&[clear]);
+            assert!(!draft.pending);
         }
     }
 

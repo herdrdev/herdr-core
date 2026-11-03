@@ -52,7 +52,7 @@ pub struct State {
     pub viewers: HashMap<u32, Vec<Viewer>>,
     pub events: crate::events::Events,
     pub gates: HashMap<u32, crate::input::Gate>,
-    pub queues: HashMap<u32, Arc<tokio::sync::Mutex<()>>>,
+    pub queues: HashMap<u32, Arc<crate::input::Queue>>,
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
     /// Waits matching output: they get every byte viewers get.
     pub output_watch: HashMap<u32, Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
