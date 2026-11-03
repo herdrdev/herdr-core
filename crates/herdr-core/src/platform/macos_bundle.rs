@@ -50,6 +50,10 @@ fn link(target: &Path, dest: &Path) -> io::Result<()> {
     result
 }
 
+fn executable_is_gone(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT))
+}
+
 fn live_executables() -> io::Result<Vec<PathBuf>> {
     use std::os::unix::ffi::OsStrExt;
     const PROC_ALL_PIDS: u32 = 1; // libproc.h; libc exposes the function but not this selector.
@@ -70,7 +74,8 @@ fn live_executables() -> io::Result<Vec<PathBuf>> {
         let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
         if len <= 0 {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
+            // An unlinked executable cannot live in a retained bundle that still exists.
+            if executable_is_gone(&error) {
                 continue;
             }
             return Err(error); // An unreadable live process means we cannot safely reclaim anything.
@@ -309,6 +314,17 @@ mod tests {
             assert!(bundle(Path::new(path)).is_none(), "{path}");
         }
     }
+    #[test]
+    fn only_missing_processes_or_executables_are_safe_to_skip() {
+        for code in [libc::ESRCH, libc::ENOENT] {
+            assert!(executable_is_gone(&io::Error::from_raw_os_error(code)), "errno {code}");
+        }
+        for code in [libc::EPERM, libc::EACCES, libc::EIO] {
+            assert!(!executable_is_gone(&io::Error::from_raw_os_error(code)), "errno {code}");
+        }
+        assert!(!executable_is_gone(&io::Error::other("unknown failure")));
+    }
+
     #[test]
     fn live_paths_include_this_process() {
         let paths = live_executables().unwrap();
