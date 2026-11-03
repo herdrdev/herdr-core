@@ -395,29 +395,52 @@ impl Drop for Job {
     }
 }
 
+/// `cmd.output()`, but a command still running after `limit` is killed (`TimedOut`).
+fn output_within(mut cmd: Command, limit: Duration) -> io::Result<std::process::Output> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Read while it runs: `list` prints a line per job, and a full pipe would stall it.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 /// With a `limit`, a launchctl that does not answer in time is killed.
 fn launchctl(args: &[&OsStr], limit: Option<Duration>) -> io::Result<String> {
     let mut cmd = Command::new(LAUNCHCTL);
     cmd.args(args).stdin(Stdio::null());
     let out = match limit {
         None => cmd.output()?,
-        Some(limit) => {
-            let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-            let deadline = Instant::now() + limit;
-            // Its output is a line or two: it cannot fill a pipe while we poll.
-            while child.try_wait()?.is_none() {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("launchctl {} timed out", args[0].to_string_lossy()),
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(1));
+        Some(limit) => output_within(cmd, limit).map_err(|e| match e.kind() {
+            io::ErrorKind::TimedOut => {
+                io::Error::new(io::ErrorKind::TimedOut, format!("launchctl {} timed out", args[0].to_string_lossy()))
             }
-            child.wait_with_output()?
-        }
+            _ => e,
+        })?,
     };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -674,6 +697,20 @@ mod tests {
         assert!(log.contains(SENTINEL), "old target reported usage, never served: {log}");
         let list = launchctl(&[OsStr::new("list")], None).unwrap();
         assert!(!list.contains(&format!("{PREFIX}{}.", std::process::id())), "job removed after timeout");
+    }
+
+    #[test]
+    fn a_bounded_command_may_print_more_than_a_pipe_holds_and_is_killed_when_it_hangs() {
+        let mut cmd = Command::new("head");
+        cmd.args(["-c", "300000", "/dev/zero"]);
+        let out = output_within(cmd, Duration::from_secs(20)).unwrap();
+        assert_eq!(out.stdout.len(), 300_000);
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let error = output_within(cmd, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
