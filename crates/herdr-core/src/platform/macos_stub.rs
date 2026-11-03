@@ -162,6 +162,8 @@ fn connect(log: &Path) -> io::Result<UnixStream> {
     // The stub has forked and seen its launcher exit: only the job goes.
     if let Err(error) = job.remove() {
         eprintln!("holder: cannot remove the launchd job of a started stub: {error}");
+        // Dropping it tries again, which must not hold up the hand-off the stub is waiting for.
+        std::thread::spawn(move || drop(job));
     }
     Ok(sock)
 }
@@ -188,7 +190,7 @@ fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> io::
     match read_reply(&mut reader) {
         Ok(Reply::Pid(pid)) => Ok(Remote { pid, reader }),
         Ok(Reply::Errno(errno)) => Err(io::Error::from_raw_os_error(errno)),
-        Ok(Reply::Error(text)) => Err(unavailable(io::Error::other(text))),
+        Ok(Reply::Error(text)) => Err(io::Error::other(text)),
         Ok(other) => Err(unavailable(io::Error::other(format!("unexpected stub answer {other:?}")))),
         Err(error) => Err(unavailable(error)),
     }
@@ -227,22 +229,23 @@ fn run(mut sock: UnixStream) -> io::Result<()> {
     let mut line = String::new();
     BufReader::new(&sock).read_line(&mut line)?;
     // A spec cut short by the holder's write timeout must not start a program.
-    let command = Some(&line)
+    let spec = Some(&line)
         .filter(|l| l.ends_with('\n'))
         .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
         .and_then(|l| serde_json::from_str::<Spec>(l).map_err(io::Error::from))
-        .and_then(|spec| {
-            launchd::restore_limits(&spec.limits)?;
-            pty_command(&spec.argv, &spec.env, &spec.cwd, &slave)
-        });
-    let child = command.and_then(|mut cmd| cmd.spawn());
+        .and_then(|spec| launchd::restore_limits(&spec.limits).map(|()| spec))
+        .map_err(|error| Reply::Error(unavailable(error).to_string()));
+    // What the holder would have had on its own, with the text of that error.
+    let child = spec.and_then(|spec| {
+        pty_command(&spec.argv, &spec.env, &spec.cwd, &slave)
+            .and_then(|mut cmd| cmd.spawn())
+            .map_err(|error| error.raw_os_error().map_or_else(|| Reply::Error(error.to_string()), Reply::Errno))
+    });
     // Only the program may hold the terminal open.
     drop(slave);
     match child {
         Ok(child) => babysit(sock, child),
-        Err(error) => {
-            send_reply(&mut sock, &error.raw_os_error().map_or_else(|| Reply::Error(error.to_string()), Reply::Errno))
-        }
+        Err(reply) => send_reply(&mut sock, &reply),
     }
 }
 
@@ -430,6 +433,27 @@ mod tests {
         });
         assert!(ended, "the program outlived its stub");
         let _ = program.kill();
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_for_want_of_an_errno_has_the_error_of_a_direct_start() {
+        let spec = Spec { argv: vec!["sh".into(), "a\0b".into()], ..spec() };
+        let direct = pty_command(&spec.argv, &spec.env, &spec.cwd, &File::open("/dev/null").unwrap())
+            .unwrap()
+            .spawn()
+            .unwrap_err();
+        let (mut holder, stub) = UnixStream::pair().unwrap();
+        let stub = std::thread::spawn(move || run(stub));
+        let mut reader = BufReader::new(holder.try_clone().unwrap());
+        assert_eq!(read_reply(&mut reader).unwrap(), Reply::Hello(PROTOCOL));
+        send_fd(&holder, File::open("/dev/null").unwrap().as_raw_fd()).unwrap();
+        holder.write_all(&[serde_json::to_vec(&spec).unwrap(), b"\n".to_vec()].concat()).unwrap();
+        let reply = read_reply(&mut reader).unwrap();
+        stub.join().unwrap().unwrap();
+        let started = Reply::Error(direct.to_string());
+        assert_eq!(reply, started);
+        let err = against(Some(Reply::Hello(PROTOCOL)), move |s| send_reply(s, &started).unwrap()).err().unwrap();
+        assert_eq!(err.to_string(), direct.to_string());
     }
 
     #[test]
