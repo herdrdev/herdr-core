@@ -148,15 +148,18 @@ impl Drop for Session {
         let _ = self.try_hc(&["server", "stop"]);
         // Anything still running from this session is a bug; never leave it behind.
         let mut leaks = Vec::new();
-        let ours = format!("XDG_STATE_HOME={}\0", self.root.join("state").display());
+        let ours = if cfg!(target_os = "macos") {
+            format!("{}/", self.root.display())
+        } else {
+            format!("XDG_STATE_HOME={}\0", self.root.join("state").display())
+        };
         // A process in the act of exiting is not a leak: give stragglers a moment.
         let start = Instant::now();
         while !procs_with(&ours).is_empty() && start.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(50));
         }
         for pid in procs_with(&ours) {
-            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            let cmdline = cmdline(pid);
             let test = std::thread::current().name().unwrap_or("?").to_string();
             let note = format!("LEAK in {test}: pid {pid} ({}) still running after server stop\n", cmdline.trim());
             eprint!("{note}");
@@ -201,14 +204,64 @@ impl Conn {
     }
 }
 
-/// Processes (other than us) whose environment mentions `needle`. Linux
-/// only: macOS shows no other process's environment (`ps -E` prints none,
-/// checked on macOS 27), so there the leak check finds nothing; the ghost
-/// tests are what cover leftovers on macOS.
-fn procs_with(needle: &str) -> Vec<i32> {
-    if cfg!(target_os = "macos") {
-        return Vec::new();
+#[cfg(target_os = "macos")]
+fn pids() -> Vec<i32> {
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let mut pids = vec![0i32; n.max(0) as usize + 64];
+    let size = (pids.len() * std::mem::size_of::<i32>()) as libc::c_int;
+    let got = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), size) };
+    pids.truncate(got.max(0) as usize);
+    pids.retain(|pid| *pid > 0);
+    pids
+}
+
+/// The parent of a live process (zombies left out).
+#[cfg(target_os = "macos")]
+fn parent(pid: i32) -> Option<i32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    (got == size && info.pbi_status != 5).then_some(info.pbi_ppid as i32)
+}
+
+/// Whether the process has a file open whose path holds `needle`.
+#[cfg(target_os = "macos")]
+fn holds_file(pid: i32, needle: &[u8]) -> bool {
+    const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+    let size = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+    let mut fds = vec![libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 }; size.max(0) as usize / 8 + 8];
+    let size = (fds.len() * std::mem::size_of::<libc::proc_fdinfo>()) as libc::c_int;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, fds.as_mut_ptr().cast(), size) };
+    fds.truncate(got.max(0) as usize / std::mem::size_of::<libc::proc_fdinfo>());
+    fds.iter().filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32).any(|fd| {
+        let mut buf = [0u8; 2048];
+        let got = unsafe {
+            libc::proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, buf.as_mut_ptr().cast(), buf.len() as _)
+        };
+        got > 0 && buf[..got as usize].windows(needle.len()).any(|w| w == needle)
+    })
+}
+
+/// macOS shows no environment for its own binaries and none a job restored
+/// in-process, so a session's processes are the ones holding its files
+/// (the holder and the stubs log to its state dir), and what they started.
+#[cfg(target_os = "macos")]
+fn procs_with(path: &str) -> Vec<i32> {
+    let me = std::process::id() as i32;
+    let live: Vec<(i32, i32)> = pids().into_iter().filter(|p| *p != me).filter_map(|p| Some((p, parent(p)?))).collect();
+    let mut found: Vec<i32> = live.iter().map(|(p, _)| *p).filter(|p| holds_file(*p, path.as_bytes())).collect();
+    let mut seen = 0;
+    while seen < found.len() {
+        seen = found.len();
+        let children: Vec<i32> =
+            live.iter().filter(|(p, ppid)| found.contains(ppid) && !found.contains(p)).map(|(p, _)| *p).collect();
+        found.extend(children);
     }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+fn procs_with(needle: &str) -> Vec<i32> {
     let me = std::process::id() as i32;
     std::fs::read_dir("/proc")
         .expect("the leak check needs /proc")
@@ -220,6 +273,11 @@ fn procs_with(needle: &str) -> Vec<i32> {
             (hit && pid != me).then_some(pid)
         })
         .collect()
+}
+
+fn cmdline(pid: i32) -> String {
+    let out = Command::new("ps").args(["-p", &pid.to_string(), "-ww", "-o", "command="]).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
 /// The env that points `local`'s core at a fake `ssh`: a target containing a host's name

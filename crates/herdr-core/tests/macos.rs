@@ -623,41 +623,52 @@ fn a_slow_program_start_does_not_stop_the_output_of_other_terminals() {
 }
 
 /// A core that connects while a program is starting (an update does) is welcomed after the start, not in the middle
-/// of it, as when starting held the holder's state lock: otherwise its welcome and a drain could miss the program.
+/// of it, as when starting held the holder's state lock: otherwise its welcome could miss the program.
 #[test]
 fn a_core_connecting_during_a_start_is_welcomed_after_it() {
     if !gui() {
         return;
     }
     let mut s = Session::new();
-    let (holder, _) = holder_with_an_older_build_at_its_path(&mut s);
+    let bin = s.root.join("herdr-core");
+    std::fs::copy(BIN, &bin).unwrap();
+    s.bin = bin.clone();
+    // An empty holder, and a start that takes a second once it is under way.
+    let first = run(&s, &["true"]);
+    wait_until("the first program ends", || get(&s, &first)["state"] == "finished");
     let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
     if !independent(&s, core) {
         return;
     }
+    let (holder, started) = (holder_of(&s), s.root.join("started"));
+    let slow = s.root.join("slow");
+    std::fs::write(&slow, format!("#!/bin/sh\ntouch {}\nsleep 1\nexec {BIN} \"$@\"\n", started.display())).unwrap();
+    std::fs::set_permissions(&slow, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::rename(&slow, &bin).unwrap();
+    s.bin = BIN.into();
     let socket = std::fs::read_dir(s.root.join("run/herdr-core"))
         .unwrap()
         .flatten()
         .map(|e| e.path())
         .find(|p| p.to_string_lossy().contains(".holder.") && p.extension().is_some_and(|e| e == "sock"))
         .expect("the holder's socket");
-    // The start that follows waits several seconds for a job that never answers.
     std::thread::scope(|scope| {
-        scope.spawn(|| s.err(&["run", "--bg", "true"]));
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        scope.spawn(|| s.hc(&["run", "--bg", "sleep", "300"]));
+        wait_until("the start is under way", || started.exists());
         let mut newer = std::os::unix::net::UnixStream::connect(&socket).unwrap();
         newer.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
         let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
         std::io::Write::write_all(&mut newer, &hello).unwrap();
-        let asked = std::time::Instant::now();
-        assert_eq!(proto::read(&mut newer).unwrap().unwrap().0, proto::WELCOME);
-        assert!(
-            asked.elapsed() > std::time::Duration::from_secs(1),
-            "welcomed in {:?}, in the middle of a start",
-            asked.elapsed()
-        );
-        assert!(pid_alive(holder));
+        let (kind, _, payload) = proto::read(&mut newer).unwrap().unwrap();
+        assert_eq!(kind, proto::WELCOME);
+        let welcome: proto::Welcome = proto::parse(&payload).unwrap();
+        assert_eq!(welcome.terminals.len(), 1, "the program that was starting is not in the welcome");
+        // Ends the holder and what it runs, as `hc server stop` does, so nothing outlives the test.
+        std::io::Write::write_all(&mut newer, &proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Shutdown))
+            .unwrap();
+        while proto::read(&mut newer).is_ok_and(|frame| frame.is_some()) {}
     });
+    wait_until("the holder ends", || !pid_alive(holder));
 }
 
 #[test]
