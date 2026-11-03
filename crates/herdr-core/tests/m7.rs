@@ -14,6 +14,17 @@ fn session() -> Session {
     s
 }
 
+fn wait_children(s: &Session, parent: &str, mode: &str, timeout: &str) -> Value {
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", parent)
+        .args(["--json", "wait", "--children", mode, "--timeout", timeout])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
 fn template(s: &Session, name: &str, body: &str) {
     let dir = s.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&dir).unwrap();
@@ -44,14 +55,7 @@ fn first_task_can_finish_without_a_working_report() {
             let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
             assert_eq!(r["first_message"]["sent"], true, "{r}");
             std::fs::write(gate, "").unwrap();
-            let out = s
-                .cmd()
-                .env("HC_TERMINAL_ID", &parent)
-                .args(["--json", "wait", "--children", mode, "--timeout", "5"])
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let r = wait_children(&s, &parent, mode, "5");
             assert_eq!(r["reason"], "children", "{mode} {state}: {r}");
             assert_eq!(r["children"][0]["ended"], true, "{r}");
             if state == "exit" {
@@ -78,14 +82,7 @@ command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; p
         let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
         let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
         assert_eq!(r["first_message"]["sent"], true, "{r}");
-        let out = s
-            .cmd()
-            .env("HC_TERMINAL_ID", &parent)
-            .args(["--json", "wait", "--children", mode, "--timeout", "0.1"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let r = wait_children(&s, &parent, mode, "0.1");
         assert_eq!(r["reason"], "children", "{mode}: {r}");
         assert_eq!(r["children"][0]["ended"], true, "{r}");
     }
@@ -110,16 +107,7 @@ command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; w
     let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
     let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
     assert_eq!(r["first_message"]["sent"], true, "{r}");
-    let wait = || {
-        let out = s
-            .cmd()
-            .env("HC_TERMINAL_ID", &parent)
-            .args(["--json", "wait", "--children", "all", "--timeout", "0.1"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()
-    };
+    let wait = || wait_children(&s, &parent, "all", "0.1");
     let r = wait();
     assert_eq!(r["reason"], "timeout", "startup done is not task completion: {r}");
     std::fs::write(gate, "").unwrap();
@@ -171,16 +159,7 @@ command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; w
             std::fs::write(&child_gate, "").unwrap();
             wait_until("child report", || s.json(&["get", child])["records"]["sub"]["state"] == "done");
         }
-        let wait = |timeout: &str| {
-            let out = s
-                .cmd()
-                .env("HC_TERMINAL_ID", &parent)
-                .args(["--json", "wait", "--children", mode, "--timeout", timeout])
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            serde_json::from_slice::<Value>(&out.stdout).unwrap()
-        };
+        let wait = |timeout: &str| wait_children(&s, &parent, mode, timeout);
         let r = wait("0.1");
         assert_eq!(r["reason"], "timeout", "{mode}: startup done is not task completion: {r}");
         assert_eq!(r["children"][0]["ended"], false, "{r}");
@@ -220,25 +199,12 @@ command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; w
         wait_until("core absent", || !s.connect_ok());
         std::fs::write(&gate, "").unwrap();
         wait_until("task finished without core", || finished.exists());
-        let out = s
-            .cmd()
-            .env("HC_TERMINAL_ID", &parent)
-            .args(["--json", "wait", "--children", mode, "--timeout", "0.1"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let r = wait_children(&s, &parent, mode, "0.1");
         assert_eq!(r["reason"], "children", "{mode}: {r}");
         assert_eq!(r["children"][0]["ended"], true, "{r}");
         if mode == "any" {
             s.json(&["server", "restart"]);
-            let out = s
-                .cmd()
-                .env("HC_TERMINAL_ID", &parent)
-                .args(["--json", "wait", "--children", "any", "--timeout", "0.1"])
-                .output()
-                .unwrap();
-            let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let r = wait_children(&s, &parent, "any", "0.1");
             assert_eq!(r["reason"], "timeout", "completion news must only be emitted once: {r}");
         }
     }
@@ -273,14 +239,7 @@ command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; w
         wait_until("core exited gracefully", || !pid_alive(pid));
         std::fs::write(gate, "").unwrap();
         wait_until("task finished without core", || finished.exists());
-        let out = s
-            .cmd()
-            .env("HC_TERMINAL_ID", &parent)
-            .args(["--json", "wait", "--children", mode, "--timeout", "0.1"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let r = wait_children(&s, &parent, mode, "0.1");
         assert_eq!(r["reason"], "children", "{mode}: {r}");
         assert_eq!(r["children"][0]["ended"], true, "{r}");
         assert_eq!(r["children"][0]["status"], "idle", "{r}");
@@ -305,16 +264,7 @@ fn children_wait_for_a_sent_first_task_not_startup_idle() {
         assert_eq!(r["first_message"]["sent"], true, "{r}");
         assert_eq!(r["first_message"]["started"], false, "{r}");
         let child = r["address"].as_str().unwrap();
-        let wait = |timeout: &str| {
-            let out = s
-                .cmd()
-                .env("HC_TERMINAL_ID", &parent)
-                .args(["--json", "wait", "--children", mode, "--timeout", timeout])
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            serde_json::from_slice::<Value>(&out.stdout).unwrap()
-        };
+        let wait = |timeout: &str| wait_children(&s, &parent, mode, timeout);
         let r = wait("0.1");
         assert_eq!(r["reason"], "timeout", "{mode}: startup idle is not task completion: {r}");
         assert_eq!(r["children"][0]["ended"], false, "{r}");
