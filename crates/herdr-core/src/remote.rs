@@ -1026,5 +1026,14 @@ fn localize_in(core: &Core, st: &State, name: &str, aliases: &[&str], mut v: Val
         },
     };
     map_addresses(&mut v, &map);
+    if v["type"] == "message_sent"
+        && let Some(data) = v.get_mut("data").and_then(Value::as_object_mut)
+    {
+        for key in ["source", "target"] {
+            if let Some(Value::String(s)) = data.get_mut(key) {
+                *s = map(s);
+            }
+        }
+    }
     v
 }

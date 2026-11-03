@@ -568,6 +568,56 @@ while ($true) {
 }
 
 #[test]
+fn a_send_is_an_event_without_its_text_before_its_wait_ends() {
+    use std::io::BufRead;
+    let s = Session::new();
+    let agent = s.file(
+        "agent.ps1",
+        r#"$e = [char]27
+function report($s) { [Console]::Out.Write("$e]7501;$s$e\"); [Console]::Out.Flush() }
+report "state=idle"
+$line = [Console]::In.ReadLine()
+report "state=working"
+Start-Sleep 3
+report "state=done"
+Start-Sleep 60
+"#,
+    );
+    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
+    wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
+    let mut events =
+        cmd(&s.name, &s.root).args(["events", "--json"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let out = events.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        let mut lines = std::io::BufReader::new(out).lines().map_while(Result::ok);
+        if let Some(snapshot) = lines.next() {
+            let _ = ready_tx.send(snapshot);
+        }
+        for line in lines {
+            if line.contains("message_sent") && tx.send((line, Instant::now())).is_err() {
+                break;
+            }
+        }
+    });
+    let snapshot = ready_rx.recv_timeout(Duration::from_secs(10)).expect("subscribed with a snapshot");
+    assert!(serde_json::from_str::<Value>(&snapshot).unwrap()["terminals"].is_array(), "{snapshot}");
+    let sent = s.json(&["send", &t, "secret-body", "--wait", "--timeout", "15"]);
+    let returned = Instant::now();
+    assert_eq!(sent["wait"]["status"], "done", "{sent}");
+    let (line, at) = rx.recv_timeout(Duration::from_secs(5)).expect("a message_sent event");
+    let _ = events.kill();
+    let _ = events.wait();
+    let e: Value = serde_json::from_str(&line).unwrap();
+    let data = &e["params"]["data"];
+    assert_eq!((data["target"].as_str(), data["started"].as_bool()), (Some(t.as_str()), Some(true)), "{line}");
+    assert!(data["source"].is_null(), "the CLI outside a terminal is nobody: {line}");
+    assert!(!line.contains("secret-body"), "{line}");
+    assert!(returned.duration_since(at) > Duration::from_secs(1), "heard while the send still waited");
+}
+
+#[test]
 fn kill_ends_what_the_program_started_too() {
     let s = Session::new();
     let pid_file = s.root.join("pid.txt");

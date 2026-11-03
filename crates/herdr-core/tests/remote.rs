@@ -335,6 +335,40 @@ fn events_cover_terminals_on_other_machines() {
 }
 
 #[test]
+fn a_send_there_is_heard_here_with_addresses_as_seen_from_here() {
+    let (rohan, s) = with_rohan();
+    let sender = run(&s, &["sh", "-c", "sleep 100"]);
+    let t = run(
+        &s,
+        &[
+            "--on",
+            "rohan",
+            "sh",
+            "-c",
+            &script(&s, "r state=idle; while read -r l; do r state=working; r state=done; done"),
+        ],
+    );
+    wait_until("idle there", || get(&s, &t)["status"]["state"] == "idle");
+    let (mut here, mut there) = (s.connect(), rohan.connect());
+    here.call(1, "events.subscribe", json!({}));
+    there.call(1, "events.subscribe", json!({}));
+
+    let sent =
+        s.connect().call(1, "terminal.send", json!({"terminal": t, "text": "hi", "caller": sender, "wait": true}));
+    assert_eq!(sent["result"]["wait"]["status"], "done", "{sent}");
+    let e = next_params(&mut here, |e| e["type"] == "message_sent");
+    assert_eq!((e["terminal"].as_str(), e["data"]["target"].as_str()), (Some(t.as_str()), Some(t.as_str())), "{e}");
+    assert_eq!((e["data"]["source"].as_str(), e["data"]["started"].as_bool()), (Some(sender.as_str()), Some(true)));
+    // Rohan says it once, in its own words: the target is its own, the sender ours.
+    let e = next_params(&mut there, |e| e["type"] == "message_sent");
+    let local = t.strip_prefix("rohan/").unwrap();
+    assert_eq!(e["data"]["target"].as_str(), Some(local), "{e}");
+    // Both cores have this host's name, so Rohan calls its peer by id.
+    let peer = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    assert_eq!(e["data"]["source"], format!("{peer}/{sender}"), "{e}");
+}
+
+#[test]
 fn the_picker_starts_a_shell_on_another_machine() {
     let (rohan, s) = with_rohan();
     std::fs::write(rohan.root.join(".zshrc"), "").unwrap(); // a login zsh there skips its first-run setup

@@ -138,6 +138,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
+| `message_sent` | `{source, target, at, started}`: a send typed into this terminal. `source` is the sending terminal's address (null when the sender is not a terminal), `target` this terminal's, `at` epoch ms, `started` as in the send's result. Never the text; a refused send has none; with `wait`, it comes before the wait ends | nothing to apply |
 
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,

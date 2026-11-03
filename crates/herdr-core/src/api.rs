@@ -457,7 +457,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
             c.told_parent = true;
         }
     }
-    if sent.status.as_deref() == Some("working") {
+    {
         let mut st = core.lock();
         let from = p
             .caller
@@ -465,10 +465,14 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
             .and_then(crate::terminals::parse_id)
             .and_then(|c| st.reg.terminals.get(&c))
             .map(|t| t.address.clone());
-        let from = from.or_else(|| p.caller.clone().filter(|c| c.contains('/'))); // a child on another machine
-        st.messages.insert(id, from);
-        drop(st);
-        core.changed.notify_waiters();
+        let from = from.or_else(|| p.caller.clone().filter(|c| c.contains('/'))); // a terminal on another machine
+        // Who messaged whom, never what: it went in, so it is told before any wait ends.
+        let data =
+            json!({"source": from, "target": crate::terminals::address(id), "at": now_ms(), "started": sent.started});
+        if sent.status.as_deref() == Some("working") {
+            st.messages.insert(id, from);
+        }
+        core.emit(&mut st, "message_sent", id, data);
     }
     core.saw(p.caller.as_deref(), id);
     if let Some(caller) = &p.caller {

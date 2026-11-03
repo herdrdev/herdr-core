@@ -254,3 +254,49 @@ fn interrupt_reports_what_it_observed() {
     let (code, err) = s.err(&["send", &quits, "x"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (11, Some("finished")));
 }
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+#[test]
+fn a_send_tells_subscribers_who_messaged_whom_but_not_what() {
+    let s = session();
+    let sender = run(&s, "r state=idle; sleep 100");
+    let body = script(&s, "stty -echo; r state=idle; read -r l; r state=working; w go; r state=done; sleep 100");
+    let agent = s.json(&["run", "--bg", "sh", "-c", &body])["address"].as_str().unwrap().to_string();
+    wait_until("idle", || status(&s, &agent) == "idle");
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", json!({}));
+
+    // A send that types nothing is no message.
+    let refused = s.connect().call(
+        1,
+        "terminal.send",
+        json!({"terminal": agent, "text": "no", "if": "working", "caller": sender}),
+    );
+    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+    let after_refusal = epoch_ms();
+
+    // With wait: the event comes while the send still waits for the turn it started.
+    let mut conn = s.connect();
+    let params = json!({"terminal": agent, "text": "secret-body", "wait": true, "caller": sender});
+    let waiting = std::thread::spawn(move || conn.call(2, "terminal.send", params));
+    let msg = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
+    let e = &msg["params"];
+    assert_eq!((e["terminal"].as_str(), e["data"]["target"].as_str()), (Some(agent.as_str()), Some(agent.as_str())));
+    assert_eq!((e["data"]["source"].as_str(), e["data"]["started"].as_bool()), (Some(sender.as_str()), Some(true)));
+    let at = e["data"]["at"].as_u64().unwrap();
+    assert!(at >= after_refusal && at <= epoch_ms(), "the refused send said nothing; this one is now: {msg}");
+    assert!(!msg.to_string().contains("secret-body"), "never the text: {msg}");
+    assert!(!waiting.is_finished(), "sent before the wait ends");
+    touch(&s, "go");
+    assert_eq!(waiting.join().unwrap()["result"]["wait"]["status"], "done");
+
+    // Not from a terminal: no source. A program that never reports: started unknown.
+    let silent = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
+    s.connect().call(3, "terminal.send", json!({"terminal": silent, "text": "x", "caller": "ppid:1"}));
+    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent")["params"].clone();
+    assert_eq!((e["data"]["target"].as_str(), &e["data"]["source"]), (Some(silent.as_str()), &Value::Null));
+    assert!(e["data"]["started"].is_null(), "{e}");
+}

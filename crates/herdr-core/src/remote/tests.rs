@@ -293,3 +293,45 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn message_event_addresses_do_not_rewrite_other_targets_or_document_contents() {
+    let root = std::path::PathBuf::from(format!(
+        "/var/tmp/hc-message-addresses-{}-{}",
+        std::process::id(),
+        crate::platform::random_hex()
+    ));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here-id".into(), name: "here".into() }).unwrap();
+    let machine = json!({"target": "user@host", "source": "configuration"});
+    assert_eq!(localize(&core, "away", &[], machine.clone()), machine);
+    let document = json!({"type":"doc", "data":{"value":{"source":"file", "target":"branch"}}});
+    assert_eq!(localize(&core, "away", &[], document.clone()), document);
+    let event = localize(
+        &core,
+        "away",
+        &[],
+        json!({"type":"message_sent","terminal":"t2","data":{"source":"here-id/t1","target":"t2","started":null}}),
+    );
+    assert_eq!(event["terminal"], "away/t2");
+    assert_eq!(event["data"]["source"], "t1");
+    assert_eq!(event["data"]["target"], "away/t2");
+    assert!(event["data"]["started"].is_null());
+    let anonymous = localize(
+        &core,
+        "away",
+        &[],
+        json!({"type":"message_sent","data":{"source":null,"target":"t2","started":false}}),
+    );
+    assert!(anonymous["data"]["source"].is_null());
+    assert_eq!(anonymous["data"]["target"], "away/t2");
+    assert_eq!(anonymous["data"]["started"], false);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
