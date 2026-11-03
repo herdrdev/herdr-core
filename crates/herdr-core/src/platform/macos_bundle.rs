@@ -81,7 +81,8 @@ fn live_executables() -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn reclaim(previous: &Path, live: &[PathBuf]) -> io::Result<()> {
+fn reclaim(previous: &Path, live: io::Result<Vec<PathBuf>>) -> io::Result<()> {
+    let Ok(live) = live else { return Ok(()) };
     for entry in std::fs::read_dir(previous)? {
         let path = entry?.path();
         if path.is_dir() && !path.is_symlink() && !live.iter().any(|exe| exe.starts_with(&path)) {
@@ -91,8 +92,37 @@ fn reclaim(previous: &Path, live: &[PathBuf]) -> io::Result<()> {
     Ok(())
 }
 
-/// Each install has an immutable path for its entire process lifetime. Privacy
-/// attribution reopens the responsible holder's original executable path.
+fn base_directory(root: &Path) -> &Path {
+    let parent = root.parent().unwrap();
+    if parent.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "versions")) {
+        parent.parent().unwrap().parent().unwrap()
+    } else if parent.file_name().is_some_and(|n| n == "active") {
+        parent.parent().unwrap()
+    } else {
+        parent
+    }
+}
+
+fn activate(staged: &Path, active: &Path) -> io::Result<()> {
+    if !active.exists() {
+        return std::fs::rename(staged, active);
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let staged = std::ffi::CString::new(staged.as_os_str().as_bytes())?;
+    let active = std::ffi::CString::new(active.as_os_str().as_bytes())?;
+    // The old executable's vnode stays reachable in the staging slot. A crash
+    // leaves either the old or new active bundle, never a missing active entry.
+    if unsafe {
+        libc::renameatx_np(libc::AT_FDCWD, staged.as_ptr(), libc::AT_FDCWD, active.as_ptr(), libc::RENAME_SWAP)
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Keep the newest bundle at one physical path. Old live executables remain
+/// reachable after an atomic rename into retained storage.
 pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io::Result<()> {
     if unsafe { libc::geteuid() } == 0 {
         return Err(io::Error::other("install Herdr Core as your user, not with sudo"));
@@ -117,12 +147,7 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
     let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is unset"))?;
     let home = PathBuf::from(home);
     let base = if let Some(root) = bundle(dest) {
-        let parent = root.parent().unwrap();
-        if parent.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "versions")) {
-            parent.parent().unwrap().parent().unwrap().to_path_buf()
-        } else {
-            parent.to_path_buf()
-        }
+        base_directory(root).to_path_buf()
     } else {
         home.join(".local/share/herdr-core")
     };
@@ -136,9 +161,11 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
     let current = base.join("current");
     let legacy = base.join("Herdr Core.app");
     std::fs::create_dir_all(&versions)?;
+    let active = base.join("active/Herdr Core.app");
+    std::fs::create_dir_all(active.parent().unwrap())?;
     // Keep the installed version even when no core is running. An unreadable
     // process means nothing is reclaimed, rather than risking a live bundle.
-    if let Ok(mut live) = live_executables() {
+    let live = live_executables().and_then(|mut live| {
         if let Ok(path) = current.canonicalize() {
             live.push(path.join(EXECUTABLE));
         }
@@ -146,12 +173,17 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
         if bundle(dest).is_some() {
             live.push(dest.to_path_buf());
         }
-        let _ = reclaim(&versions, &live);
-        if legacy.is_dir() && !legacy.is_symlink() && !live.iter().any(|exe| exe.starts_with(&legacy)) {
-            verify(&legacy, true)?;
-            std::fs::remove_dir_all(&legacy)?;
-        }
+        Ok(live)
+    });
+    if let Ok(live) = &live
+        && legacy.is_dir()
+        && !legacy.is_symlink()
+        && !live.iter().any(|exe| exe.starts_with(&legacy))
+    {
+        verify(&legacy, true)?;
+        std::fs::remove_dir_all(&legacy)?;
     }
+    let _ = reclaim(&versions, live);
     let mut entries = Vec::new();
     if bundle(dest).is_none() {
         entries.push(dest.to_path_buf());
@@ -163,7 +195,7 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
             entries.push(hc);
         }
     } else {
-        // Retarget legacy executable links without ever moving their live bundle.
+        // Public links always resolve through current, never retained storage.
         let mut dirs = vec![home.join(".local/bin")];
         if let Some(dir) = std::env::var_os("HC_INSTALL_DIR") {
             dirs.push(PathBuf::from(dir));
@@ -191,8 +223,9 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
         if !works(&staged.join(EXECUTABLE)) {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        link(&staged, &current)?;
+        activate(&staged, &active)?;
         activated = true;
+        link(&active, &current)?;
         for entry in entries {
             link(&current.join(EXECUTABLE), &entry)?;
         }
@@ -209,12 +242,7 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
 
 pub fn core_executable(exe: &Path) -> PathBuf {
     if let Some(root) = bundle(exe) {
-        let parent = root.parent().unwrap();
-        let base = if parent.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "versions")) {
-            parent.parent().unwrap().parent().unwrap()
-        } else {
-            parent
-        };
+        let base = base_directory(root);
         let current = base.join("current").join(EXECUTABLE);
         if current.is_file() && verify(&base.join("current"), true).is_ok() {
             return current;
@@ -293,12 +321,55 @@ mod tests {
     }
 
     #[test]
+    fn bundle_base_is_shared_by_active_retained_and_legacy_paths() {
+        for path in [
+            "/share/core/active/Herdr Core.app",
+            "/share/core/versions/123/Herdr Core.app",
+            "/share/core/Herdr Core.app",
+        ] {
+            assert_eq!(base_directory(Path::new(path)), Path::new("/share/core"));
+        }
+    }
+
+    #[test]
+    fn atomic_activation_preserves_old_inodes_and_recovers_interrupted_slots() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("hc-activation-{}", super::super::random_hex()));
+        let active = root.join("active/Herdr Core.app");
+        let versions = root.join("versions");
+        let first = versions.join("first/Herdr Core.app");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(active.parent().unwrap()).unwrap();
+        std::fs::write(first.join("image"), "A").unwrap();
+        activate(&first, &active).unwrap();
+        let inode = std::fs::metadata(active.join("image")).unwrap().ino();
+        let second = versions.join("second/Herdr Core.app");
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("image"), "B").unwrap();
+        activate(&second, &active).unwrap();
+        assert_eq!(std::fs::read_to_string(active.join("image")).unwrap(), "B");
+        assert_eq!(std::fs::metadata(second.join("image")).unwrap().ino(), inode);
+        assert!(activate(&root.join("missing"), &active).is_err());
+        assert_eq!(std::fs::read_to_string(active.join("image")).unwrap(), "B");
+        // A crash after the exchange leaves the old app in its staging slot.
+        // Unknown process inventory must preserve it, just like a live holder.
+        reclaim(&versions, Err(io::Error::other("unreadable process"))).unwrap();
+        assert!(second.exists());
+        reclaim(&versions, Ok(vec![second.join(EXECUTABLE)])).unwrap();
+        assert!(second.exists());
+        reclaim(&versions, Ok(vec![])).unwrap();
+        assert!(!second.exists());
+        assert!(active.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reclaim_keeps_live_bundles_and_removes_unused_ones() {
         let root = std::env::temp_dir().join(format!("hc-previous-{}", super::super::random_hex()));
         let active = root.join("active/Herdr Core.app/Contents/MacOS");
         std::fs::create_dir_all(&active).unwrap();
         std::fs::create_dir_all(root.join("unused/Herdr Core.app")).unwrap();
-        reclaim(&root, &[active.join("herdr-core")]).unwrap();
+        reclaim(&root, Ok(vec![active.join("herdr-core")])).unwrap();
         assert!(active.exists());
         assert!(!root.join("unused").exists());
         std::fs::remove_dir_all(root).unwrap();

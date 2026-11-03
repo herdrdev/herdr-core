@@ -16,6 +16,16 @@ const THIS: &str = env!("CARGO_PKG_VERSION");
 /// A release newer than this build (it is this build inside, dressed up).
 const NEWER: &str = "9.9.9";
 
+#[cfg(target_os = "macos")]
+fn live_executable(pid: i64) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = [0u8; 4096];
+    let len = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    assert!(len > 0);
+    let len = buf.iter().position(|b| *b == 0).unwrap();
+    PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len]))
+}
+
 /// A releases site with this build as `version`, for `targets`.
 struct Releases {
     root: PathBuf,
@@ -125,7 +135,7 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     assert!(install(&s).contains("installed"));
     assert!(bin.join("herdr-core").is_file() && bin.join("hc").is_symlink());
     if cfg!(target_os = "macos") {
-        let bundle = s.root.join(".local/share/herdr-core/Herdr Core.app");
+        let bundle = s.root.join(".local/share/herdr-core/active/Herdr Core.app");
         assert!(bundle.join("Contents/Info.plist").is_file());
         assert_eq!(
             bin.join("herdr-core").canonicalize().unwrap(),
@@ -145,13 +155,15 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     use std::os::unix::fs::MetadataExt;
     let holder_inode = std::fs::metadata(&s.bin).unwrap().ino();
     let holder_path = s.bin.canonicalize().unwrap();
-    let pid = s.json(&["server", "status"])["pid"].clone();
+    let status = s.json(&["server", "status"]);
+    let pid = status["pid"].clone();
     assert!(install(&s).contains("updated"), "again: an update");
     assert_ne!(s.json(&["server", "status"])["pid"], pid, "the planned restart");
     s.json(&["send", &t, "still"]);
     wait_until("the terminal kept running", || text(&s, &t).contains("got-still"));
     if cfg!(target_os = "macos") {
-        assert_eq!(std::fs::metadata(&holder_path).unwrap().ino(), holder_inode, "a live holder's path never moves");
+        assert_eq!(s.bin.canonicalize().unwrap(), holder_path, "the newest bundle has one fixed physical path");
+        assert_ne!(std::fs::metadata(&holder_path).unwrap().ino(), holder_inode, "the fixed path has the new image");
         let previous = s.root.join(".local/share/herdr-core/versions");
         let retained: Vec<_> = std::fs::read_dir(&previous)
             .unwrap()
@@ -162,9 +174,30 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
             })
             .collect();
         assert_eq!(retained.len(), 1, "the original holder's bundle is still on disk");
+        #[cfg(target_os = "macos")]
+        {
+            let resolved = live_executable(status["holder"]["pid"].as_i64().unwrap());
+            assert!(resolved.starts_with(retained[0].canonicalize().unwrap()));
+            assert_eq!(std::fs::metadata(&resolved).unwrap().ino(), holder_inode);
+        }
+        let second = run(&s, &["sh", "-c", "while read l; do echo second-$l; done"]);
+        let second_inode = std::fs::metadata(&s.bin).unwrap().ino();
         assert!(install(&s).contains("updated"));
-        // A further install must not reclaim the bundle used by the original holder.
+        assert_eq!(s.bin.canonicalize().unwrap(), holder_path);
+        assert_ne!(std::fs::metadata(&s.bin).unwrap().ino(), second_inode);
+        // Further installs must retain both old holders, not just the last version.
         assert!(retained.iter().all(|slot| slot.exists()));
+        for (id, expected) in [(&t, "got-third"), (&second, "second-third")] {
+            s.json(&["send", id, "third"]);
+            wait_until("old shells survive repeated updates", || text(&s, id).contains(expected));
+        }
+        let archived = retained[0].join("Herdr Core.app/Contents/MacOS/herdr-core");
+        let out = s.program(archived.to_str().unwrap()).args(["server", "restart"]).output().unwrap();
+        assert!(out.status.success(), "a retained executable can restart the newest core: {out:?}");
+        #[cfg(target_os = "macos")]
+        assert_eq!(live_executable(s.json(&["server", "status"])["pid"].as_i64().unwrap()), holder_path);
+        let newest = run(&s, &["sh", "-c", "echo newest"]);
+        wait_until("new terminals use the newest core", || text(&s, &newest).contains("newest"));
     }
     drop(r);
 }
@@ -206,6 +239,38 @@ fn bundle_completion_skips_releases_without_a_bundle() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert!(!bin.exists(), "no binary swap or restart for a pre-bundle release");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn concurrent_bundle_installers_and_a_self_update_share_one_active_path() {
+    let s = Session::new();
+    let _r = Releases::new(&s, THIS, &[&here()]);
+    let bin = s.root.join("bin/herdr-core");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    let source = s.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    let spawn =
+        || s.program(source.to_str().unwrap()).arg("--hc-install-bundle").arg(&source).arg(&bin).spawn().unwrap();
+    let mut first = spawn();
+    let mut second = spawn();
+    assert!(first.wait().unwrap().success());
+    assert!(second.wait().unwrap().success());
+    let active =
+        s.root.join(".local/share/herdr-core/active/Herdr Core.app/Contents/MacOS/herdr-core").canonicalize().unwrap();
+    assert_eq!(bin.canonicalize().unwrap(), active);
+    // The source may be the same active bundle being replaced. Its copied
+    // candidate must be complete before exchanging the live directories.
+    assert!(
+        s.program(bin.to_str().unwrap())
+            .arg("--hc-install-bundle")
+            .arg(&active)
+            .arg(&active)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(bin.canonicalize().unwrap(), active);
+    assert!(s.program(bin.to_str().unwrap()).arg("--version").status().unwrap().success());
 }
 
 #[cfg(target_os = "macos")]
