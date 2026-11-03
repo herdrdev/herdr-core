@@ -242,8 +242,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   one in a folder you can't write (Unix) the way it was installed.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
-  falls back to a direct child and logs the reason in `core.log`; that core may
-  end with its launching app.
+  falls back to a direct child (also when a launchctl call takes over 5 s)
+  and logs the reason in `core.log`; that core may end with its launching app.
   The holder gets a job too, and each terminal's program one of its own (a
   small `herdr-core --hc-launchd-spawn` process is its parent), so macOS
   force-quitting an app a terminal started (it ends the app's whole coalition)
