@@ -49,8 +49,9 @@ current; the app completes this during its update. Startup never downloads
 updates. Updates keep running terminals.
 
 After launchd detachment the core uses a SETEXEC responsibility disclaimer;
-each holder does the same. Terminal programs never disclaim: the live holder
-must remain their privacy subject across core restarts. Missing SPI falls back
+each holder does the same. Terminal programs never disclaim: the stub that
+starts each one (the holder's own executable, which disclaims) stays their
+privacy subject for as long as the program runs, across core restarts. Missing SPI falls back
 to inherited responsibility with a diagnostic. Existing pre-upgrade holders
 cannot be repaired by restarting the core: users must recreate those terminals
 if privacy access is broken. Updates never kill them automatically.
