@@ -113,6 +113,41 @@ fn repainting_blocked_and_error_prompts_are_read_without_scrolling() {
 }
 
 #[test]
+fn becoming_unsafe_during_the_probe_stops_scrolling_and_releases_input() {
+    let s = session();
+    let fixture = s.root.join("stitch-state");
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stitch_state.rs");
+    let compiled =
+        std::process::Command::new("rustc").args(["--edition=2024", source, "-o"]).arg(&fixture).output().unwrap();
+    assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
+    for (state, why) in [
+        ("working", Some("working")),
+        ("blocked", Some("blocked")),
+        ("error", Some("error")),
+        ("no-mouse", None),
+        ("normal-screen", None),
+    ] {
+        let t = run(&s, &[fixture.to_str().unwrap(), state]);
+        wait_until("fixture drawn", || screen(&s, &t).contains("wheels=0 keys="));
+        let mut v = Viewer::attach(&s, &t, 40, 12, json!({}));
+        v.shows("wheels=0 keys=");
+        let started = std::time::Instant::now();
+        let r = read(&s, &t);
+        assert_eq!((r["how"].as_str(), r["complete"].as_bool()), (Some("screen"), Some(false)), "{r}");
+        assert_eq!(r["why"].as_str(), why, "{r}");
+        let after = screen(&s, &t);
+        assert!(
+            after.contains("wheels=1 keys="),
+            "{state}: an unsafe probe must not be undone or followed by more scrolling:\n{after}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{state}: waited {:?}", started.elapsed());
+        // The read's input gate must be released even though restoring became unsafe.
+        v.typed(b"x");
+        v.shows("wheels=1 keys=x");
+    }
+}
+
+#[test]
 fn slow_redraws_still_stitch() {
     let s = session();
     let t = app(&s, &["--lines", "30", "--slow", "60"]);
