@@ -126,7 +126,10 @@ pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: 
 }
 
 fn unavailable(error: io::Error) -> io::Error {
-    io::Error::new(error.kind(), format!("cannot start the program in a launchd job of its own: {error}"))
+    io::Error::new(
+        error.kind(),
+        format!("cannot start the program in a launchd job of its own: {error} (holder.log has more)"),
+    )
 }
 
 /// Where this process's stderr goes (the holder's log), so a stub's own errors land there too.
@@ -204,6 +207,12 @@ fn send_reply(sock: &mut UnixStream, reply: &Reply) -> io::Result<()> {
 
 /// The stub: starts one program for the holder that started its job.
 pub fn serve(socket: &Path) -> io::Result<()> {
+    // The stub lives exactly as long as its program: only SIGKILL or the program's end takes it.
+    // A handler, unlike ignoring, is reset by exec, so the program gets the default dispositions.
+    extern "C" fn nothing(_: libc::c_int) {}
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        unsafe { libc::signal(signal, nothing as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    }
     run(launchd::connect_back(socket)?)
 }
 

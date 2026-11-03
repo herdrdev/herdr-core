@@ -87,6 +87,8 @@ struct Holder {
     draining: std::sync::atomic::AtomicBool,
     /// Sweeps still ending what a finished program left behind.
     sweeps: std::sync::atomic::AtomicUsize,
+    /// One start at a time, so a second core asking for a terminal that is still starting finds it.
+    spawning: Mutex<()>,
 }
 
 /// Runs a holder on `socket` (each holder has its own; the core picks the path).
@@ -115,6 +117,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         socket,
         draining: Default::default(),
         sweeps: Default::default(),
+        spawning: Mutex::new(()),
     });
     let supervisor = holder.clone();
     std::thread::spawn(move || supervisor.supervise());
@@ -334,6 +337,7 @@ impl Holder {
     }
 
     fn spawn(self: &Arc<Self>, id: u32, spec: proto::Spawn) {
+        let _one = self.spawning.lock().unwrap_or_else(|p| p.into_inner());
         let mut st = self.lock();
         if let Some(t) = st.terms.get(&id) {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });

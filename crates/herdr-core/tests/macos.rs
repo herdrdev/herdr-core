@@ -588,7 +588,7 @@ fn a_program_that_cannot_get_its_job_fails_instead_of_starting_in_the_holders_co
 }
 
 #[test]
-fn a_slow_program_start_does_not_hold_up_other_terminals() {
+fn a_slow_program_start_does_not_stop_the_output_of_other_terminals() {
     if !gui() {
         return;
     }
@@ -611,6 +611,28 @@ fn a_slow_program_start_does_not_hold_up_other_terminals() {
         start.join().unwrap()
     });
     assert_eq!(failing.1["error"]["kind"], "spawn_failed");
+}
+
+#[test]
+fn a_stub_lives_as_long_as_its_program_through_the_signals_a_process_killer_sends() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let id = run(&s, &["sh", "-c", "trap 'echo cleaned up' TERM; echo ready; while :; do sleep 1; done"]);
+    wait_until("the program", || text(&s, &id).contains("ready"));
+    let program = get(&s, &id)["pid"].as_i64().unwrap();
+    if !independent(&s, s.json(&["server", "status"])["pid"].as_i64().unwrap()) {
+        return;
+    }
+    let stub = parent_of(program);
+    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        unsafe { libc::kill(stub as i32, signal) };
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(pid_alive(stub) && pid_alive(program) && get(&s, &id)["state"] == "live");
+    assert!(!text(&s, &id).contains("cleaned up"), "the program was signalled too");
+    s.json(&["kill", &id]);
 }
 
 #[test]
