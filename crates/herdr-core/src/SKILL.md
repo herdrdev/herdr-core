@@ -240,6 +240,26 @@ paths start at your current folder. Prefer explicit paths for remote work.
   is already current. JSON reports `restarted: true`; terminals keep running.
   Managed installs must be updated with their package manager instead, and
   one in a folder you can't write (Unix) the way it was installed.
+- On macOS, privacy requests from terminal programs belong to Herdr Core,
+  not Herdr.app. Existing Herdr.app grants do not transfer to the core.
+- macOS installs keep the newest bundle at the fixed physical path
+  `~/.local/share/herdr-core/active/Herdr Core.app`, selected by a `current`
+  symlink, with `hc` and `herdr-core` links in
+  `~/.local/bin` (`HC_INSTALL_DIR` overrides the links'
+  folder). Updates keep running terminals. A bundled install's `update --from`
+  needs a complete signed `.app` (or its `Contents/MacOS/herdr-core`), not a bare
+  executable. Terminals created before this bundle
+  upgrade may still have broken macOS privacy access: recreate those terminals;
+  restarting only the core cannot repair their old holders. After an old updater
+  copies only the binary, run `hc update` to finish installing the bundle, even
+  if the version is already current. The app completes this during its update.
+  Startup never downloads updates. Previous bundles stay on disk while their
+  cores or holders run; later installs reclaim unused previous bundles.
+  Per-user installs use the bundle. Root/system destinations keep the independently
+  signed standalone executable and their existing macOS privacy behavior.
+  Machine installs also preserve bundles. A standalone sender cannot replace a
+  bundled remote core: run `hc update` there instead. Root remotes receive the
+  standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child (also when a launchctl call takes over 5 s)

@@ -8,7 +8,6 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -346,7 +345,7 @@ fn detach(sentinel: &str, socket: &Path) -> io::Result<()> {
     }
     // libSystem can initialize libnotify before main. fork disables it in the
     // child; exec gives the detached core fresh libnotify/libdispatch state.
-    Err(cmd.exec())
+    super::macos_responsibility::exec(cmd)
 }
 
 /// Waits for the job's first process to exit, then connects back to its launcher.

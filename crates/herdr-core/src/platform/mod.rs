@@ -11,7 +11,11 @@ pub use unix::*;
 pub mod systemd;
 
 #[cfg(target_os = "macos")]
+mod macos_bundle;
+#[cfg(target_os = "macos")]
 mod macos_launchd;
+#[cfg(target_os = "macos")]
+mod macos_responsibility;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
 #[cfg(target_os = "macos")]
@@ -22,6 +26,8 @@ mod macos_stub;
 pub fn daemon_startup() -> Option<Vec<std::ffi::OsString>> {
     #[cfg(target_os = "macos")]
     {
+        macos_bundle::installer_startup();
+        macos_responsibility::holder_startup();
         macos_launchd::startup()
     }
     #[cfg(not(target_os = "macos"))]
@@ -44,6 +50,50 @@ pub(crate) fn raise_nofile_limit() {
     }
 }
 
+pub fn core_executable(exe: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        macos_bundle::core_executable(exe)
+    }
+    #[cfg(not(target_os = "macos"))]
+    exe.to_path_buf()
+}
+
+pub fn prefer_release_bundle() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::current_exe().is_ok_and(|exe| macos_bundle::bundle_destination(&exe))
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+pub fn needs_bundle_update() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_bundle::needs_bundle_update()
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn legacy_bundle_notice(state: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    macos_bundle::legacy_notice(state);
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn verify_release_bundle(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if macos_bundle::source_is_bundle(path) {
+        let local = std::env::var("HERDR_RELEASES_URL")
+            .is_ok_and(|url| url.trim_end_matches('/') != "https://releases.herdr.dev");
+        macos_bundle::verify(path.parent().unwrap().parent().unwrap().parent().unwrap(), local)?;
+    }
+    Ok(())
+}
+
 /// macOS cores and holders leave the app's process coalition (so do programs, one each).
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
@@ -52,6 +102,28 @@ pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) ->
         return macos_launchd::spawn(cmd, log);
     }
     false
+}
+
+pub fn update_source(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if path.is_dir() {
+        return path.join(macos_bundle::EXECUTABLE);
+    }
+    path.to_path_buf()
+}
+
+pub fn bundle_update_hint() -> Option<&'static str> {
+    cfg!(target_os = "macos")
+        .then_some("use hc update, or --from 'Herdr Core.app' (its Contents/MacOS/herdr-core also works)")
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn privacy_upgrade_notice(previous_exe: &std::path::Path) -> &'static str {
+    #[cfg(target_os = "macos")]
+    if !macos_bundle::source_is_bundle(previous_exe) {
+        return "; recreate terminals started before the Herdr Core.app upgrade if macOS privacy access is broken (they were not stopped)";
+    }
+    ""
 }
 
 /// Keep the early shutdown watch alive for the core's lifetime.

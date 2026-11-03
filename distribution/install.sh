@@ -65,9 +65,40 @@ curl -fsSL "$download" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
 [ "$(sha256 "$tmp/hc.tar.gz")" = "$want" ] || fail "the download is damaged (checksum mismatch); try again"
 tar -xzf "$tmp/hc.tar.gz" -C "$tmp"
 "$tmp/herdr-core" --version >/dev/null 2>&1 || fail "the downloaded hc does not run on this machine"
+# App completion must converge even before the first bundled release exists.
+if [ "${HC_BUNDLE_ONLY:-0}" = 1 ] && [ ! -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; then
+  exit 0
+fi
 mkdir -p "$bin"
 
-if [ -x "$bin/herdr-core" ]; then
+bundle=0
+if [ "$os" = macos ] && [ "$(id -u)" != 0 ]; then
+  case "$bin" in "$HOME"/*) bundle=1 ;; esac
+fi
+if [ "$bundle" = 1 ] && [ -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; then
+  action=installed
+  [ ! -x "$bin/herdr-core" ] || action=updated
+  bundled="$tmp/Herdr Core.app/Contents/MacOS/herdr-core"
+  if [ "$action" = updated ]; then
+    installed=$("$bin/herdr-core" --version)
+    candidate=$("$bundled" --version)
+    awk -v old="$installed" -v new="$candidate" 'BEGIN {
+      sub(/^hc /, "", old); sub(/^hc /, "", new)
+      split(old, a, /[.-]/); split(new, b, /[.-]/)
+      for (i=1; i<=3; i++) { if (a[i]+0 > b[i]+0) exit 1; if (a[i]+0 < b[i]+0) exit 0 }
+    }' || fail "$candidate is older than $installed; use hc update --from with --force to downgrade"
+  fi
+  case "$releases" in
+    https://releases.herdr.dev | https://releases.herdr.dev/)
+      /usr/bin/codesign --verify --strict -R '=identifier "dev.herdr.core" and anchor apple generic and certificate leaf[subject.OU] = "2W9652Q7QR"' "$tmp/Herdr Core.app" || fail "not a signed Herdr release" ;;
+  esac
+  "$bundled" --hc-install-bundle "$bundled" "$bin/herdr-core" || fail "installing Herdr Core.app failed"
+  # A fresh install must not start a core (especially not a system/root core).
+  if [ "$action" = updated ]; then
+    "$bin/herdr-core" server restart >/dev/null || fail "restarting the core failed"
+  fi
+  say "hc $version $action as Herdr Core.app. Recreate pre-update terminals if macOS privacy access is broken; running terminals were kept."
+elif [ -x "$bin/herdr-core" ]; then
   # Swapped the planned way, so its terminals keep running.
   "$bin/herdr-core" update --from "$tmp/herdr-core" >/dev/null || fail "updating $bin/herdr-core failed (see above)"
   say "hc updated to $version."
