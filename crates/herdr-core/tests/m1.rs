@@ -76,11 +76,16 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));
+    s.json(&["server", "start"]);
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", serde_json::json!({}));
     let t = run(&s, &["true"]);
-    wait_finished(&s, &t);
-    std::thread::sleep(Duration::from_millis(600));
-    let all = s.json(&["ls", "--all"]);
-    assert!(!all.to_string().contains(&format!("\"{t}\"")), "kept past its time: {all}");
+    // A slow exit snapshot can outlast retention; the finished event is buffered even if get is too late.
+    next_event(&mut events, |e| e["params"]["terminal"] == t && e["params"]["type"] == "finished");
+    wait_until("finished terminal expired", || {
+        let all = s.json(&["ls", "--all"]);
+        !all["terminals"].as_array().unwrap().iter().any(|record| record["address"] == t)
+    });
 }
 
 #[test]
