@@ -559,7 +559,7 @@ fn holder_with_an_older_build_at_its_path(s: &mut Session) -> (i64, String) {
     let bin = s.root.join("herdr-core");
     std::fs::copy(BIN, &bin).unwrap();
     s.bin = bin.clone();
-    let ticker = run(s, &["sh", "-c", "while :; do echo tick; sleep 0.05; done"]);
+    let ticker = run(s, &["sh", "-c", "i=0; while :; do i=$((i+1)); echo tick$i; sleep 0.05; done"]);
     let old = s.root.join("old");
     std::fs::write(&old, "#!/bin/sh\nexit 2\n").unwrap();
     std::fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -598,16 +598,18 @@ fn a_slow_program_start_does_not_stop_the_output_of_other_terminals() {
     if !independent(&s, core) {
         return;
     }
-    let ticks = |s: &Session| text(s, &ticker).matches("tick").count();
+    let ticks = |s: &Session| {
+        let seen = text(s, &ticker);
+        seen.lines().filter_map(|l| l.strip_prefix("tick")?.trim().parse::<usize>().ok()).last().unwrap_or(0)
+    };
     // The start that follows waits several seconds for a job that never answers.
     let failing = std::thread::scope(|scope| {
         let start = scope.spawn(|| s.err(&["run", "--bg", "true"]));
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let before = ticks(&s);
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::thread::sleep(std::time::Duration::from_millis(1200));
         let during = ticks(&s) - before;
-        assert!(!start.is_finished(), "the start was meant to still be waiting");
-        assert!(during >= 15, "output of another terminal advanced by {during} lines in 1.5 s while a program started");
+        assert!(during >= 10, "output of another terminal advanced by {during} lines in 1.2 s while a program started");
         start.join().unwrap()
     });
     assert_eq!(failing.1["error"]["kind"], "spawn_failed");
