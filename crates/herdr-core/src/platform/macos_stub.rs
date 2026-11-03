@@ -35,9 +35,10 @@ const ANSWER: Duration = Duration::from_secs(5);
 /// How long a dropped program waits for its stub to reap it.
 const REAP: Duration = Duration::from_secs(2);
 
-/// What the holder tells the stub. A build that changes it bumps `PROTOCOL`.
+/// What the holder tells the stub. Holders outlive updates and the stub is whatever
+/// binary is at the holder's path, so builds of any age meet: fields are only ever
+/// added, with `#[serde(default)]`, and `PROTOCOL` stays.
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Spec {
     argv: Vec<String>,
     env: BTreeMap<String, String>,
@@ -94,8 +95,9 @@ impl Drop for Remote {
 impl Remote {
     /// (exit code, signal). A stub gone without a word was killed on its own
     /// (a killed stub leaves its program running), so the program is killed
-    /// too and reported as that kill: the pid is still ours, the stub not
-    /// having reaped it.
+    /// too and reported as that kill. Once the stub is gone launchd reaps the
+    /// program, and its pid could in theory be reused by then; it is not
+    /// worth a check.
     pub fn wait(&mut self) -> io::Result<(Option<i32>, Option<i32>)> {
         // Darwin refuses to set it on a socket whose peer has gone: nothing to wait for then.
         let _ = self.reader.get_ref().set_read_timeout(None);
@@ -152,7 +154,9 @@ fn connect(log: &Path) -> io::Result<UnixStream> {
     let sock = launchd::accept(&listener, left())?;
     sock.set_read_timeout(Some(left()))?;
     // The stub has forked and seen its launcher exit: only the job goes.
-    job.remove()?;
+    if let Err(error) = job.remove() {
+        eprintln!("holder: cannot remove the launchd job of a started stub: {error}");
+    }
     Ok(sock)
 }
 
@@ -363,7 +367,9 @@ mod tests {
 
     #[test]
     fn a_stub_that_goes_quiet_after_the_spec_is_an_error_naming_launchd() {
-        let error = against(Some(Reply::Hello(PROTOCOL)), |_| {}).err().unwrap();
+        // Alive but silent, not hung up.
+        let quiet = |_: &mut UnixStream| std::thread::sleep(Duration::from_millis(600));
+        let error = against(Some(Reply::Hello(PROTOCOL)), quiet).err().unwrap();
         assert!(error.to_string().contains("launchd"), "{error}");
     }
 
@@ -392,6 +398,24 @@ mod tests {
         });
         assert!(ended, "the program outlived its stub");
         let _ = program.kill();
+    }
+
+    #[test]
+    fn a_spec_cut_short_does_not_start_a_program() {
+        let marker = std::env::temp_dir().join(format!("hc-stub-spec-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let (mut holder, stub) = UnixStream::pair().unwrap();
+        let stub = std::thread::spawn(move || run(stub));
+        let mut reader = BufReader::new(holder.try_clone().unwrap());
+        assert_eq!(read_reply(&mut reader).unwrap(), Reply::Hello(PROTOCOL));
+        send_fd(&holder, File::open("/dev/null").unwrap().as_raw_fd()).unwrap();
+        let argv = vec!["touch".to_string(), marker.display().to_string()];
+        // Whole, but for the newline the holder's write timeout cut off.
+        holder.write_all(&serde_json::to_vec(&Spec { argv, ..spec() }).unwrap()).unwrap();
+        holder.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(matches!(read_reply(&mut reader).unwrap(), Reply::Error(_)));
+        stub.join().unwrap().unwrap();
+        assert!(!marker.exists(), "a program started from a spec that was not whole");
     }
 
     #[test]

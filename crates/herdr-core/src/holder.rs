@@ -339,8 +339,11 @@ impl Holder {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
             return self.to_core(&mut st, &frame);
         }
+        // Starting can take a while (a launchd job on macOS): output and exits of the others go on meanwhile.
+        drop(st);
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
+        let mut st = self.lock();
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));

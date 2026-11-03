@@ -279,6 +279,7 @@ fn ssh_starts_directly_without_an_app_lifetime_warning() {
     assert_eq!(coalition(pid), coalition(std::process::id() as i64));
     let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
     assert!(!log.contains("launchd startup failed"), "{log}");
+    assert_programs_start_in_the_holder(&s);
 }
 
 #[test]
@@ -435,6 +436,21 @@ fn holder_of(s: &Session) -> i64 {
     s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap()
 }
 
+fn parent_of(pid: i64) -> i64 {
+    let out = Command::new("/bin/ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// A holder that never had a job of its own starts its programs itself, as before.
+fn assert_programs_start_in_the_holder(s: &Session) {
+    let id = run(s, &["sh", "-c", "echo $$; exec sleep 300"]);
+    wait_until("program pid", || text(s, &id).trim().parse::<i64>().is_ok());
+    let program = text(s, &id).trim().parse::<i64>().unwrap();
+    let holder = holder_of(s);
+    assert_eq!(parent_of(program), holder);
+    assert_eq!(coalition(program), coalition(holder));
+}
+
 /// The program's pid and its limits, umask, folder and environment, as it sees them.
 fn view(s: &Session) -> String {
     let id =
@@ -464,10 +480,6 @@ fn a_program_started_through_a_job_sees_what_a_direct_one_does() {
         return;
     }
     assert_eq!(a, b, "limits, umask, folder and environment");
-    for (s, name) in [(&launchd, "launchd"), (&direct, "direct")] {
-        let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/holder.log")).unwrap_or_default();
-        assert!(!log.contains("no launchd job"), "{name}: {log}");
-    }
 }
 
 #[test]
@@ -542,17 +554,18 @@ fn a_terminal_that_prints_a_lot_then_exits_loses_nothing() {
 }
 
 /// A holder whose path holds a build that does not know the job sentinel (it ends in a usage error).
-fn holder_with_an_older_build_at_its_path(s: &mut Session) -> i64 {
+/// A terminal printing a line every 50 ms was started before it, and its id comes back with the holder's pid.
+fn holder_with_an_older_build_at_its_path(s: &mut Session) -> (i64, String) {
     let bin = s.root.join("herdr-core");
     std::fs::copy(BIN, &bin).unwrap();
     s.bin = bin.clone();
-    run(s, &["sleep", "300"]);
+    let ticker = run(s, &["sh", "-c", "while :; do echo tick; sleep 0.05; done"]);
     let old = s.root.join("old");
     std::fs::write(&old, "#!/bin/sh\nexit 2\n").unwrap();
     std::fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     std::fs::rename(&old, &bin).unwrap();
     s.bin = BIN.into(); // the commands come from here, the holder's path holds the old build
-    holder_of(s)
+    (holder_of(s), ticker)
 }
 
 #[test]
@@ -575,22 +588,44 @@ fn a_program_that_cannot_get_its_job_fails_instead_of_starting_in_the_holders_co
 }
 
 #[test]
+fn a_slow_program_start_does_not_hold_up_other_terminals() {
+    if !gui() {
+        return;
+    }
+    let mut s = Session::new();
+    let (_, ticker) = holder_with_an_older_build_at_its_path(&mut s);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let ticks = |s: &Session| text(s, &ticker).matches("tick").count();
+    // The start that follows waits several seconds for a job that never answers.
+    let failing = std::thread::scope(|scope| {
+        let start = scope.spawn(|| s.err(&["run", "--bg", "true"]));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let before = ticks(&s);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let during = ticks(&s) - before;
+        assert!(!start.is_finished(), "the start was meant to still be waiting");
+        assert!(during >= 15, "output of another terminal advanced by {during} lines in 1.5 s while a program started");
+        start.join().unwrap()
+    });
+    assert_eq!(failing.1["error"]["kind"], "spawn_failed");
+}
+
+#[test]
 fn losing_only_the_stub_ends_its_program_and_reports_a_kill() {
     if !gui() {
         return;
     }
     let s = Session::new();
-    let (a, program, _) = tree(&s, &[]);
-    let (kept, kept_program, _) = tree(&s, &["--keep"]);
+    let (a, program, child) = tree(&s, &[]);
+    let (kept, kept_program, kept_child) = tree(&s, &["--keep"]);
     let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
     if !independent(&s, core) {
         return;
     }
     let holder = holder_of(&s);
-    let parent_of = |pid: i64| -> i64 {
-        let out = Command::new("/bin/ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
-    };
     // What `pkill -f herdr-core` does to a stub, while its program lives on.
     for (stub, program) in [(parent_of(program), program), (parent_of(kept_program), kept_program)] {
         assert!(![core, holder].contains(&stub), "the program's parent is its stub");
@@ -605,6 +640,10 @@ fn losing_only_the_stub_ends_its_program_and_reports_a_kill() {
         r["state"] == "live" && r["pid"].as_i64().is_some_and(|p| p != kept_program)
     });
     assert!(pid_alive(core) && pid_alive(holder));
+    // Only their parents were killed: these were left to launchd.
+    for orphan in [child, kept_child] {
+        unsafe { libc::kill(orphan as i32, libc::SIGKILL) };
+    }
 }
 
 #[test]

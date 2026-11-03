@@ -240,7 +240,12 @@ fn launch(cmd: &Command, sentinel: &str, log: &Path) -> io::Result<()> {
     remove_stale(&format!("gui/{}", unsafe { libc::getuid() }), now);
     remove_stale_dirs(Path::new("/tmp"), now);
     let mask = umask();
-    let cwd = cmd.get_current_dir().map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?;
+    // The holder gives its programs their folders itself, and a folder it was started in may be deleted later.
+    let cwd = if sentinel == HOLD {
+        PathBuf::from("/")
+    } else {
+        cmd.get_current_dir().map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?
+    };
     // Create the log ourselves: same ownership, mask and append behavior as
     // direct startup, even before launchd has run the job for the first time.
     std::fs::OpenOptions::new().create(true).append(true).open(log)?;
