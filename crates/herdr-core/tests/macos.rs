@@ -30,8 +30,9 @@ fn coalitions(pid: i64) -> [u64; 2] {
 /// Every live process whose resource coalition is `id`.
 fn members(id: u64) -> Vec<i64> {
     let mut pids = vec![0i32; 8192];
-    let bytes = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * 4) as i32) };
-    pids.truncate(bytes.max(0) as usize / 4);
+    // Despite its name for the size argument, the result is a count of pids, not bytes.
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * 4) as i32) };
+    pids.truncate(count.max(0) as usize);
     let ours = |pid: &i32| {
         let mut info = [0u64; 5];
         let size = std::mem::size_of_val(&info) as i32;
