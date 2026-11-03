@@ -245,7 +245,9 @@ fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     );
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    // Under the readiness wait (1.5 s) so a deadline that left it out would fail, and over the
+    // time a start takes on a loaded machine.
+    std::fs::write(config, "machine_timeout = 1\n").unwrap();
     let templates = rohan.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&templates).unwrap();
     rohan.json(&["server", "start"]);
