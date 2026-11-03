@@ -268,7 +268,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
   small `herdr-core --hc-launchd-spawn` process is its parent), so macOS
   force-quitting an app a terminal started (it ends the app's whole coalition)
   ends only that terminal, never the holder or the others. Killing that parent
-  alone ends the terminal too (only SIGKILL does; it catches TERM, HUP, INT). If
+  alone ends the terminal too (TERM, HUP and INT do not: it catches them). If
   the holder goes away, the parent hangs the program up, then terminates it,
   then kills it, half a second apart, as the core's own cleanup does. The
   parent is the holder's own binary at its own path: if that path holds an
