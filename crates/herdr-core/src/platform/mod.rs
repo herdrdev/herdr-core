@@ -14,6 +14,8 @@ pub mod systemd;
 mod macos_launchd;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
+#[cfg(target_os = "macos")]
+mod macos_stub;
 
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
 pub fn daemon_startup() -> bool {
@@ -33,12 +35,14 @@ pub fn prepare_core() {
     macos_launchd::prepare_core();
 }
 
-/// macOS cores leave the app's process coalition; holders inherit the core's.
+/// macOS cores and holders leave the app's process coalition (so do programs, one each).
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
     #[cfg(target_os = "macos")]
-    if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
-        return macos_launchd::spawn(cmd, log);
+    match cmd.get_args().next().and_then(|arg| arg.to_str()) {
+        Some("serve") => return macos_launchd::spawn(cmd, log),
+        Some("hold") => return macos_stub::start_exec(cmd, log),
+        _ => {}
     }
     false
 }

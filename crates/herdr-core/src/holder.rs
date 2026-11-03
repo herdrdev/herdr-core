@@ -6,7 +6,7 @@
 use crate::holder_proto::{self as proto, Exit, Goodbye, HeldTerminal};
 use crate::paths::Paths;
 use crate::platform::{self, Process, Pty, Stream};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -69,11 +69,20 @@ impl Backlog {
 
 struct State {
     terms: HashMap<u32, Term>,
+    /// Programs being started (without the lock): their ids are taken.
+    starting: HashSet<u32>,
     core: Option<Core>,
     generation: u64,
     previous: &'static str,
     core_left: Instant,
     restarts: Vec<Instant>,
+}
+
+impl State {
+    /// Nothing runs and nothing is being started.
+    fn idle(&self) -> bool {
+        self.terms.is_empty() && self.starting.is_empty()
+    }
 }
 
 struct Holder {
@@ -102,6 +111,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
     let holder = Arc::new(Holder {
         state: Mutex::new(State {
             terms: HashMap::new(),
+            starting: HashSet::new(),
             core: None,
             generation: 0,
             previous: "none",
@@ -157,7 +167,7 @@ impl Holder {
     }
 
     fn exit_if_drained(&self) {
-        if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().terms.is_empty() {
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst) && self.lock().idle() {
             self.exit();
         }
     }
@@ -339,8 +349,16 @@ impl Holder {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
             return self.to_core(&mut st, &frame);
         }
+        // A duplicate of a spawn in flight is dropped: that one answers the core.
+        if !st.starting.insert(id) {
+            return;
+        }
+        // Starting a program can take a while: the others' input must not wait.
+        drop(st);
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
             .and_then(|(pty, child)| Ok((pty.reader()?, pty.writer()?, pty, child)));
+        let mut st = self.lock();
+        st.starting.remove(&id);
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));
@@ -435,6 +453,7 @@ impl Holder {
             crate::sweep::sweep(&[scope]);
             self.sweeps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         }
+        drop(child);
         let exited = Instant::now();
         let mut st = self.lock();
         while let Some(t) = st.terms.get(&id).filter(|t| !t.reader_done) {
@@ -464,7 +483,7 @@ impl Holder {
             if st.core.is_some() || st.core_left.elapsed() < self.grace {
                 continue;
             }
-            if st.terms.is_empty() {
+            if st.idle() {
                 self.exit();
             }
             let now = Instant::now();

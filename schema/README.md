@@ -150,7 +150,8 @@ without a program until this machine's shell can start in its last observed
 folder (then its start folder, then home). The original command is never
 re-run. Loss closes existing attach streams with its reason; wait for
 `restarted` and attach again. An exit with a code and explicit kill stay final.
-Death by signal without an exit code is loss (`signaled`) for kept terminals;
+Death by signal without an exit code is loss (`signaled`) for kept terminals,
+as is, on macOS, an exit with neither (the program's launcher was ended with it);
 non-kept behavior is unchanged. Windows reports no signals, so `signaled` never
 fires there: native termination normally reports an exit code. A replacement
 killed by a shutdown signal is lost again instead of closing its record.

@@ -4,11 +4,13 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DETACH: &str = "HC_LAUNCHD_DETACH";
@@ -18,10 +20,58 @@ const LAUNCHCTL: &str = "/bin/launchctl";
 const PREFIX: &str = "dev.herdr.core.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(super) type Limits = Vec<(libc::c_int, libc::rlim_t, libc::rlim_t)>;
+
+/// Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the running
+/// kernel for every slot rather than baking in a header's count.
+pub(super) fn limits() -> io::Result<Limits> {
+    let mut limits = Vec::new();
+    for resource in 0.. {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if unsafe { libc::getrlimit(resource, &mut limit) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINVAL) {
+                break;
+            }
+            return Err(error);
+        }
+        limits.push((resource, limit.rlim_cur, limit.rlim_max));
+    }
+    Ok(limits)
+}
+
+pub(super) fn restore_limits(limits: &Limits) -> io::Result<()> {
+    for &(resource, soft, hard) in limits {
+        let mut current = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Darwin can clamp NPROC even when setting its inherited value.
+        // Do not rewrite a limit that launchd already preserved exactly.
+        if (current.rlim_cur, current.rlim_max) == (soft, hard) {
+            continue;
+        }
+        let limit = libc::rlimit { rlim_cur: soft, rlim_max: hard };
+        if unsafe { libc::setrlimit(resource, &limit) } != 0 {
+            return Err(io::Error::other(format!(
+                "cannot restore resource limit {resource}: {}",
+                io::Error::last_os_error()
+            )));
+        }
+        if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (current.rlim_cur, current.rlim_max) != (soft, hard) {
+            return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
+        }
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Inherited {
     env: Vec<(Vec<u8>, Vec<u8>)>,
-    limits: Vec<(libc::c_int, libc::rlim_t, libc::rlim_t)>,
+    limits: Limits,
 }
 
 impl Inherited {
@@ -40,49 +90,12 @@ impl Inherited {
         env.remove(OsStr::new(DETACH));
         env.remove(OsStr::new(DIRECT));
         env.insert("XPC_SERVICE_NAME".into(), "0".into());
-        let mut limits = Vec::new();
-        // Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the
-        // running kernel for every slot rather than baking in a header's count.
-        for resource in 0.. {
-            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-            if unsafe { libc::getrlimit(resource, &mut limit) } != 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::EINVAL) {
-                    break;
-                }
-                return Err(error);
-            }
-            limits.push((resource, limit.rlim_cur, limit.rlim_max));
-        }
-        Ok(Self { env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(), limits })
+        Ok(Self { env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(), limits: limits()? })
     }
 
     /// Runs only in the newly forked core, before it creates any threads.
     fn restore(self) -> io::Result<()> {
-        for (resource, soft, hard) in self.limits {
-            let mut current = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-            if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // Darwin can clamp NPROC even when setting its inherited value.
-            // Do not rewrite a limit that launchd already preserved exactly.
-            if (current.rlim_cur, current.rlim_max) == (soft, hard) {
-                continue;
-            }
-            let limit = libc::rlimit { rlim_cur: soft, rlim_max: hard };
-            if unsafe { libc::setrlimit(resource, &limit) } != 0 {
-                return Err(io::Error::other(format!(
-                    "cannot restore resource limit {resource}: {}",
-                    io::Error::last_os_error()
-                )));
-            }
-            if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if (current.rlim_cur, current.rlim_max) != (soft, hard) {
-                return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
-            }
-        }
+        restore_limits(&self.limits)?;
         unsafe {
             for (key, _) in std::env::vars_os() {
                 std::env::remove_var(key);
@@ -97,12 +110,24 @@ impl Inherited {
 
 /// Detach only the internal launchd sentinel before any CLI/runtime setup.
 pub fn startup() -> bool {
-    if std::env::args_os().nth(1).as_deref() != Some(OsStr::new(SENTINEL)) {
+    let sentinel = std::env::args_os().nth(1);
+    let spawner = sentinel.as_deref() == Some(OsStr::new(super::macos_stub::SENTINEL));
+    if !spawner && sentinel.as_deref() != Some(OsStr::new(SENTINEL)) {
         return false;
     }
     let result = if let Some(socket) = std::env::var_os(DETACH) {
-        detach(Path::new(&socket))
+        detach(if spawner { super::macos_stub::SENTINEL } else { SENTINEL }, Path::new(&socket))
     } else if let Some(socket) = std::env::args_os().nth(2) {
+        if spawner {
+            // A stub never becomes a core: it serves one program, then ends.
+            std::process::exit(match super::macos_stub::serve(Path::new(&socket)) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("hc: launchd spawn failed: {error}");
+                    1
+                }
+            });
+        }
         receive(Path::new(&socket))
     } else {
         return false;
@@ -145,12 +170,12 @@ pub fn prepare_core() {
     }
 }
 
-fn ssh() -> bool {
+pub(super) fn ssh() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some()
 }
 
-/// Only `serve` uses this path. Holders and programs inherit its coalition.
-/// SSH is already outside the app, and must retain its existing lifetime.
+/// Only `serve` uses this path (programs use `macos_stub`). SSH is already
+/// outside the app, and must retain its existing lifetime.
 pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
     if ssh() {
         return false;
@@ -175,75 +200,102 @@ fn fallback(log: &Path, error: &io::Error) {
 }
 
 fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let inherited = Inherited::capture(cmd)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
-    let domain = format!("gui/{}", unsafe { libc::getuid() });
-    remove_stale(&domain, now);
+    remove_stale(&format!("gui/{}", unsafe { libc::getuid() }), now);
     remove_stale_dirs(Path::new("/tmp"), now);
-    let dir =
-        PathBuf::from(format!("/tmp/hc-launchd-{}-{}-{}", std::process::id(), now.as_nanos(), super::random_hex()));
-    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    let mut job =
-        Job { dir, target: format!("{domain}/{PREFIX}{}.{}", std::process::id(), now.as_nanos()), loaded: false };
-    let socket = job.dir.join("ready");
-    let listener = UnixListener::bind(&socket)?;
-    listener.set_nonblocking(true)?;
-    let label = job.target.rsplit('/').next().unwrap();
     let mask = unsafe {
         let mask = libc::umask(0o077);
         libc::umask(mask);
         mask
     };
+    let cwd = cmd.get_current_dir().map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?;
     // Create the log ourselves: same ownership, mask and append behavior as
     // direct startup, even before launchd has run the job for the first time.
     std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    let contents = plist(cmd, log, label, &socket, mask)?;
+    let (mut job, listener) = start_job(cmd.get_program(), SENTINEL, &cwd, log, mask, None)?;
+    let mut ready = accept(&listener, HANDSHAKE_TIMEOUT).map_err(|e| match e.kind() {
+        io::ErrorKind::TimedOut => io::Error::new(
+            io::ErrorKind::TimedOut,
+            "launchd process did not complete the detach handshake within 10 s (it may be an older binary); removing the job before direct startup",
+        ),
+        _ => e,
+    })?;
+    ready.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    ready.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    // The child has forked and observed its parent exit. Remove
+    // the one-shot job before transferring state and letting it serve.
+    job.remove()?;
+    serde_json::to_writer(&mut ready, &inherited)?;
+    ready.shutdown(std::net::Shutdown::Write)?;
+    let mut ack = [0];
+    ready.read_exact(&mut ack)
+}
+
+/// Loads a one-shot job that runs `program sentinel` in its own coalition and
+/// connects back to the returned listener. `limit` bounds each launchctl call.
+pub(super) fn start_job(
+    program: &OsStr,
+    sentinel: &str,
+    cwd: &Path,
+    log: &Path,
+    mask: libc::mode_t,
+    limit: Option<Duration>,
+) -> io::Result<(Job, UnixListener)> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    static JOBS: AtomicU32 = AtomicU32::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
+    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let dir =
+        PathBuf::from(format!("/tmp/hc-launchd-{}-{}-{}", std::process::id(), now.as_nanos(), super::random_hex()));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    // The stamp stays last: `stale_labels` reads it from the final field.
+    let label = format!("{PREFIX}{}.{}.{}", std::process::id(), JOBS.fetch_add(1, Ordering::Relaxed), now.as_nanos());
+    let mut job = Job { dir, target: format!("{domain}/{label}"), loaded: false, limit };
+    let socket = job.dir.join("ready");
+    let listener = UnixListener::bind(&socket)?;
+    listener.set_nonblocking(true)?;
+    let contents = plist(program, sentinel, cwd, log, &label, &socket, mask)?;
     let file = job.dir.join("job.plist");
     std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&file)?.write_all(contents.as_bytes())?;
-    let bootstrapped = launchctl(&[OsStr::new("bootstrap"), OsStr::new(&domain), file.as_os_str()]);
+    let bootstrapped = launchctl(&[OsStr::new("bootstrap"), OsStr::new(&domain), file.as_os_str()], limit);
     let _ = std::fs::remove_file(file);
     if let Err(error) = bootstrapped {
         // A failed bootstrap normally creates no job; clean a partial one
         // quietly without hiding the original error or logging a bogus leak.
-        let _ = launchctl(&[OsStr::new("bootout"), OsStr::new(&job.target)]);
+        let _ = launchctl(&[OsStr::new("bootout"), OsStr::new(&job.target)], limit);
         return Err(error);
     }
     job.loaded = true;
-    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    Ok((job, listener))
+}
+
+/// The job's process, once it has forked and its parent has gone.
+pub(super) fn accept(listener: &UnixListener, timeout: Duration) -> io::Result<UnixStream> {
+    let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
-            Ok((mut ready, _)) => {
+            Ok((stream, _)) => {
                 // Darwin inherits O_NONBLOCK from the listener on accept.
-                ready.set_nonblocking(false)?;
-                ready.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-                ready.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
-                // The child has forked and observed its parent exit. Remove
-                // the one-shot job before transferring state and letting it serve.
-                job.remove()?;
-                serde_json::to_writer(&mut ready, &inherited)?;
-                ready.shutdown(std::net::Shutdown::Write)?;
-                let mut ack = [0];
-                ready.read_exact(&mut ack)?;
-                return Ok(());
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
+                stream.set_nonblocking(false)?;
+                return Ok(stream);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "launchd process did not complete the detach handshake within 10 s (it may be an older binary); removing the job before direct startup",
-                ));
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                let mut ready = libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                unsafe { libc::poll(&mut ready, 1, left.as_millis().max(1).min(i32::MAX as u128) as libc::c_int) };
             }
             Err(e) => return Err(e),
         }
     }
 }
 
-fn detach(socket: &Path) -> io::Result<()> {
+fn detach(sentinel: &str, socket: &Path) -> io::Result<()> {
     let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg(SENTINEL).arg(socket).env_remove(DETACH);
+    cmd.arg(sentinel).arg(socket).env_remove(DETACH);
     match unsafe { libc::fork() } {
         -1 => return Err(io::Error::last_os_error()),
         0 => {}
@@ -257,7 +309,8 @@ fn detach(socket: &Path) -> io::Result<()> {
     Err(cmd.exec())
 }
 
-fn receive(socket: &Path) -> io::Result<()> {
+/// Waits for the job's first process to exit, then connects back to its launcher.
+pub(super) fn connect_back(socket: &Path) -> io::Result<UnixStream> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     while unsafe { libc::getppid() } != 1 {
         if Instant::now() >= deadline {
@@ -265,22 +318,27 @@ fn receive(socket: &Path) -> io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    let mut ready = UnixStream::connect(socket)?;
+    UnixStream::connect(socket)
+}
+
+fn receive(socket: &Path) -> io::Result<()> {
+    let mut ready = connect_back(socket)?;
     ready.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     let inherited: Inherited = serde_json::from_reader(&mut ready)?;
     inherited.restore()?;
     ready.write_all(&[1])
 }
 
-struct Job {
+pub(super) struct Job {
     dir: PathBuf,
     target: String,
     loaded: bool,
+    limit: Option<Duration>,
 }
 impl Job {
-    fn remove(&mut self) -> io::Result<()> {
+    pub(super) fn remove(&mut self) -> io::Result<()> {
         if self.loaded {
-            launchctl(&[OsStr::new("bootout"), OsStr::new(&self.target)])?;
+            launchctl(&[OsStr::new("bootout"), OsStr::new(&self.target)], self.limit)?;
             self.loaded = false;
         }
         Ok(())
@@ -295,8 +353,30 @@ impl Drop for Job {
     }
 }
 
-fn launchctl(args: &[&OsStr]) -> io::Result<String> {
-    let out = Command::new(LAUNCHCTL).args(args).stdin(Stdio::null()).output()?;
+/// With a `limit`, a launchctl that does not answer in time is killed.
+fn launchctl(args: &[&OsStr], limit: Option<Duration>) -> io::Result<String> {
+    let mut cmd = Command::new(LAUNCHCTL);
+    cmd.args(args).stdin(Stdio::null());
+    let out = match limit {
+        None => cmd.output()?,
+        Some(limit) => {
+            let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+            let deadline = Instant::now() + limit;
+            // Its output is a line or two: it cannot fill a pipe while we poll.
+            while child.try_wait()?.is_none() {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("launchctl {} timed out", args[0].to_string_lossy()),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            child.wait_with_output()?
+        }
+    };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -310,10 +390,10 @@ fn launchctl(args: &[&OsStr]) -> io::Result<String> {
 }
 
 fn remove_stale(domain: &str, now: Duration) {
-    let Ok(list) = launchctl(&[OsStr::new("list")]) else { return };
+    let Ok(list) = launchctl(&[OsStr::new("list")], None) else { return };
     for label in stale_labels(&list, now) {
         let target = format!("{domain}/{label}");
-        if let Err(error) = launchctl(&[OsStr::new("bootout"), OsStr::new(&target)]) {
+        if let Err(error) = launchctl(&[OsStr::new("bootout"), OsStr::new(&target)], None) {
             eprintln!("hc: cannot remove finished launchd job {target}: {error}");
         }
     }
@@ -364,7 +444,15 @@ fn stale_labels(list: &str, now: Duration) -> Vec<&str> {
         .collect()
 }
 
-fn plist(cmd: &Command, log: &Path, label: &str, socket: &Path, mask: libc::mode_t) -> io::Result<String> {
+fn plist(
+    program: &OsStr,
+    sentinel: &str,
+    cwd: &Path,
+    log: &Path,
+    label: &str,
+    socket: &Path,
+    mask: libc::mode_t,
+) -> io::Result<String> {
     let mut result = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>");
     let pair = |key: &str, value: &OsStr| -> io::Result<String> {
         Ok(format!("<key>{key}</key><string>{}</string>", xml(value)?))
@@ -373,13 +461,12 @@ fn plist(cmd: &Command, log: &Path, label: &str, socket: &Path, mask: libc::mode
     result.push_str("<key>ProgramArguments</key><array>");
     // An older target must reject the job, not start `serve` with launchd's
     // default environment before it knows how to receive the caller's state.
-    for arg in [cmd.get_program(), OsStr::new(SENTINEL)] {
+    for arg in [program, OsStr::new(sentinel)] {
         result.push_str(&format!("<string>{}</string>", xml(arg)?));
     }
     result.push_str("</array><key>EnvironmentVariables</key><dict>");
     result.push_str(&pair(DETACH, socket.as_os_str())?);
     result.push_str("</dict>");
-    let cwd = cmd.get_current_dir().map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?;
     for (key, value) in [
         ("WorkingDirectory", cwd.as_os_str()),
         ("StandardInPath", OsStr::new("/dev/null")),
@@ -427,7 +514,17 @@ mod tests {
     fn job_preserves_the_command_and_never_relaunches() {
         let mut cmd = Command::new("/a<&>/hc");
         cmd.arg("serve").env("LESS_TERMCAP_md", "\x1b[1m\r").env_remove("HOME");
-        let job = plist(&cmd, Path::new("/state/core.log"), "test", Path::new("/private/job"), 0o027).unwrap();
+        let job = plist(
+            cmd.get_program(),
+            SENTINEL,
+            Path::new("/work"),
+            Path::new("/state/core.log"),
+            "test",
+            Path::new("/private/job"),
+            0o027,
+        )
+        .unwrap();
+        assert!(job.contains("<key>WorkingDirectory</key><string>/work</string>"));
         assert!(job.contains("<string>/a&lt;&amp;&gt;/hc</string><string>--hc-launchd</string>"));
         assert!(!job.contains("<string>serve</string>"));
         assert!(!job.contains("LESS_TERMCAP_md"));
@@ -473,7 +570,7 @@ mod tests {
     fn stale_directories_need_a_dead_starter_and_never_follow_symlinks() {
         let dir = PathBuf::from(format!("/var/tmp/hc-c-{}", &super::super::random_hex()[..8]));
         super::super::private_dir(&dir).unwrap();
-        let scratch = Job { dir, target: String::new(), loaded: false };
+        let scratch = Job { dir, target: String::new(), loaded: false, limit: None };
         let mut child = Command::new("/usr/bin/true").spawn().unwrap();
         let dead = child.id();
         child.wait().unwrap();
@@ -511,12 +608,12 @@ mod tests {
     fn an_older_target_rejects_the_job_instead_of_starting_a_default_core() {
         let Some(old) = std::env::var_os("HC_OLD_BIN") else { return };
         let domain = format!("gui/{}", unsafe { libc::getuid() });
-        if launchctl(&[OsStr::new("print"), OsStr::new(&domain)]).is_err() {
+        if launchctl(&[OsStr::new("print"), OsStr::new(&domain)], None).is_err() {
             return;
         }
         let dir = PathBuf::from(format!("/var/tmp/hc-old-launchd-{}", super::super::random_hex()));
         super::super::private_dir(&dir).unwrap();
-        let scratch = Job { dir, target: String::new(), loaded: false };
+        let scratch = Job { dir, target: String::new(), loaded: false, limit: None };
         let log = scratch.dir.join("core.log");
         let mut cmd = Command::new(old);
         cmd.arg("serve");
@@ -529,7 +626,7 @@ mod tests {
         assert!(error.to_string().contains("older binary"));
         let log = std::fs::read_to_string(log).unwrap();
         assert!(log.contains(SENTINEL), "old target reported usage, never served: {log}");
-        let list = launchctl(&[OsStr::new("list")]).unwrap();
+        let list = launchctl(&[OsStr::new("list")], None).unwrap();
         assert!(!list.contains(&format!("{PREFIX}{}.", std::process::id())), "job removed after timeout");
     }
 

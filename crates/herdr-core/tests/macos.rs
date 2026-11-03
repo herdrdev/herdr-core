@@ -18,6 +18,39 @@ fn coalition(pid: i64) -> u64 {
     info[0]
 }
 
+/// The resource and jetsam coalition ids of a process.
+fn coalitions(pid: i64) -> [u64; 2] {
+    let mut info = [0u64; 5];
+    let size = std::mem::size_of_val(&info) as i32;
+    let read = unsafe { libc::proc_pidinfo(pid as i32, 20, 0, info.as_mut_ptr().cast(), size) };
+    assert_eq!(read, size, "coalition lookup for {pid}");
+    [info[0], info[1]]
+}
+
+/// Every live process whose resource coalition is `id`.
+fn members(id: u64) -> Vec<i64> {
+    let mut pids = vec![0i32; 8192];
+    let bytes = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * 4) as i32) };
+    pids.truncate(bytes.max(0) as usize / 4);
+    let ours = |pid: &i32| {
+        let mut info = [0u64; 5];
+        let size = std::mem::size_of_val(&info) as i32;
+        unsafe { libc::proc_pidinfo(*pid, 20, 0, info.as_mut_ptr().cast(), size) == size && info[0] == id }
+    };
+    pids.iter().filter(|p| **p > 0 && ours(p)).map(|p| *p as i64).collect()
+}
+
+/// "<program> <grandchild>": a program with a child of its own, both in one terminal.
+fn tree(s: &Session, extra: &[&str]) -> (String, i64, i64) {
+    let id = run(s, &[extra, &["sh", "-c", "sleep 300 & echo \"$$ $!\"; wait"]].concat());
+    let mut pids = Vec::new();
+    wait_until("program and its child", || {
+        pids = text(s, &id).split_whitespace().filter_map(|w| w.parse::<i64>().ok()).collect();
+        pids.len() == 2
+    });
+    (id, pids[0], pids[1])
+}
+
 fn gui() -> bool {
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     let available = Command::new("/bin/launchctl").args(["print", &domain]).output().unwrap().status.success();
@@ -74,7 +107,7 @@ fn launchd_core_and_program_survive_the_launcher_and_leave_no_job() {
         line.contains("unset 0")
     });
     let program: i64 = line.split_whitespace().next().unwrap().parse().unwrap();
-    assert_eq!(coalition(program), coalition(core));
+    assert_ne!(coalition(program), coalition(core), "each terminal has a coalition of its own");
     s.json(&["server", "restart"]);
     wait_until("new core", || s.json(&["server", "status"])["pid"].as_i64() != Some(core));
     assert!(pid_alive(program), "holder kept the terminal across handover");
@@ -298,6 +331,270 @@ fn an_old_core_hands_over_to_an_independent_fixed_core() {
         program = text(&s, &fresh).trim().parse::<i64>().ok();
         program.is_some()
     });
-    assert_eq!(coalition(program.unwrap()), coalition(pid), "new holder and terminals belong to the fixed core");
+    assert_ne!(coalition(program.unwrap()), coalition(pid), "new terminals leave the core's coalition");
     assert_eq!(get(&s, &id)["state"], "live");
+}
+
+#[test]
+fn every_terminal_program_has_its_own_coalition() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let (a, a_program, a_child) = tree(&s, &[]);
+    let (_, b_program, _) = tree(&s, &[]);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    let (a_own, b_own, holder_own) = (coalitions(a_program), coalitions(b_program), coalitions(holder));
+    for (slot, name) in [(0, "resource"), (1, "jetsam")] {
+        assert_ne!(a_own[slot], holder_own[slot], "{name}: a program shares the holder's coalition");
+        assert_ne!(a_own[slot], b_own[slot], "{name}: two terminals share a coalition");
+        assert_ne!(a_own[slot], coalitions(core)[slot], "{name}: a program shares the core's coalition");
+    }
+    assert_eq!(coalitions(a_child), a_own, "a program's children stay with it");
+    assert_eq!(get(&s, &a)["pid"].as_i64(), Some(a_program), "the reported pid is the program, not a launcher");
+}
+
+#[test]
+fn ending_one_terminals_coalition_leaves_the_holder_and_other_terminals_alone() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let (a, a_program, a_child) = tree(&s, &["--keep"]);
+    let (b, b_program, _) = tree(&s, &[]);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    let id = coalitions(a_program)[0];
+    let all = members(id);
+    assert!(all.contains(&a_program) && all.contains(&a_child), "{all:?}");
+    assert!(!all.contains(&holder) && !all.contains(&core) && !all.contains(&b_program), "{all:?}");
+    // What a macOS force quit does to an app: every process of its coalition.
+    for pid in all {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    wait_until("the terminal's processes are gone", || members(id).is_empty());
+    wait_until("the kept terminal is recovered", || {
+        let r = get(&s, &a);
+        r["state"] == "live" && r["pid"].as_i64().is_some_and(|p| p != a_program)
+    });
+    assert!(pid_alive(holder) && pid_alive(core), "the holder and core outlived the force quit");
+    assert!(pid_alive(b_program) && get(&s, &b)["state"] == "live", "another terminal outlived it");
+    assert!(!pid_alive(a_child));
+}
+
+#[test]
+fn a_force_quit_of_an_unkept_terminal_is_an_exit() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let (a, a_program, _) = tree(&s, &[]);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if !independent(&s, core) {
+        return;
+    }
+    for pid in members(coalitions(a_program)[0]) {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    wait_until("exit reported", || get(&s, &a)["state"] == "finished");
+    assert_eq!(get(&s, &a)["reason"], "exited");
+}
+
+#[test]
+fn the_holder_has_its_own_coalition() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let id = run(&s, &["sleep", "300"]);
+    let status = s.json(&["server", "status"]);
+    let (core, holder) = (status["pid"].as_i64().unwrap(), status["holder"]["pid"].as_i64().unwrap());
+    if !independent(&s, core) {
+        return;
+    }
+    let own = coalitions(holder);
+    assert_ne!(own[0], coalitions(core)[0], "holder shares the core's resource coalition");
+    assert_ne!(own[1], coalitions(core)[1], "holder shares the core's jetsam coalition");
+    assert_eq!(get(&s, &id)["state"], "live");
+}
+
+fn direct_session() -> Session {
+    let mut s = Session::new();
+    s.env.push(("SSH_CONNECTION".into(), "test".into()));
+    s
+}
+
+fn holder_of(s: &Session) -> i64 {
+    s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap()
+}
+
+/// The program's pid and its limits, umask, folder and environment, as it sees them.
+fn view(s: &Session) -> String {
+    let id =
+        run(s, &["--cwd", "/var", "sh", "-c", "echo $$; ulimit -a; umask; pwd; env | sort | grep -v '^_='; sleep 300"]);
+    wait_until("program output", || text(s, &id).contains("HC_SESSION"));
+    text(s, &id)
+}
+
+#[test]
+fn a_program_started_through_a_job_sees_what_a_direct_one_does() {
+    if !gui() {
+        return;
+    }
+    let (launchd, direct) = (Session::new(), direct_session());
+    let seen = |s: &Session| {
+        let root = s.root.display().to_string();
+        let lines = view(s).replace(&root, "ROOT");
+        lines
+            .lines()
+            .skip(1)
+            .filter(|l| !l.starts_with("XPC_") && !l.starts_with("HC_SCOPE"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (a, b) = (seen(&launchd), seen(&direct));
+    if !independent(&launchd, launchd.json(&["server", "status"])["pid"].as_i64().unwrap()) {
+        return;
+    }
+    assert_eq!(a, b, "limits, umask, folder and environment");
+    for (s, name) in [(&launchd, "launchd"), (&direct, "direct")] {
+        let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/holder.log")).unwrap_or_default();
+        assert!(!log.contains("no launchd job"), "{name}: {log}");
+    }
+}
+
+#[test]
+fn start_errors_read_the_same_through_a_job_as_directly() {
+    if !gui() {
+        return;
+    }
+    let (launchd, direct) = (Session::new(), direct_session());
+    for args in [
+        vec!["/no/such/program"],
+        vec!["no-such-program-on-the-path"],
+        vec!["/etc/passwd"],
+        vec!["--cwd", "/no/such/folder", "sh"],
+    ] {
+        let (a, b) = (
+            launchd.err(&[&["run", "--bg"], args.as_slice()].concat()),
+            direct.err(&[&["run", "--bg"], args.as_slice()].concat()),
+        );
+        assert_eq!(a.1["error"]["kind"], "spawn_failed", "{a:?}");
+        assert_eq!(a.1["error"]["message"], b.1["error"]["message"], "{args:?}");
+    }
+}
+
+#[test]
+fn many_terminals_start_at_once_and_leave_no_job_or_stub_behind() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    run(&s, &["true"]);
+    let holder = holder_of(&s);
+    let ids: Vec<String> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..30)
+            .map(|i| {
+                scope.spawn({
+                    let s = &s;
+                    move || run(s, &["sh", "-c", &format!("echo up-{i}; seq 1 20000; exit {}", i % 5)])
+                })
+            })
+            .collect();
+        jobs.into_iter().map(|j| j.join().unwrap()).collect()
+    });
+    for (i, id) in ids.iter().enumerate() {
+        wait_until("finished", || get(&s, id)["state"] == "finished");
+        assert_eq!(get(&s, id)["exit_code"], i as i64 % 5);
+    }
+    let ours = format!("dev.herdr.core.{holder}.");
+    wait_until("no job, directory or stub of the holder's", || {
+        let jobs = Command::new("/bin/launchctl").arg("list").output().unwrap();
+        let stubs = Command::new("/bin/ps").args(["-axo", "command="]).output().unwrap();
+        let mine = format!("/tmp/hc-launchd-{holder}-");
+        !String::from_utf8_lossy(&jobs.stdout).contains(&ours)
+            && !String::from_utf8_lossy(&stubs.stdout).contains(&mine)
+            && !std::fs::read_dir("/tmp")
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with(&format!("hc-launchd-{holder}-")))
+    });
+}
+
+#[test]
+fn a_terminal_that_prints_a_lot_then_exits_loses_nothing() {
+    if !gui() {
+        return;
+    }
+    let s = Session::new();
+    let id = run(&s, &["sh", "-c", "seq 1 200000; (sleep 2 &); exit 7"]);
+    wait_until("finished", || get(&s, &id)["state"] == "finished");
+    let r = get(&s, &id);
+    assert_eq!((r["exit_code"].as_i64(), r["reason"].as_str()), (Some(7), Some("exited")));
+    assert!(text(&s, &id).contains("200000"));
+}
+
+#[test]
+fn programs_start_directly_when_the_job_binary_is_an_older_build() {
+    if !gui() {
+        return;
+    }
+    let Some(old) = std::env::var_os("HC_OLD_BIN") else {
+        eprintln!("skipping: no HC_OLD_BIN");
+        return;
+    };
+    let mut s = Session::new();
+    let bin = s.root.join("herdr-core");
+    std::fs::copy(BIN, &bin).unwrap();
+    s.bin = bin.clone();
+    run(&s, &["sleep", "300"]);
+    let (core, holder) = (s.json(&["server", "status"])["pid"].as_i64().unwrap(), holder_of(&s));
+    if !independent(&s, core) {
+        return;
+    }
+    // The holder now finds an older build at its path: its jobs end in a usage error.
+    std::fs::copy(&old, s.root.join("old")).unwrap();
+    std::fs::rename(s.root.join("old"), &bin).unwrap();
+    let started = std::time::Instant::now();
+    let id = run(&s, &["sh", "-c", "echo $$; exec sleep 300"]);
+    wait_until("direct start", || text(&s, &id).trim().parse::<i64>().is_ok());
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
+    assert_eq!(coalitions(text(&s, &id).trim().parse().unwrap()), coalitions(holder), "started by the holder itself");
+    let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/holder.log")).unwrap();
+    assert!(log.contains("starting programs directly"), "{log}");
+}
+
+#[test]
+fn ending_the_cores_coalition_leaves_the_holder_and_its_terminals_running() {
+    if !gui() {
+        return;
+    }
+    let mut s = Session::new();
+    s.env.push(("HC_HOLDER_GRACE_MS".into(), "200".into()));
+    let (a, program, _) = tree(&s, &[]);
+    let status = s.json(&["server", "status"]);
+    let (core, holder) = (status["pid"].as_i64().unwrap(), status["holder"]["pid"].as_i64().unwrap());
+    if !independent(&s, core) {
+        return;
+    }
+    // What a force quit does to an app that was started through `hc exec`, a core's own child.
+    let all = members(coalitions(core)[0]);
+    assert!(all.contains(&core) && !all.contains(&holder) && !all.contains(&program), "{all:?}");
+    for pid in all {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    wait_until("a new core", || {
+        let out = s.hc(&["server", "status"]);
+        out.status.success()
+            && serde_json::from_slice::<Value>(&out.stdout).is_ok_and(|v| v["pid"].as_i64() != Some(core))
+    });
+    assert!(pid_alive(holder) && pid_alive(program));
+    assert_eq!(get(&s, &a)["state"], "live");
 }

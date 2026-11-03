@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 // --- Connections -----------------------------------------------------------
 
@@ -500,7 +500,10 @@ pub struct Pty {
     master: File,
 }
 
-pub type Process = Child;
+#[cfg(not(target_os = "macos"))]
+pub type Process = std::process::Child;
+#[cfg(target_os = "macos")]
+pub use super::macos_stub::Process;
 
 /// Starts `argv` on a new terminal of `cols`x`rows`.
 pub fn spawn_pty(
@@ -510,7 +513,9 @@ pub fn spawn_pty(
     cols: u16,
     rows: u16,
 ) -> io::Result<(Pty, Process)> {
-    let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
+    if argv.is_empty() {
+        return Err(io::Error::other("empty argv"));
+    }
     let (mut master, mut slave) = (0, 0);
     let mut size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     if unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) } != 0
@@ -521,6 +526,21 @@ pub fn spawn_pty(
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
+    #[cfg(target_os = "macos")]
+    let child = super::macos_stub::start(argv, env, cwd, &slave)?;
+    #[cfg(not(target_os = "macos"))]
+    let child = pty_command(argv, env, cwd, &slave)?.spawn()?;
+    Ok((Pty { master }, child))
+}
+
+/// `argv` with `slave` as its terminal and controlling terminal.
+pub(super) fn pty_command(
+    argv: &[String],
+    env: &std::collections::BTreeMap<String, String>,
+    cwd: &str,
+    slave: &File,
+) -> io::Result<Command> {
+    let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
     let mut cmd = Command::new(program);
     cmd.args(&argv[1..])
         .env_clear()
@@ -528,7 +548,7 @@ pub fn spawn_pty(
         .current_dir(cwd)
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
-        .stderr(Stdio::from(slave));
+        .stderr(Stdio::from(slave.try_clone()?));
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
@@ -537,8 +557,7 @@ pub fn spawn_pty(
             Ok(())
         });
     }
-    let child = cmd.spawn()?;
-    Ok((Pty { master }, child))
+    Ok(cmd)
 }
 
 impl Pty {
@@ -580,6 +599,11 @@ impl Pty {
 
 /// Waits for it to end: (exit code, signal).
 pub fn wait(child: &mut Process) -> io::Result<(Option<i32>, Option<i32>)> {
+    #[cfg(target_os = "macos")]
+    let child = match child {
+        Process::Direct(child) => child,
+        Process::Stub(remote) => return remote.wait(),
+    };
     loop {
         match child.wait() {
             Ok(status) => return Ok((status.code(), status.signal())),

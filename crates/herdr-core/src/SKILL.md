@@ -219,6 +219,11 @@ paths start at your current folder. Prefer explicit paths for remote work.
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
+  Each terminal's program also starts in a job of its own (a small
+  `herdr-core --hc-launchd-spawn` process is its parent), so macOS force-quitting
+  an app a terminal started (it ends the app's whole coalition) ends only that
+  terminal's processes, never the holder or other terminals. If launchd fails,
+  programs start directly for a minute and the reason goes to `holder.log`.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

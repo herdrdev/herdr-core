@@ -685,7 +685,7 @@ impl Core {
         }
         let reason = if st.killing.remove(&id) {
             "killed"
-        } else if reason == "exited" && st.reg.terminals[&id].keep && exit.code.is_none() && exit.signal.is_some() {
+        } else if reason == "exited" && st.reg.terminals[&id].keep && exit.code.is_none() {
             "signaled"
         } else {
             reason
