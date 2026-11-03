@@ -302,8 +302,11 @@ pub fn serve(socket: &Path) -> io::Result<()> {
     unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
     let mut line = String::new();
     BufReader::new(&sock).read_line(&mut line)?;
-    let started = serde_json::from_str::<Spec>(&line)
-        .map_err(io::Error::from)
+    // A spec cut short by the holder's write timeout must not start a program the holder will start again.
+    let started = Some(&line)
+        .filter(|l| l.ends_with('\n'))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
+        .and_then(|l| serde_json::from_str::<Spec>(l).map_err(io::Error::from))
         .and_then(|spec| {
             launchd::restore_limits(&spec.limits)?;
             let cmd =

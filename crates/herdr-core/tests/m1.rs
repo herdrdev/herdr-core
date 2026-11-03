@@ -518,6 +518,7 @@ fn input_right_after_a_spawn_reaches_the_program() {
     let s = Session::new();
     let (_holder, socket) = raw_holder(&s, "behind");
     let (mut core, _) = raw_hello(&socket);
+    core.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     raw_spawn(&mut core, 1, &["sh", "-c", "read line; echo got-$line"]);
     raw_send(&mut core, proto::frame(proto::INPUT, 1, b"x\n"));
     let mut printed = Vec::new();
