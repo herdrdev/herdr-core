@@ -1,6 +1,7 @@
 //! macOS release orchestration, without production identities or credentials.
 #![cfg(unix)]
 
+use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -38,10 +39,10 @@ fn stub(s: &Scratch, name: &str, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-fn script(s: &Scratch, name: &str) -> Command {
+fn script(s: &Scratch, name: &str, args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg(format!("{ROOT}/scripts/{name}"))
-        .arg(s.root.join("herdr-core"))
+        .args(args)
         .env("PATH", format!("{}:{}", s.root.join("tools").display(), std::env::var("PATH").unwrap()))
         .env("CALLS", s.root.join("calls"))
         .env_remove("APPLE_CERTIFICATE_P12")
@@ -54,7 +55,7 @@ fn mac_sign_uses_runtime_and_entitlements_even_for_ad_hoc_builds() {
     let s = Scratch::new();
     stub(&s, "codesign", "exit 0");
     std::fs::create_dir_all(s.root.join("herdr-core/Contents/MacOS")).unwrap();
-    let out = script(&s, "mac-sign").output().unwrap();
+    let out = script(&s, "mac-sign", [s.root.join("herdr-core")]).output().unwrap();
     assert!(out.status.success(), "{out:?}");
     let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
     assert!(calls.contains("--options runtime"), "{calls}");
@@ -88,15 +89,7 @@ fn release_archive_binaries_verify_independently() {
         ("mac-sign", vec![bin]),
         ("package", vec![app, archive.clone()]),
     ] {
-        let out = Command::new("bash")
-            .arg(format!("{ROOT}/scripts/{name}"))
-            .args(args)
-            .env("PATH", format!("{}:{}", s.root.join("tools").display(), std::env::var("PATH").unwrap()))
-            .env("CALLS", s.root.join("calls"))
-            .env_remove("APPLE_CERTIFICATE_P12")
-            .env_remove("APPLE_CERTIFICATE_PASSWORD")
-            .output()
-            .unwrap();
+        let out = script(&s, name, args).output().unwrap();
         assert!(out.status.success(), "{name}: {out:?}");
     }
     let extracted = s.root.join("extracted");
@@ -137,7 +130,7 @@ fn production_signing_covers_both_release_targets() {
             "security",
             "case $1 in list-keychains) if [ $# = 3 ]; then echo '\"/test/login.keychain-db\"'; fi ;; find-identity) echo '1) ABCDEF \"Developer ID Application: Test\"' ;; esac",
         );
-        let out = script(&s, "mac-sign")
+        let out = script(&s, "mac-sign", [s.root.join("herdr-core")])
             .env("APPLE_CERTIFICATE_P12", "dGVzdA==")
             .env("APPLE_CERTIFICATE_PASSWORD", "test-password")
             .output()
@@ -183,7 +176,7 @@ fn notarization_requires_acceptance_before_gatekeeper_assessment() {
             "xcrun",
             "case $2 in submit) printf '{\"id\":\"test-id\",\"status\":\"%s\"}\\n' \"$NOTARY_STATUS\" ;; log) for last; do :; done; echo '{}' > \"$last\" ;; esac",
         );
-        let out = script(&s, "mac-notarize")
+        let out = script(&s, "mac-notarize", [s.root.join("herdr-core")])
             .env("APPLE_API_KEY", "test-private-key")
             .env("APPLE_API_KEY_ID", "test-key-id")
             .env("APPLE_API_ISSUER", "test-issuer")
