@@ -21,7 +21,7 @@ need tar
 
 case "$(uname -s)" in
   Linux) os=linux ;;
-  Darwin) os=macos; [ "$(id -u)" != 0 ] || fail "install as your user, not with sudo" ;;
+  Darwin) os=macos ;;
   *) fail "hc runs on Linux and macOS for now" ;;
 esac
 case "$(uname -m)" in
@@ -71,7 +71,11 @@ if [ "${HC_BUNDLE_ONLY:-0}" = 1 ] && [ ! -x "$tmp/Herdr Core.app/Contents/MacOS/
 fi
 mkdir -p "$bin"
 
-if [ "$os" = macos ] && [ -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; then
+bundle=0
+if [ "$os" = macos ] && [ "$(id -u)" != 0 ]; then
+  case "$bin" in "$HOME"/*) bundle=1 ;; esac
+fi
+if [ "$bundle" = 1 ] && [ -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; then
   action=installed
   [ ! -x "$bin/herdr-core" ] || action=updated
   bundled="$tmp/Herdr Core.app/Contents/MacOS/herdr-core"

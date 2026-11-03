@@ -84,7 +84,7 @@ fn sha256(file: &Path) -> Option<String> {
 /// checks it against the list, unpacks it: the path of its herdr-core.
 /// Windows builds are a zip (the exe and its ConPTY); Windows' own tar
 /// unpacks it.
-pub fn download(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, RpcError> {
+pub fn download(m: &Manifest, target: &str, scratch: &Path, bundle: bool) -> Result<PathBuf, RpcError> {
     let tar = fetch(m, target, scratch)?;
     let exe = if target.starts_with("windows") { "herdr-core.exe" } else { "herdr-core" };
     let ok =
@@ -92,7 +92,7 @@ pub fn download(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, R
     // Root executable remains in macOS archives for old updaters. New ones
     // carry the entire signed bundle through installation instead.
     let bundled = scratch.join("Herdr Core.app/Contents/MacOS/herdr-core");
-    let bin = if target.starts_with("macos-") && bundled.is_file() { bundled } else { scratch.join(exe) };
+    let bin = if bundle && target.starts_with("macos-") && bundled.is_file() { bundled } else { scratch.join(exe) };
     if !ok || !bin.is_file() {
         return Err(RpcError::new(
             "refused",

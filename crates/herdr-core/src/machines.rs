@@ -482,12 +482,10 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
         ));
     }
     // Same OS and CPU: this very hc. Else this version's released build for it.
-    let exe = if there == here {
-        std::env::current_exe()
-            .and_then(std::fs::read)
-            .map_err(|e| RpcError::internal(format!("cannot read this hc: {e}")))?
+    let scratch = crate::releases::Scratch::new()?;
+    let bin = if there == here {
+        std::env::current_exe().map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?
     } else {
-        let scratch = crate::releases::Scratch::new()?;
         let version = env!("CARGO_PKG_VERSION");
         let not_released = |_| {
             RpcError::new(
@@ -497,11 +495,21 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
             )
         };
         let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
-        let bin = crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0)?;
-        std::fs::read(bin).map_err(|e| RpcError::internal(e.to_string()))?
+        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, true)?
     };
+    let (exe, bundled) = install_payload(&bin, &scratch.0)?;
     let n = exe.len();
     let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
+    if bundled {
+        let script = format!(
+            "set -e; d=$HOME/.local/bin; mkdir -p \"$d\"; t=$(mktemp -d); trap \"rm -rf \\\"$t\\\"\" EXIT; \
+             head -c {n} > \"$t/core.tar\"; [ $(wc -c < \"$t/core.tar\") -eq {n} ]; \
+             tar -xf \"$t/core.tar\" -C \"$t\"; b=\"$t/Herdr Core.app/Contents/MacOS/herdr-core\"; \
+             \"$b\" --hc-install-bundle \"$b\" \"$d/herdr-core\"; \
+             {session}\"$d/herdr-core\" server restart > /dev/null; \"$d/herdr-core\" --version"
+        );
+        return run_there(paths, to, &format!("sh -c '{script}'"), &exe);
+    }
     // Into a temp file beside the target, checked whole and running, then swapped.
     let script = format!(
         "set -e; d=$HOME/.local/bin; mkdir -p $d; rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
@@ -511,6 +519,31 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
          {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
     );
     run_there(paths, to, &format!("sh -c '{script}'"), &exe)
+}
+
+fn install_payload(bin: &Path, scratch: &Path) -> Result<(Vec<u8>, bool), RpcError> {
+    let bundled = bin.ends_with("Herdr Core.app/Contents/MacOS/herdr-core");
+    let path = if bundled {
+        let root = bin.parent().unwrap().parent().unwrap().parent().unwrap();
+        let archive = scratch.join("core-bundle.tar");
+        let status = std::process::Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(root.parent().unwrap())
+            .arg("Herdr Core.app")
+            .env("COPYFILE_DISABLE", "1")
+            .status()
+            .map_err(|e| RpcError::internal(e.to_string()))?;
+        if !status.success() {
+            return Err(RpcError::internal("cannot pack the core bundle"));
+        }
+        archive
+    } else {
+        bin.to_path_buf()
+    };
+    let bytes = std::fs::read(path).map_err(|e| RpcError::internal(e.to_string()))?;
+    Ok((bytes, bundled))
 }
 
 /// Windows there: this version's release zip and the installer go to its

@@ -9,6 +9,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
+#[test]
+fn calendar_and_reminder_descriptions_cover_macos_13_and_14() {
+    let plist = include_str!("../../../distribution/macos-Info.plist");
+    for service in ["Calendars", "Reminders"] {
+        for access in ["", "FullAccess"] {
+            assert!(plist.contains(&format!("<key>NS{service}{access}UsageDescription</key>")));
+        }
+    }
+}
+
 struct Scratch {
     root: PathBuf,
 }

@@ -42,12 +42,56 @@ pub fn verify(path: &Path, local: bool) -> io::Result<()> {
     Err(io::Error::other("expected Herdr's Developer ID signature (dev.herdr.core, team 2W9652Q7QR)"))
 }
 
-fn link(target: &Path, dest: &Path) -> io::Result<()> {
-    let staged = dest.with_file_name(format!(".hc-link-{}", super::random_hex()));
-    std::os::unix::fs::symlink(target, &staged)?;
-    let result = std::fs::rename(&staged, dest);
-    let _ = std::fs::remove_file(staged);
-    result
+struct Link {
+    dest: PathBuf,
+    staged: PathBuf,
+    backup: PathBuf,
+    existed: bool,
+    published: bool,
+}
+
+impl Link {
+    fn stage(target: &Path, dest: &Path) -> io::Result<Option<Self>> {
+        if std::fs::read_link(dest).ok().as_deref() == Some(target) {
+            return Ok(None);
+        }
+        let link = Self {
+            dest: dest.to_path_buf(),
+            staged: dest.with_file_name(format!(".hc-link-{}", super::random_hex())),
+            backup: dest.with_file_name(format!(".hc-backup-{}", super::random_hex())),
+            existed: dest.symlink_metadata().is_ok(),
+            published: false,
+        };
+        std::os::unix::fs::symlink(target, &link.staged)?;
+        if link.existed {
+            std::fs::hard_link(dest, &link.backup)?;
+        }
+        Ok(Some(link))
+    }
+
+    fn publish(&mut self) -> io::Result<()> {
+        std::fs::rename(&self.staged, &self.dest)?;
+        self.published = true;
+        Ok(())
+    }
+
+    fn rollback(&self) -> io::Result<()> {
+        if !self.published {
+            return Ok(());
+        }
+        if self.existed { std::fs::rename(&self.backup, &self.dest) } else { std::fs::remove_file(&self.dest) }
+    }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.staged);
+        let _ = std::fs::remove_file(&self.backup);
+    }
+}
+
+pub fn bundle_destination(dest: &Path) -> bool {
+    (unsafe { libc::geteuid() != 0 }) && std::env::var_os("HOME").is_some_and(|home| dest.starts_with(home))
 }
 
 fn executable_is_gone(error: &io::Error) -> bool {
@@ -228,14 +272,31 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
         if !works(&staged.join(EXECUTABLE)) {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        let mut links = Vec::new();
+        for (target, entry) in std::iter::once((active.clone(), current.clone()))
+            .chain(entries.into_iter().map(|entry| (current.join(EXECUTABLE), entry)))
+            .chain(legacy.symlink_metadata().is_err().then(|| (current.clone(), legacy.clone())))
+        {
+            if let Some(link) = Link::stage(&target, &entry)? {
+                links.push(link);
+            }
+        }
+        let replacing = active.exists();
         activate(&staged, &active)?;
         activated = true;
-        link(&active, &current)?;
-        for entry in entries {
-            link(&current.join(EXECUTABLE), &entry)?;
-        }
-        if legacy.symlink_metadata().is_err() {
-            link(&current, &legacy)?;
+        for index in 0..links.len() {
+            if let Err(error) = links[index].publish() {
+                let mut rollback_error = None;
+                for link in links[..index].iter().rev() {
+                    if let Err(error) = link.rollback() {
+                        rollback_error = Some(error);
+                    }
+                }
+                let restored = if replacing { activate(&staged, &active) } else { std::fs::rename(&active, &staged) };
+                restored?;
+                activated = false;
+                return Err(rollback_error.unwrap_or(error));
+            }
         }
         Ok(())
     })();
@@ -279,6 +340,7 @@ pub fn needs_bundle_update() -> bool {
     std::env::current_exe().and_then(|p| p.canonicalize()).is_ok_and(|exe| {
         bundle(&exe).is_none()
             && !exe.ancestors().any(|p| p.extension().is_some_and(|e| e == "app"))
+            && bundle_destination(&exe)
             && crate::client::installed_by().is_none()
             && verify(&exe, false).is_ok()
     })

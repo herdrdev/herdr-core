@@ -255,7 +255,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   if the version is already current. The app completes this during its update.
   Startup never downloads updates. Previous bundles stay on disk while their
   cores or holders run; later installs reclaim unused previous bundles.
-  Install as your user, not with sudo.
+  Per-user installs use the bundle. Root/system destinations keep the independently
+  signed standalone executable and their existing macOS privacy behavior.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may

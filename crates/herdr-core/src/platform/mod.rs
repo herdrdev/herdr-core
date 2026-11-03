@@ -56,6 +56,15 @@ pub fn core_executable(exe: &std::path::Path) -> std::path::PathBuf {
     exe.to_path_buf()
 }
 
+pub fn prefer_release_bundle() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::current_exe().is_ok_and(|exe| macos_bundle::bundle_destination(&exe))
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 pub fn needs_bundle_update() -> bool {
     #[cfg(target_os = "macos")]
     {

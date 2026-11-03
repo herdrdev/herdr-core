@@ -20,6 +20,8 @@
     <key>NSNetworkVolumesUsageDescription</key><string>Programs running in Herdr terminals can read and change files on network volumes.</string>
     <key>NSRemovableVolumesUsageDescription</key><string>Programs running in Herdr terminals can read and change files on removable volumes.</string>
     <key>NSContactsUsageDescription</key><string>Programs running in Herdr terminals can access your contacts at your request.</string>
+    <key>NSCalendarsUsageDescription</key><string>Programs running in Herdr terminals can access your calendars at your request.</string>
+    <key>NSRemindersUsageDescription</key><string>Programs running in Herdr terminals can access your reminders at your request.</string>
     <key>NSCalendarsFullAccessUsageDescription</key><string>Programs running in Herdr terminals can access your calendars at your request.</string>
     <key>NSRemindersFullAccessUsageDescription</key><string>Programs running in Herdr terminals can access your reminders at your request.</string>
     <key>NSPhotoLibraryUsageDescription</key><string>Programs running in Herdr terminals can access your photos at your request.</string>
