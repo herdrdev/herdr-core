@@ -600,7 +600,7 @@ fn a_slow_program_start_does_not_stop_the_output_of_other_terminals() {
     }
     let ticks = |s: &Session| {
         let seen = text(s, &ticker);
-        seen.lines().filter_map(|l| l.strip_prefix("tick")?.trim().parse::<usize>().ok()).last().unwrap_or(0)
+        seen.lines().filter_map(|l| l.strip_prefix("tick")?.trim().parse::<usize>().ok()).next_back().unwrap_or(0)
     };
     // The start that follows waits several seconds for a job that never answers.
     let failing = std::thread::scope(|scope| {
