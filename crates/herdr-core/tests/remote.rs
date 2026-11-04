@@ -232,6 +232,16 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn a_send_from_a_plain_shell_on_another_machine_arrives_as_is() {
+    let (_rohan, s) = with_rohan();
+    let agent = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("the agent reports", || get(&s, &agent)["reported"] == true);
+    s.json(&["send", &agent, "hello-plain"]);
+    wait_until("the text", || text(&s, &agent).contains("hello-plain"));
+    assert!(!text(&s, &agent).contains("<hc"), "a shell is not an agent: {}", text(&s, &agent));
+}
+
+#[test]
 fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     let mut rohan = Session::new();
     rohan.env.extend(
