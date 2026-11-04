@@ -28,8 +28,7 @@ fn destination(info: &crate::api::CoreInfo, st: &State, selector: &str) -> Strin
 #[test]
 fn permanent_ids_cannot_be_shadowed_by_display_names() {
     let mut info = crate::api::CoreInfo { id: "local-id".into(), name: "local-name".into() };
-    let mut st = State::default();
-    st.machines = vec![machine("core-a", "core-b"), machine("core-b", "second")];
+    let mut st = State { machines: vec![machine("core-a", "core-b"), machine("core-b", "second")], ..State::default() };
     for _ in 0..2 {
         assert_eq!(destination(&info, &st, "core-b"), "core-b");
         st.machines.reverse();
@@ -48,8 +47,7 @@ fn permanent_ids_cannot_be_shadowed_by_display_names() {
 #[test]
 fn unambiguous_display_names_keep_working() {
     let info = crate::api::CoreInfo { id: "local-id".into(), name: "local-name".into() };
-    let mut st = State::default();
-    st.machines = vec![machine("core-a", "machine-name")];
+    let mut st = State { machines: vec![machine("core-a", "machine-name")], ..State::default() };
     st.peers.insert("peer-a".into(), peer("peer-name"));
     for (selector, expected) in [("local-name", "local-id"), ("machine-name", "core-a"), ("peer-name", "peer-a")] {
         assert_eq!(destination(&info, &st, selector), expected);
