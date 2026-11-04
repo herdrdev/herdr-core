@@ -79,6 +79,14 @@ struct Draft {
     pending: bool,
     escape: Vec<u8>,
     pasted: bool,
+    control_string: Option<ControlString>,
+    before_string: bool,
+}
+
+struct ControlString {
+    osc: bool,
+    selector: bool,
+    escaped: bool,
 }
 
 impl Draft {
@@ -97,11 +105,52 @@ impl Draft {
                 }
                 continue;
             }
+            if let Some(reply) = &mut self.control_string {
+                if (reply.escaped && byte == b'\\') || (reply.osc && !reply.selector && byte == 7) {
+                    self.pending = self.before_string;
+                    self.control_string = None;
+                    continue;
+                }
+                let invalid = matches!(byte, b'\r' | b'\n' | 3 | 21 | 127)
+                    || (reply.escaped && byte != b'\\')
+                    || (reply.selector && !byte.is_ascii_digit() && byte != b';');
+                if !invalid {
+                    reply.selector &= byte != b';';
+                    reply.escaped = byte == 0x1b;
+                    continue;
+                }
+                if reply.escaped {
+                    self.escape.push(0x1b);
+                }
+                self.control_string = None;
+            }
+            if let [0x1b, kind @ (b'_' | b']' | b'P')] = self.escape.as_slice() {
+                let reply = match kind {
+                    b'_' => byte == b'G',
+                    b']' => byte.is_ascii_digit(),
+                    b'P' => byte.is_ascii_digit() || matches!(byte, b'>' | b'!' | b'+' | b'$'),
+                    _ => unreachable!(),
+                };
+                if reply {
+                    self.control_string =
+                        Some(ControlString { osc: *kind == b']', selector: *kind == b']', escaped: false });
+                    self.escape.clear();
+                    continue;
+                }
+                // Not a reply prefix: retain the Alt key and process this byte normally.
+                self.key(u32::from(*kind));
+                self.escape.clear();
+            }
             if byte == 0x1b {
                 self.escape.clear();
                 self.escape.push(byte);
             } else if !self.escape.is_empty() {
                 self.escape.push(byte);
+                if self.escape.len() == 2 && matches!(byte, b'_' | b']' | b'P') {
+                    self.before_string = self.pending;
+                    self.pending = true;
+                    continue;
+                }
                 if self.escape.len() == 2 && matches!(byte, b'[' | b'O') {
                     continue;
                 }
@@ -628,6 +677,110 @@ mod tests {
             draft.feed(key);
             assert!(draft.pending, "navigation must preserve an existing draft: {key:?}");
         }
+    }
+
+    #[test]
+    fn control_string_replies_do_not_create_or_clear_drafts() {
+        for reply in [
+            b"\x1b_Gi=31;OK\x1b\\".as_slice(),
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\",
+            b"\x1b]11;rgb:0000/0000/0000\x07",
+            b"\x1bP>|terminal-name\x1b\\",
+            b"\x1bP1+r544e=787465726d\x1b\\",
+            b"\x1bP!|1234\x1b\\",
+            b"\x1bP+r544e=787465726d\x1b\\",
+            b"\x1bP$r0m\x1b\\",
+        ] {
+            for split in 0..=reply.len() {
+                let mut draft = Draft::default();
+                draft.feed(&reply[..split]);
+                draft.feed(&reply[split..]);
+                assert!(!draft.pending, "reply: {reply:?}, split {split}");
+            }
+            let mut draft = Draft::default();
+            for byte in reply {
+                draft.feed(&[*byte]);
+            }
+            assert!(!draft.pending, "bytewise reply: {reply:?}");
+            draft.feed(b"x");
+            assert!(draft.pending, "tracking resumes after reply: {reply:?}");
+            for byte in reply {
+                draft.feed(&[*byte]);
+                assert!(draft.pending, "reply must preserve typing: {reply:?}");
+            }
+            draft.feed(b"\r");
+            assert!(!draft.pending);
+        }
+    }
+
+    #[test]
+    fn long_control_string_replies_preserve_the_previous_draft() {
+        for reply in
+            [format!("\x1b]52;c;{}\x07", "YWFh".repeat(256)), format!("\x1bP1+r544e={}\x1b\\", "78".repeat(512))]
+        {
+            for pending in [false, true] {
+                for chunk_size in [1, 31, reply.len()] {
+                    let mut draft = Draft { pending, ..Default::default() };
+                    for chunk in reply.as_bytes().chunks(chunk_size) {
+                        draft.feed(chunk);
+                    }
+                    assert_eq!(draft.pending, pending, "long reply with chunks of {chunk_size}");
+                    draft.feed(b"\r");
+                    assert!(!draft.pending);
+                    draft.feed(b"y");
+                    assert!(draft.pending);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alt_control_string_introducers_with_ordinary_text_are_drafts() {
+        for key in [b"\x1b]hello".as_slice(), b"\x1b_world", b"\x1bPlease", b"\x1b]\r"] {
+            let mut draft = Draft::default();
+            for byte in key {
+                draft.feed(&[*byte]);
+            }
+            assert_eq!(draft.pending, !key.ends_with(b"\r"), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn standalone_alt_introducers_protect_drafts_until_a_reply_completes() {
+        for key in [b"\x1b]".as_slice(), b"\x1b_", b"\x1bP"] {
+            let mut draft = Draft::default();
+            draft.feed(key);
+            assert!(draft.pending, "standalone Alt key: {key:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_control_strings_return_to_typing_and_clear_keys() {
+        for prefix in [b"\x1b]1hello".as_slice(), b"\x1b_Ghello", b"\x1bP>hello"] {
+            for invalid in [b'\r', b'\n', 3, 21, 127] {
+                let mut draft = Draft::default();
+                draft.feed(b"old draft");
+                for byte in prefix {
+                    draft.feed(&[*byte]);
+                }
+                draft.feed(&[invalid]);
+                assert_eq!(draft.pending, matches!(invalid, b'\n' | 127), "{prefix:?}, {invalid}");
+                draft.feed(b"new draft");
+                assert!(draft.pending);
+            }
+            let mut draft = Draft::default();
+            draft.feed(prefix);
+            draft.feed(b"\x1b");
+            draft.feed(b"[97u");
+            assert!(draft.pending, "a new escape sequence aborts the candidate: {prefix:?}");
+            draft.feed(b"\r");
+            assert!(!draft.pending);
+        }
+        let mut draft = Draft::default();
+        draft.feed(b"\x1b]1h");
+        assert!(draft.pending, "OSC selectors require a semicolon, not ordinary text");
+        draft.feed(b"\x07");
+        assert!(draft.pending, "an invalid OSC cannot later be completed as a reply");
     }
 
     #[test]
