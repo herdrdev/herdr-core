@@ -40,9 +40,9 @@ fi
 codesign --verify --strict "$bin"
 # Without a stapled ticket, Gatekeeper can call a just-accepted executable
 # unnotarized for a few minutes.
-for try in {1..20}; do
+for try in {1..40}; do
   spctl --assess "${assess[@]}" --verbose=2 "$bin" && exit 0
-  ((try == 20)) || sleep 30
+  ((try == 40)) || sleep 30
 done
 echo 'Gatekeeper still rejects the notarized executable' >&2
 exit 1

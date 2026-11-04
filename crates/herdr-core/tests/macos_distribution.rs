@@ -226,6 +226,6 @@ fn gatekeeper_assessment_waits_for_a_fresh_ticket() {
             .unwrap();
         assert_eq!(out.status.success(), success, "{out:?}");
         let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
-        assert_eq!(calls.lines().filter(|l| l.starts_with("spctl")).count(), if success { 3 } else { 20 }, "{calls}");
+        assert_eq!(calls.lines().filter(|l| l.starts_with("spctl")).count(), if success { 3 } else { 40 }, "{calls}");
     }
 }
