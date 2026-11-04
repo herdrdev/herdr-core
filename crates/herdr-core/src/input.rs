@@ -354,6 +354,8 @@ impl Core {
             // Also notice submit/clear or an exit while waiting.
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
+        // An operation with nothing left to type (no unseen notes) submits nothing.
+        let submits = !steps.is_empty();
         for step in steps {
             match step {
                 Step::FirstTask(bytes) => {
@@ -377,7 +379,7 @@ impl Core {
         }
         let mut st = self.lock();
         let gate = st.gates.entry(id).or_default();
-        if protect_draft {
+        if protect_draft && submits {
             gate.submitted();
         }
         let held = gate.set_busy(false);

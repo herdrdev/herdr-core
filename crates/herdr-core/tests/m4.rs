@@ -358,6 +358,24 @@ fn autonomous_work_does_not_consume_a_persons_draft() {
 }
 
 #[test]
+fn a_note_with_nothing_left_to_say_keeps_a_persons_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
+    let p = run(&s, "stty -echo; r state=idle; while IFS= read -r l; do echo submitted:$l; done");
+    wait_until("idle", || status(&s, &p) == "idle");
+    let mut person = Viewer::attach(&s, &p, 80, 24, json!({}));
+    person.typed(b"half-written draft");
+    person.conn.call("terminal.get", json!({"terminal": p}));
+    // A live child's finished turn is the child's to report: its note op types nothing.
+    let body = "r(){ printf '\\033]7501;%s\\033\\\\' \"$1\"; }; r state=working; sleep 0.2; r state=done; sleep 100";
+    let kid = s.json(&["run", "--bg", "--parent", &p, "sh", "-c", body])["address"].as_str().unwrap().to_string();
+    wait_until("child done", || status(&s, &kid) == "done");
+    std::thread::sleep(Duration::from_millis(1800));
+    let sent = s.json(&["send", &p, "agent-message"]);
+    assert_eq!(sent["waited_for_person"], true, "an empty note submitted nothing: {sent}");
+}
+
+#[test]
 fn a_program_that_never_reads_its_input_stalls_nobody() {
     let s = session();
     // Raw mode: the terminal driver blocks writers instead of dropping input.
