@@ -245,8 +245,8 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
         if ours || (hc.symlink_metadata().is_err() && !on_path) {
             entries.push(hc);
         }
-    } else {
-        // Public links always resolve through current, never retained storage.
+    } else if dest != active.join(EXECUTABLE) {
+        // Aliases to active survive swaps; only migrate aliases from older layouts.
         let mut dirs = vec![home.join(".local/bin")];
         if let Some(dir) = std::env::var_os("HC_INSTALL_DIR") {
             dirs.push(PathBuf::from(dir));
