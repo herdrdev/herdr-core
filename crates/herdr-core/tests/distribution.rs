@@ -524,6 +524,7 @@ fn install_script_downloads(s: &Session, url: &str, releases: &str, installed: b
         .arg(format!("{ROOT}/../../distribution/install.sh"))
         .env("PATH", format!("{}:/usr/bin:/bin", stub.display()))
         .env("HERDR_RELEASES_URL", releases)
+        .env_remove("HC_VERSION")
         .env("HC_INSTALL_DIR", &bin)
         .output()
         .unwrap();
