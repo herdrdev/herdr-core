@@ -327,6 +327,9 @@ fn identity_env() -> std::collections::BTreeMap<String, String> {
 /// program's argument that happens to read `--json`.
 fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcError> {
     let paths = Paths::from_env()?;
+    if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
+        crate::platform::legacy_bundle_notice(&paths.state);
+    }
     let Some(cmd) = cmd else {
         return bare(&paths, json);
     };

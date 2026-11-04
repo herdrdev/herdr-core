@@ -354,10 +354,16 @@ pub fn needs_bundle_update() -> bool {
 }
 
 pub fn legacy_notice(state: &Path) {
-    if needs_bundle_update()
+    if needs_bundle_update() {
+        legacy_notice_once(state, &mut std::io::stderr());
+    }
+}
+
+fn legacy_notice_once(state: &Path, out: &mut impl std::io::Write) {
+    if super::private_dir(state).is_ok()
         && std::fs::OpenOptions::new().write(true).create_new(true).open(state.join("bundle-upgrade-notice")).is_ok()
     {
-        eprintln!("hc: run hc update to finish installing Herdr Core");
+        let _ = writeln!(out, "hc: run hc update to finish installing Herdr Core");
     }
 }
 
@@ -368,6 +374,18 @@ pub fn source_is_bundle(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_legacy_notice_reaches_stderr_once_even_before_the_core_has_started() {
+        let root = std::env::temp_dir().join(format!("hc-notice-{}", super::super::random_hex()));
+        let state = root.join("state");
+        let mut out = Vec::new();
+        legacy_notice_once(&state, &mut out);
+        legacy_notice_once(&state, &mut out);
+        assert_eq!(out, b"hc: run hc update to finish installing Herdr Core\n");
+        assert!(state.join("bundle-upgrade-notice").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_the_exact_bundle_executable_has_a_bundle_root() {
         assert_eq!(
