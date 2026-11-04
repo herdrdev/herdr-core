@@ -36,6 +36,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
         .unwrap();
     // Ignore attach's resize frames. From here the fake holder sees only input.
     while frames.try_recv().is_ok() {}
+    core.output(&mut core.lock(), id, b"\x1b]7501;state=working\x1b\\");
     {
         let sending = core.send(id, "abc", false, None);
         tokio::pin!(sending);
@@ -48,10 +49,23 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
         assert!(frames.try_recv().is_err());
         core.viewer_input(&person, channel, b"Z", false);
         assert!(frames.try_recv().is_err(), "the person's keys must stay held");
+        core.output(&mut core.lock(), id, b"\x1b]7501;state=done\x1b\\");
         tokio::time::advance(crate::input::PASTE_GAP).await;
         sending.await.unwrap();
         assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\r"));
         assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"Z"));
+    }
+    // The injected Enter's acknowledgement arrives after the held draft was flushed.
+    core.output(&mut core.lock(), id, b"\x1b]7501;state=working\x1b\\");
+    {
+        let next = core.type_in(id, Duration::ZERO, true, |_, _| Ok(((), vec![])));
+        tokio::pin!(next);
+        poll_fn(|cx| {
+            assert!(next.as_mut().poll(cx).is_pending(), "the delayed working report must preserve the fresh draft");
+            Poll::Ready(())
+        })
+        .await;
+        assert!(core.lock().gates[&id].waiting_for_person);
     }
     drop(core);
     remove_root(&root);

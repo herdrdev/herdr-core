@@ -292,10 +292,7 @@ fn multiline_newlines_hold_messages_after_the_person_pauses() {
 fn a_draft_hold_has_a_cap_and_still_delivers_the_message() {
     let mut s = session();
     s.env.push(("HC_DRAFT_MS".into(), "1200".into()));
-    let t = run(
-        &s,
-        "stty -echo; r state=idle; while IFS= read -r l; do echo submitted:$l; r state=working; r state=done; done",
-    );
+    let t = run(&s, "stty -echo; r state=idle; while IFS= read -r l; do echo submitted:$l; done");
     wait_until("idle", || status(&s, &t) == "idle");
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
     person.typed(b"old draft ");
@@ -312,6 +309,52 @@ fn a_draft_hold_has_a_cap_and_still_delivers_the_message() {
     assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
     shows(&s, &t, "submitted:old draft eventual message");
     assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
+    let next = s.json(&["send", &t, "next message"]);
+    assert_eq!(next["waited_for_person"], false, "the previous delivery consumed the draft: {next}");
+    shows(&s, &t, "submitted:next message");
+}
+
+#[test]
+fn single_key_approvals_release_drafts_when_the_program_moves_on() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
+    for (before, after) in [("blocked", "working"), ("blocked", "idle")] {
+        let script = format!(
+            "stty raw -echo; r state={before}; dd bs=1 count=1 >/dev/null 2>&1; \
+             r state={after}; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done"
+        );
+        let t = run(&s, &script);
+        wait_until("initial status", || status(&s, &t) == before);
+        let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+        person.typed(b"y");
+        wait_until("approval consumed", || status(&s, &t) == after);
+        let sent = s.json(&["send", &t, "agent-message"]);
+        assert_eq!(sent["waited_for_person"], false, "{before} -> {after}: {sent}");
+        assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
+        shows(&s, &t, "61");
+    }
+}
+
+#[test]
+fn autonomous_work_does_not_consume_a_persons_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
+    let script = format!(
+        "stty raw -echo; r state=idle; while [ ! -e {0}/resume ]; do sleep 0.02; done; \
+         r state=working; while [ ! -e {0}/finish ]; do sleep 0.02; done; r state=done; cat",
+        s.root.display()
+    );
+    let t = run(&s, &script);
+    wait_until("idle", || status(&s, &t) == "idle");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"half-written draft");
+    person.conn.call("terminal.get", json!({"terminal": t}));
+    touch(&s, "resume");
+    wait_until("autonomous work", || status(&s, &t) == "working");
+    touch(&s, "finish");
+    wait_until("autonomous completion", || status(&s, &t) == "done");
+    let sent = s.json(&["send", &t, "agent-message"]);
+    assert_eq!(sent["waited_for_person"], true, "autonomous work must preserve the draft: {sent}");
 }
 
 #[test]

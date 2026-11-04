@@ -7,6 +7,8 @@ use std::process::Command;
 pub const EXECUTABLE: &str = "Contents/MacOS/herdr-core";
 const REQUIREMENT: &str =
     "=identifier \"dev.herdr.core\" and anchor apple generic and certificate leaf[subject.OU] = \"2W9652Q7QR\"";
+const LSREGISTER: &str =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 fn bundle(exe: &Path) -> Option<&Path> {
     let root = exe.parent()?.parent()?.parent()?;
@@ -243,8 +245,8 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
         if ours || (hc.symlink_metadata().is_err() && !on_path) {
             entries.push(hc);
         }
-    } else {
-        // Public links always resolve through current, never retained storage.
+    } else if dest != active.join(EXECUTABLE) {
+        // Aliases to active survive swaps; only migrate aliases from older layouts.
         let mut dirs = vec![home.join(".local/bin")];
         if let Some(dir) = std::env::var_os("HC_INSTALL_DIR") {
             dirs.push(PathBuf::from(dir));
@@ -303,6 +305,11 @@ pub fn install(source: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io:
     if !activated {
         let _ = std::fs::remove_dir_all(slot);
     }
+    // LaunchServices doesn't find apps in hidden folders by itself. Unknown to
+    // it, the first Local Network prompt names `herdr-core` with Apple's generic text.
+    if result.is_ok() {
+        let _ = Command::new(LSREGISTER).arg("-f").arg(&active).output();
+    }
     result
 }
 
@@ -347,10 +354,16 @@ pub fn needs_bundle_update() -> bool {
 }
 
 pub fn legacy_notice(state: &Path) {
-    if needs_bundle_update()
+    if needs_bundle_update() {
+        legacy_notice_once(state, &mut std::io::stderr());
+    }
+}
+
+fn legacy_notice_once(state: &Path, out: &mut impl std::io::Write) {
+    if super::private_dir(state).is_ok()
         && std::fs::OpenOptions::new().write(true).create_new(true).open(state.join("bundle-upgrade-notice")).is_ok()
     {
-        eprintln!("hc: run hc update to finish installing Herdr Core");
+        let _ = writeln!(out, "hc: run hc update to finish installing Herdr Core");
     }
 }
 
@@ -361,6 +374,18 @@ pub fn source_is_bundle(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_legacy_notice_reaches_stderr_once_even_before_the_core_has_started() {
+        let root = std::env::temp_dir().join(format!("hc-notice-{}", super::super::random_hex()));
+        let state = root.join("state");
+        let mut out = Vec::new();
+        legacy_notice_once(&state, &mut out);
+        legacy_notice_once(&state, &mut out);
+        assert_eq!(out, b"hc: run hc update to finish installing Herdr Core\n");
+        assert!(state.join("bundle-upgrade-notice").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn only_the_exact_bundle_executable_has_a_bundle_root() {
         assert_eq!(

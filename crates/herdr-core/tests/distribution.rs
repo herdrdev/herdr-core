@@ -256,7 +256,20 @@ fn machine_installs_keep_the_complete_bundle_and_both_aliases() {
         let mut local = Session::new();
         let target = if cross_arch { "macos-x86_64" } else { &here() };
         let r = Releases::new(&local, THIS, &[target]);
-        local.bin = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+        let source = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+        let installed = local.root.join(".local/bin/herdr-core");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        let out = local
+            .program(&source)
+            .arg("--hc-install-bundle")
+            .arg(&source)
+            .arg(&installed)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "local bundle install: {out:?}");
+        local.bin = installed.with_file_name("hc");
+        assert!(local.bin.is_symlink());
         local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
         local.env.push(fake_ssh(&local, &[("bare", &remote)]));
         if cross_arch {
@@ -305,7 +318,10 @@ fn a_root_remote_gets_the_independently_signed_standalone_release() {
     std::fs::set_permissions(tools.join("id"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut local = Session::new();
     let r = Releases::new(&local, THIS, &[&here()]);
-    local.bin = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    let source = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    local.bin = local.root.join(".local/bin/hc");
+    std::fs::create_dir_all(local.bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &local.bin).unwrap();
     local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
     local.env.push(fake_ssh(&local, &[("root", &remote)]));
     local.json(&["machine", "add", "root", "--install"]);
@@ -356,20 +372,22 @@ fn concurrent_bundle_installers_and_a_self_update_share_one_active_path() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_bundle_update_preserves_read_only_aliases_and_fails_before_activation_if_they_need_changes() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+fn a_bundle_update_preserves_read_only_aliases_to_the_active_executable() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
     let s = Session::new();
     let _r = Releases::new(&s, THIS, &[&here()]);
     let bin = s.root.join("bin/herdr-core");
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
     let source = s.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    let path_bin = s.root.join("path-bin");
+    std::fs::create_dir(&path_bin).unwrap();
     let install = |dest: &Path| {
         s.program(source.to_str().unwrap())
             .arg("--hc-install-bundle")
             .arg(&source)
             .arg(dest)
             .env("HC_INSTALL_DIR", bin.parent().unwrap())
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", format!("{}:/usr/bin:/bin", path_bin.display()))
             .output()
             .unwrap()
     };
@@ -382,13 +400,17 @@ fn a_bundle_update_preserves_read_only_aliases_and_fails_before_activation_if_th
     let alias = bin.with_file_name("hc");
     std::fs::remove_file(&alias).unwrap();
     symlink(&active, &alias).unwrap();
-    let inode = std::fs::metadata(&active).unwrap().ino();
+    let path_alias = path_bin.join("hc");
+    symlink(&alias, &path_alias).unwrap();
     std::fs::set_permissions(bin.parent().unwrap(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::fs::set_permissions(&path_bin, std::fs::Permissions::from_mode(0o555)).unwrap();
     let out = install(&active);
     std::fs::set_permissions(bin.parent().unwrap(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(!out.status.success(), "a stale unwritable alias must fail before activation");
-    assert_eq!(std::fs::metadata(&active).unwrap().ino(), inode);
+    std::fs::set_permissions(&path_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(out.status.success(), "correct direct and chained PATH aliases need no writes: {out:?}");
     assert_eq!(std::fs::read_link(&alias).unwrap(), active);
+    assert_eq!(std::fs::read_link(&path_alias).unwrap(), alias);
+    assert_eq!(path_alias.canonicalize().unwrap(), active);
 }
 
 #[cfg(target_os = "macos")]
@@ -502,6 +524,7 @@ fn install_script_downloads(s: &Session, url: &str, releases: &str, installed: b
         .arg(format!("{ROOT}/../../distribution/install.sh"))
         .env("PATH", format!("{}:/usr/bin:/bin", stub.display()))
         .env("HERDR_RELEASES_URL", releases)
+        .env_remove("HC_VERSION")
         .env("HC_INSTALL_DIR", &bin)
         .output()
         .unwrap();

@@ -196,9 +196,36 @@ fn notarization_requires_acceptance_before_gatekeeper_assessment() {
         assert_eq!(out.status.success(), accepted, "{out:?}");
         let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
         assert!(calls.contains("notarytool submit") && calls.contains("--wait"), "{calls}");
-        assert_eq!(calls.contains("spctl --assess"), accepted, "{calls}");
+        assert_eq!(calls.contains("spctl --assess --type execute"), accepted && bundle, "{calls}");
+        assert_eq!(
+            calls.contains("spctl --assess --type open --context context:primary-signature"),
+            accepted && !bundle,
+            "{calls}"
+        );
         assert_eq!(calls.contains("stapler staple"), accepted && bundle, "{calls}");
         assert_eq!(calls.contains("stapler validate"), accepted && bundle, "{calls}");
         assert_eq!(calls.contains("notarytool log test-id"), !accepted, "{calls}");
+    }
+}
+
+#[test]
+fn gatekeeper_assessment_waits_for_a_fresh_ticket() {
+    for (passes_on, success) in [(3, true), (99, false)] {
+        let s = Scratch::new();
+        std::fs::write(s.root.join("herdr-core"), "standalone").unwrap();
+        stub(&s, "codesign", "case $* in *-dvv*) echo 'Authority=Developer ID Application: Test' >&2 ;; esac");
+        stub(&s, "ditto", "exit 0");
+        stub(&s, "sleep", "exit 0");
+        stub(&s, "spctl", &format!("[ \"$(grep -c '^spctl' \"$CALLS\")\" -ge {passes_on} ]"));
+        stub(&s, "xcrun", "printf '{\"id\":\"test-id\",\"status\":\"Accepted\"}\\n'");
+        let out = script(&s, "mac-notarize", [s.root.join("herdr-core")])
+            .env("APPLE_API_KEY", "test-private-key")
+            .env("APPLE_API_KEY_ID", "test-key-id")
+            .env("APPLE_API_ISSUER", "test-issuer")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.success(), success, "{out:?}");
+        let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
+        assert_eq!(calls.lines().filter(|l| l.starts_with("spctl")).count(), if success { 3 } else { 40 }, "{calls}");
     }
 }
