@@ -3,6 +3,10 @@
     "schemas": {
       "AttachResult": {
         "properties": {
+          "automatic_input": {
+            "description": "The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.",
+            "type": "boolean"
+          },
           "channel": {
             "description": "Stream channel: first paint, then live bytes. Send keys as DATA on it;\nRESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.",
             "format": "uint32",
@@ -20,7 +24,8 @@
         "required": [
           "channel",
           "terminal",
-          "resize_notifications"
+          "resize_notifications",
+          "automatic_input"
         ],
         "type": "object"
       },
@@ -372,6 +377,29 @@
           "working"
         ],
         "type": "string"
+      },
+      "InitialSize": {
+        "properties": {
+          "cols": {
+            "description": "Initial terminal width in columns (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Initial terminal height in rows (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "type": "object"
       },
       "InterruptResult": {
         "properties": {
@@ -1148,6 +1176,17 @@
               "null"
             ]
           },
+          "first_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A template first message that was not sent; retained for later inspection."
+          },
           "foreground": {
             "anyOf": [
               {
@@ -1394,7 +1433,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.17"
+    "version": "0.1.18"
   },
   "methods": [
     {
@@ -1634,6 +1673,22 @@
           }
         },
         {
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "name": "display",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Display"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
+          }
+        },
+        {
           "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
           "name": "env",
           "required": false,
@@ -1755,6 +1810,22 @@
             "default": false,
             "description": "Remove it right after it exits (once a waiting parent has the exit code).",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "name": "size",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitialSize"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
           }
         },
         {
@@ -2515,7 +2586,7 @@
           }
         },
         {
-          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).",
+          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.",
           "name": "children",
           "required": false,
           "schema": {
@@ -2527,7 +2598,7 @@
                 "type": "null"
               }
             ],
-            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`)."
+            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped."
           }
         },
         {
