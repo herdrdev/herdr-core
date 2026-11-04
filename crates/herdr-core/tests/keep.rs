@@ -375,3 +375,17 @@ fn stopped_kept_terminal_returns_at_next_start() {
     assert_eq!(r["state"], "live");
     wait_until("shell after start", || get(&s, &t)["pid"].is_number());
 }
+
+#[test]
+fn keep_off_on_a_lost_terminal_reports_it_finished() {
+    let s = Session::new();
+    let t = run(&s, &["--keep", "sleep", "100"]);
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    unsafe {
+        libc::kill(holder as i32, libc::SIGKILL);
+    }
+    wait_until("lost", || get(&s, &t)["pid"].is_null());
+    let r = s.json(&["keep", &t, "--off"]);
+    assert_eq!(r["state"], "finished", "{r}");
+    assert_eq!(r["reason"], "holder_lost");
+}
