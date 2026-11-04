@@ -246,6 +246,43 @@ fn bundle_completion_skips_releases_without_a_bundle() {
     assert!(!bin.exists(), "no binary swap or restart for a pre-bundle release");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
+    // The bug, reproduced as it happens on a host with a noexec /tmp: the
+    // installer downloads and extracts fine, but the first `--version`
+    // check is refused by the mount (EACCES). It must stage the binary on
+    // the destination filesystem and install, not cry "wrong machine".
+    let s = Session::new();
+    let r = Releases::new(&s, THIS, &[&here()]);
+    let bin = s.root.join("bin");
+    let tmp = s.root.join("noexec-tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    // Root inside a fresh mount namespace: a noexec tmpfs for TMPDIR, the
+    // install dir on a normal filesystem. (Root cannot bypass noexec: the
+    // refusal is a mount flag, not a permission bit.)
+    let script = format!(
+        "set -e; mount --make-rprivate /; mount -t tmpfs -o size=256M,noexec tmpfs {}; \
+         export TAR_OPTIONS=--no-same-owner; \
+         HC_INSTALL_DIR={} TMPDIR={} HERDR_RELEASES_URL={} /usr/bin/sh {}/../../distribution/install.sh",
+        tmp.display(),
+        bin.display(),
+        tmp.display(),
+        r.url,
+        ROOT
+    );
+    let out = Command::new("unshare").args(["-rm", "--map-root-user", "sh", "-c", &script]).output().unwrap();
+    if !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("mount") {
+        return; // user namespaces or mounting unavailable (hardened CI): skip
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("installed"));
+    assert!(bin.join("herdr-core").is_file());
+    assert!(!bin.join("herdr-core.staged").exists(), "the stage is cleaned up");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn machine_installs_keep_the_complete_bundle_and_both_aliases() {
