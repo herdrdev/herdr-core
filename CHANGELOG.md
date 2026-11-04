@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## [0.1.17] - 2026-11-02
+
+### Fixed
+- On macOS, quitting Herdr no longer stops your agents, even when Herdr isn't allowed to run in the background. The core now runs apart from the app. Agents that were already running before the update pick this up the next time they start. (herdr-app#294)
+- The core no longer freezes every terminal while it saves to disk.
+- On Linux machines without polkit, terminals start right away instead of after 25 seconds. (#62)
+- Reading a full-screen agent that waits at a prompt answers at once instead of after 25 seconds, and never scrolls the prompt. (#60)
+- A template started on another machine that takes longer than 30 seconds to get ready no longer fails, and its agent can still report back. (#63)
+- `hc send` with arguments that aren't valid text says so instead of crashing. (#50)
+- Emoji like ✍️ and ❤️ take two cells, as in Ghostty. (#58, thanks @occultsound)
+
+### New
+- Add machine takes a port: `hc machine add can@server:2222`. (#66, thanks @sundarshahi)
+- Watching a terminal without controlling it (`observe`) can ask to be told when its size changes. (#53)
+- The macOS core is signed with Herdr's Developer ID, so permissions you give it stay across updates.
+- `hc --skill` shows agents how to run slow commands without blocking themselves.
+
+## [0.1.16] - 2026-10-31
+
+### Fixed
+- Terminals no longer freeze when the core falls behind or loses touch with its holder: it reconnects and keeps your programs running. (#47)
+- Images in yazi and other programs no longer spill as text over a slow connection.
+- Programs pick up the new colors when you change the theme or switch between light and dark. (#46, thanks @geoqiao)
+- Adding a Windows machine works in any Windows language, and when its SSH shell is PowerShell. (#49, #23)
+
+### New
+- Choose the shell new terminals start with, with `shell = [...]` in config.toml. (#24, thanks @JJLiebig)
+
 ## [0.1.15] - 2026-10-30
 
 ### New

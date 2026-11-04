@@ -19,8 +19,14 @@ use tokio::sync::{mpsc, oneshot};
 
 /// A viewer here that a stream there goes to: its connection and channel.
 type Sink = (Arc<Conn>, u32);
-/// A call waiting for its reply, and where a stream it opens goes.
-type Waiting = (oneshot::Sender<Value>, Option<Sink>);
+/// A pending reply, its stream sink and whether resize support is required.
+type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
+
+mod viewers;
+#[cfg(test)]
+use viewers::automatic_input;
+use viewers::{RESIZE_LOST, negotiate_resize, reattach};
+pub use viewers::{Relayed, attach, conn_gone, relay_in};
 
 #[cfg(test)]
 mod tests;
@@ -58,10 +64,18 @@ impl Line {
     }
 
     /// A reply to one of our calls: to whoever waits for it.
-    fn take_reply(&self, reply: Value) {
+    fn take_reply(&self, mut reply: Value) {
         let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else { return };
-        if let (Some(sink), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
-            lock(&self.streams).insert(there as u32, sink);
+        if let (Some((sink, require_resize)), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
+            if require_resize && reply["result"]["resize_notifications"] != true {
+                let _ = self.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
+                reply = crate::rpc::response(
+                    reply["id"].clone(),
+                    Err(RpcError::new("unavailable", RESIZE_LOST, "attach again")),
+                );
+            } else {
+                lock(&self.streams).insert(there as u32, sink);
+            }
         }
         let _ = waiter.send(reply);
     }
@@ -88,7 +102,7 @@ impl Line {
         machine: &str,
         method: &str,
         params: Value,
-        sink: Option<Sink>,
+        sink: Option<(Sink, bool)>,
         deadline: Duration,
     ) -> Result<Value, RpcError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -243,7 +257,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             st.lines.insert(id.clone(), state);
             core.changed.notify_waiters();
         };
-        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name});
+        let hello = json!({"framed": true, "core": core.info, "calls_you": m.name, "features": crate::api::FEATURES});
         match crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await {
             Ok(d) if d.hello["core"]["id"] != m.id.as_str() => {
                 down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]));
@@ -271,50 +285,6 @@ async fn supervise(core: Arc<Core>, id: String) {
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(reconnect_max());
-    }
-}
-
-/// A viewer here on a terminal there. It outlives a dropped line: when the
-/// line is back, it is attached again on the same channel here.
-#[derive(Clone)]
-pub struct Relayed {
-    pub line: Arc<Line>,
-    pub there: u32,
-    pub conn: Arc<Conn>,
-    pub machine: String,
-    pub params: Value,
-}
-
-/// Viewers left waiting by a dropped line to `m` get their terminal back.
-async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
-    let waiting: Vec<((usize, u32), Relayed)> = core
-        .lock()
-        .relayed
-        .iter()
-        .filter(|(_, r)| r.machine == m.id && !Arc::ptr_eq(&r.line, &line))
-        .map(|(k, r)| (*k, r.clone()))
-        .collect();
-    for ((key, here), r) in waiting {
-        // The screen is painted again; the viewer already has its history.
-        let mut params = r.params.clone();
-        params["history"] = 0.into();
-        params["resumed"] = true.into();
-        let deadline = deadline_for(&core, "terminal.attach", &params);
-        let reply = line.call_into(&m.name, "terminal.attach", params, Some((r.conn.clone(), here)), deadline).await;
-        let mut st = core.lock();
-        // Gone meanwhile (the viewer detached): nothing to resume.
-        if !st.relayed.contains_key(&(key, here)) {
-            continue;
-        }
-        match reply.ok().and_then(|reply| reply["channel"].as_u64()) {
-            Some(there) => {
-                st.relayed.insert((key, here), Relayed { line: line.clone(), there: there as u32, ..r });
-            }
-            None => {
-                st.relayed.remove(&(key, here));
-                r.conn.with(|out| out.finish(here, b""));
-            }
-        }
     }
 }
 
@@ -390,6 +360,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                     conn.with(|out| {
                         out.data(*here, &payload);
                     });
+                }
+            }
+            (there, wire::RESIZE) if payload.len() == 4 => {
+                if let Some((conn, here)) = lock(&line.streams).get(&there) {
+                    conn.with(|out| out.ordered_resize(*here, &payload));
                 }
             }
             (there, wire::CLOSE) => {
@@ -610,7 +585,7 @@ fn save_peers(core: &Core, st: &State) {
 pub fn peer_joined(core: &Arc<Core>, conn: &Arc<Conn>, hello: &Value) {
     let (Some(id), Some(name)) = (hello["core"]["id"].as_str(), hello["core"]["name"].as_str()) else { return };
     let (frames, mut out) = mpsc::unbounded_channel::<Vec<u8>>();
-    let line = Line::new(frames, &Value::Null); // it only calls back here, never runs
+    let line = Line::new(frames, hello);
     let c = conn.clone();
     tokio::spawn(async move {
         while let Some(frame) = out.recv().await {
@@ -638,7 +613,8 @@ pub fn from_peer(core: &Core, conn: Option<&Arc<Conn>>, mut params: Value) -> Va
     let Some(conn) = conn else { return params };
     let st = core.lock();
     let key = conn_key(conn);
-    let Some(id) = st.peer_lines.iter().find(|(_, (k, _))| *k == key).map(|(id, _)| id) else { return params };
+    let Some((id, (_, line))) = st.peer_lines.iter().find(|(_, (k, _))| *k == key) else { return params };
+    negotiate_resize(line, &mut params);
     if let (Some(rest), Some(peer)) =
         (params["caller"].as_str().and_then(|c| c.strip_prefix(&format!("{id}/"))), st.peers.get(id))
     {
@@ -739,70 +715,6 @@ pub fn called_there(st: &State, parent: &str) -> Option<String> {
 
 pub fn conn_key(conn: &Arc<Conn>) -> usize {
     Arc::as_ptr(conn) as usize
-}
-
-/// Opens a viewer here on a terminal there: the stream channel there is
-/// relayed to a new channel on this connection, both ways.
-pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, params: Value) -> Result<Value, RpcError> {
-    let line = line(core, m).await?;
-    let here = conn.new_channel();
-    conn.with(|out| out.open(here));
-    let deadline = deadline_for(core, "terminal.attach", &params);
-    match line.call_into(&m.name, "terminal.attach", params.clone(), Some((conn.clone(), here)), deadline).await {
-        Ok(mut r) => {
-            let there = r["channel"].as_u64().unwrap_or_default() as u32;
-            let viewer = Relayed { line, there, conn: conn.clone(), machine: m.id.clone(), params };
-            core.lock().relayed.insert((conn_key(conn), here), viewer);
-            r["channel"] = here.into();
-            Ok(localize(core, &m.name, &[], r))
-        }
-        Err(e) => {
-            conn.with(|out| out.close(here, b""));
-            Err(e)
-        }
-    }
-}
-
-/// A viewer's frame for a relayed stream goes there. False: not relayed.
-pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u8]) -> bool {
-    let r = {
-        let mut st = core.lock();
-        let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
-        // What a reattach after a dropped line brings back.
-        if kind == wire::RESIZE && payload.len() == 4 {
-            r.params["cols"] = u16::from_le_bytes([payload[0], payload[1]]).into();
-            r.params["rows"] = u16::from_le_bytes([payload[2], payload[3]]).into();
-        } else if kind == wire::FACTS
-            && let Ok(display) = serde_json::from_slice::<Value>(payload)
-        {
-            r.params["display"] = display;
-        }
-        r.clone()
-    };
-    // Read here: our stream to the viewer may send more, and so may the one there to us.
-    if kind == wire::CREDIT && payload.len() == 4 {
-        conn.with(|out| out.credit(here, u32::from_le_bytes(payload.try_into().unwrap()) as usize));
-    }
-    // While the line is down this goes nowhere: typing into a gap is lost, not queued.
-    let _ = r.line.frames.send(wire::encode(r.there, kind, payload));
-    true
-}
-
-/// A viewer's connection closed: its relayed streams there end.
-pub fn conn_gone(core: &Core, conn: &Arc<Conn>) {
-    let key = conn_key(conn);
-    let mut st = core.lock();
-    let gone: Vec<(u32, Arc<Line>, u32)> = st
-        .relayed
-        .iter()
-        .filter(|((k, _), _)| *k == key)
-        .map(|((_, here), r)| (*here, r.line.clone(), r.there))
-        .collect();
-    for (here, line, there) in gone {
-        st.relayed.remove(&(key, here));
-        lock(&line.streams).remove(&there);
-        let _ = line.frames.send(wire::encode(there, wire::CLOSE, b""));
-    }
 }
 
 /// Methods whose `terminal` names the terminal they act on.
@@ -931,7 +843,7 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
 
 /// Sends a call to `m` and returns the reply with addresses as this core sees them.
 /// How long a call there may take: `machine_timeout`, plus the wait it asks
-/// for when it waits (`wait`, a waited `run` or `send`).
+/// for when it waits (`wait`, a waited `run` or `send`), template readiness and draft protection.
 fn deadline_for(core: &Core, method: &str, params: &Value) -> Duration {
     let config = crate::config::load(&core.paths.config).unwrap_or_default();
     if method == "machine.exec" {
@@ -945,7 +857,14 @@ fn deadline_for(core: &Core, method: &str, params: &Value) -> Duration {
         Some(secs) => secs,
         None => config.wait_timeout.unwrap_or(180.0),
     };
-    config.machine_timeout() + if waits { Duration::from_secs_f64(wait.clamp(0.0, 86_400.0)) } else { Duration::ZERO }
+    // Only the remote core knows whether argv names one of its templates.
+    let ready = if method == "terminal.run" { crate::templates::ready_timeout() } else { Duration::ZERO };
+    let draft =
+        if method == "terminal.send" { Duration::from_millis(crate::input::DRAFT_MAX_MS) } else { Duration::ZERO };
+    config.machine_timeout()
+        + ready
+        + draft
+        + if waits { Duration::from_secs_f64(wait.clamp(0.0, 86_400.0)) } else { Duration::ZERO }
 }
 
 fn waits(method: &str, params: &Value) -> bool {

@@ -50,8 +50,12 @@ hc wait helper
 hc send helper "Inspect x.rs only. No subagents. Report with hc send $HC_TERMINAL_ID when done or stuck."
 ```
 
+Template launches allow up to 60 seconds for readiness, retrying startup
+settle failures with the same safety rules as `send` (including its startup
+age limit). This covers slow startup without waiting forever on a dialog.
 Check `first_message.sent` in a launch with a task. If false, the task was
-NOT sent: `hc read <t>`; resolve readiness first (a trust dialog may need
+NOT sent; `hc get <t>` keeps `first_message: {sent: false, reason}` for later
+inspection, even after the core restarts. To recover: `hc read <t>`; resolve readiness first (a trust dialog may need
 `hc keys <t> down enter`), then send the task. Do not blindly resend after a
 failed send: it may still have arrived; read first.
 
@@ -65,6 +69,28 @@ hc send --wait review "Recheck the fix"
 hc read --lines 100 review          # screen plus history; waits return status only
 hc interrupt review                # stop its current turn, not the process
 ```
+
+In human-readable output, `ls` shows the `where` label or the current folder;
+`get` shows the full current folder. Both fall back to the launch folder when
+it is unknown. JSON keeps `cwd` as the launch folder; `get` also includes the
+current folder in `foreground.cwd`.
+
+`read --lines 0` reads only the visible screen. History reads may scroll a
+full-screen app, then restore its view. While its status is `working`,
+`blocked` or `error`, history reads return only the screen immediately,
+marked incomplete with `why` set to that status; no scroll input is sent.
+
+A send stays pending while the person has an unsent draft in that terminal.
+Enter, Ctrl+C or Ctrl+U releases it; Escape and backspace do not reliably
+mean clear, so they do not. Only human viewer input counts, not automatic
+terminal replies. This tracks keys, not the program's composer state.
+After three minutes the draft hold expires; the normal ~3 s quiet gate
+still applies. Messages are not dropped on clear or expiry.
+`hc get <t>` shows `waiting_for_person: true` during the hold; the eventual
+send reply includes `waited_for_person: true`. Do not resend while it waits.
+With `--wait`, `--timeout` still applies to watching the turn **after**
+delivery, not to this bounded draft hold. Core notes respect drafts too;
+`keys` and `interrupt` keep their existing behavior.
 
 Keep doing useful work while children work. When you need their results:
 
@@ -80,6 +106,13 @@ children finish:
 - `reason: message`: the message arrives as your next input, possibly late;
   it is not output to fetch with `hc read`. Process it and wait again if needed.
 - `reason: timeout` (default 180 seconds): a check-in, not failure; wait again.
+- A child with a sent launch task counts as working until its turn advances
+  past delivery, its root reports done, blocked, error after delivery, or it
+  exits. Startup words and child records do not complete that task in either
+  children mode. Without a launch task, startup idle still counts as stopped.
+  After a core crash, an unchanged final root word/turn cannot prove completion:
+  a repeated done, or done followed by idle while core was absent, may leave
+  the task pending until another root report or exit.
 - `not_started` from `send --wait`: it hasn't begun; read before deciding.
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
@@ -104,6 +137,13 @@ error, exited); inspect its screen.
 
 ## Run programs
 
+API clients that already know a terminal's pane size can pass `size: {cols, rows}`
+to `terminal.run` (both positive). It applies before the program starts. Omit it
+for the unchanged configured headless size (default 200×120); later viewers
+still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
+`terminal.attach`) likewise answers the program's color and cell-size queries
+from its start, before any viewer attaches.
+
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
 hc run "cd app && bun test"        # one quoted string is a shell command
@@ -111,6 +151,27 @@ hc run --bg --name web bun dev     # background server; exit comes as a note
 hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
+
+### Slow commands: don't block yourself
+
+Your own shell tool holds you until its command ends: no messages, no
+children's reports, no other work. Run anything slow (builds, test suites,
+CI, deploys, installs) in an hc terminal instead and wait with hc. You stay
+reachable, and you can keep working or start more.
+
+```sh
+hc run --bg --rm --no-notify --name build cargo build --release
+hc wait build                      # its exit code; --rm then removes it
+hc run --bg --name tests cargo test
+hc wait tests; hc read tests --lines 40; hc rm tests
+hc run --bg --rm --no-notify --name ci -- gh run watch 123 --exit-status
+hc wait --children any             # several at once: the next one to finish
+```
+
+`--rm` removes a terminal once it exits and you have its exit code (keep it
+when you still want to `read` its output). `--no-notify` keeps its exit note
+out of your input when you wait for it anyway. Kill and remove helpers you
+started once you have their results: `hc kill <t>; hc rm <t>`.
 
 `run` times out after 180 seconds by default (`--timeout S`): it prints
 `[hc] still running as t3` and exits 124, but the program keeps running.
@@ -166,6 +227,10 @@ paths start at your current folder. Prefer explicit paths for remote work.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
+- Programs get the login session's environment. A local `DISPLAY` or
+  `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
+  connections. Host displays (including SSH forwarding) stay as they are.
+  A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
@@ -180,6 +245,30 @@ paths start at your current folder. Prefer explicit paths for remote work.
   is already current. JSON reports `restarted: true`; terminals keep running.
   Managed installs must be updated with their package manager instead, and
   one in a folder you can't write (Unix) the way it was installed.
+- On macOS, privacy requests from terminal programs belong to Herdr Core,
+  not Herdr.app. Existing Herdr.app grants do not transfer to the core.
+- macOS installs keep the newest bundle at the fixed physical path
+  `~/.local/share/herdr-core/active/Herdr Core.app`, selected by a `current`
+  symlink, with `hc` and `herdr-core` links in
+  `~/.local/bin` (`HC_INSTALL_DIR` overrides the links'
+  folder). Updates keep running terminals. A bundled install's `update --from`
+  needs a complete signed `.app` (or its `Contents/MacOS/herdr-core`), not a bare
+  executable. Terminals created before this bundle
+  upgrade may still have broken macOS privacy access: recreate those terminals;
+  restarting only the core cannot repair their old holders. After an old updater
+  copies only the binary, run `hc update` to finish installing the bundle, even
+  if the version is already current. The app completes this during its update.
+  Startup never downloads updates. Previous bundles stay on disk while their
+  cores or holders run; later installs reclaim unused previous bundles.
+  Per-user installs use the bundle. Root/system destinations keep the independently
+  signed standalone executable and their existing macOS privacy behavior.
+  Machine installs also preserve bundles. A standalone sender cannot replace a
+  bundled remote core: run `hc update` there instead. Root remotes receive the
+  standalone release.
+- On macOS, desktop starts use a one-shot launchd job so quitting the launching
+  app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
+  falls back to a direct child and logs the reason in `core.log`; that core may
+  end with its launching app.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

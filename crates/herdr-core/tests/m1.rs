@@ -3,6 +3,7 @@
 mod common;
 
 use common::*;
+use herdr_core::holder_proto as proto;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -75,11 +76,16 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));
+    s.json(&["server", "start"]);
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", serde_json::json!({}));
     let t = run(&s, &["true"]);
-    wait_finished(&s, &t);
-    std::thread::sleep(Duration::from_millis(600));
-    let all = s.json(&["ls", "--all"]);
-    assert!(!all.to_string().contains(&format!("\"{t}\"")), "kept past its time: {all}");
+    // A slow exit snapshot can outlast retention; the finished event is buffered even if get is too late.
+    next_event(&mut events, |e| e["params"]["terminal"] == t && e["params"]["type"] == "finished");
+    wait_until("finished terminal expired", || {
+        let all = s.json(&["ls", "--all"]);
+        !all["terminals"].as_array().unwrap().iter().any(|record| record["address"] == t)
+    });
 }
 
 #[test]
@@ -333,6 +339,26 @@ fn finished_terminals_and_ids_survive_server_stop() {
 }
 
 #[test]
+fn a_failed_registry_write_does_not_break_get_or_stop() {
+    let s = Session::new();
+    let terminal = run(&s, &["sleep", "100"]);
+    let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
+    let core = status(&s)["pid"].as_i64().unwrap();
+    // A directory in place of the temporary file fails even when tests run as root.
+    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let label = s.hc(&["label", &terminal, "disk=failed"]);
+    let get = s.hc(&["get", &terminal]);
+    let stop = s.hc(&["server", "stop"]);
+    std::fs::remove_dir(tmp).unwrap();
+    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
+        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(!pid_alive(pid), "stop left the program running");
+    wait_until("core stops after a failed disk write", || !pid_alive(core));
+}
+
+#[test]
 fn server_stop_typed_inside_a_terminal_still_stops_the_core() {
     let s = Session::new();
     let core = status(&s)["pid"].as_i64().unwrap();
@@ -438,6 +464,108 @@ fn an_update_rolls_new_terminals_onto_a_new_holder_while_the_old_one_drains() {
     wait_until("old holder drains and exits", || !pid_alive(old_holder));
     assert_eq!(get(&s, &new)["state"], "live");
     assert_eq!(status(&s)["holders"].as_array().unwrap().len(), 1);
+}
+
+/// A core that stops reading (stuck, or its reader died) must not freeze the
+/// holder: the next core gets its welcome and the output right away, also
+/// when the stuck one said goodbye first.
+#[test]
+fn a_core_that_stops_reading_never_holds_up_the_next_one() {
+    let s = Session::new();
+    for goodbye in [false, true] {
+        let (_holder, socket) = raw_holder(&s, &format!("stalled-{goodbye}"));
+        let (mut stuck, _) = raw_hello(&socket);
+        raw_spawn(&mut stuck, 1, &["yes"]);
+        // Its output fills the socket and the backlog of a core that never reads.
+        std::thread::sleep(Duration::from_millis(1000));
+        if goodbye {
+            raw_send(&mut stuck, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Handover));
+        }
+        let (mut next, welcome) = raw_hello(&socket);
+        assert_eq!(welcome.terminals.len(), 1, "and it hands over the running program");
+        assert_eq!(proto::read(&mut next).unwrap().unwrap().0, proto::TAIL);
+        let kind = proto::read(&mut next).expect("output within a second").unwrap().0;
+        assert_eq!(kind, proto::OUTPUT, "goodbye first: {goodbye}");
+    }
+}
+
+/// While a flood keeps the core's backlog full, a program that prints and
+/// exits still has all its output arrive before its exit.
+#[test]
+fn an_exit_never_overtakes_its_output_while_the_core_is_behind() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "order");
+    let (mut core, _) = raw_hello(&socket);
+    raw_spawn(&mut core, 1, &["yes"]);
+    std::thread::sleep(Duration::from_millis(1000));
+    raw_spawn(&mut core, 2, &["sh", "-c", "printf B; sleep 0.1; head -c 8000 /dev/zero | tr '\\0' B; printf END"]);
+    std::thread::sleep(Duration::from_millis(800));
+    let mut printed = Vec::new();
+    loop {
+        let (kind, id, payload) = proto::read(&mut core).expect("its exit").unwrap();
+        match (kind, id) {
+            (proto::OUTPUT, 2) => printed.extend(payload),
+            (proto::EXITED, 2) => break,
+            _ => {}
+        }
+    }
+    assert!(printed.ends_with(b"END"), "exit after {} bytes of output", printed.len());
+}
+
+/// A late goodbye from a core that was replaced leaves the new one connected.
+#[test]
+fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "late");
+    for _ in 0..10 {
+        let (mut old, _) = raw_hello(&socket);
+        let mut new = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        raw_send(&mut new, proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }));
+        // Fails when the holder already cut the old core off: then there is nothing to read late.
+        let goodbye = proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Handover);
+        let _ = std::io::Write::write_all(&mut old, &goodbye);
+        new.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        assert_eq!(proto::read(&mut new).unwrap().unwrap().0, proto::WELCOME);
+        assert!(proto::read(&mut new).is_err(), "nothing after the welcome, no goodbye");
+    }
+}
+
+/// A holder on its own, driven by the test as its core; killed when dropped.
+struct RawHolder(std::process::Child);
+
+impl Drop for RawHolder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn raw_holder(s: &Session, name: &str) -> (RawHolder, std::path::PathBuf) {
+    let socket = s.root.join(format!("run/{name}.sock"));
+    let holder = s.cmd().env("HC_HOLDER_GRACE_MS", "60000").arg("hold").arg("--socket").arg(&socket).spawn().unwrap();
+    wait_until("holder listening", || std::os::unix::net::UnixStream::connect(&socket).is_ok());
+    (RawHolder(holder), socket)
+}
+
+fn raw_hello(socket: &std::path::Path) -> (std::os::unix::net::UnixStream, proto::Welcome) {
+    let mut core = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    core.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    raw_send(&mut core, proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }));
+    let (kind, _, payload) = proto::read(&mut core).expect("a welcome within a second").unwrap();
+    assert_eq!(kind, proto::WELCOME);
+    (core, proto::parse(&payload).unwrap())
+}
+
+fn raw_spawn(core: &mut std::os::unix::net::UnixStream, id: u32, argv: &[&str]) {
+    let env = [("PATH".to_string(), std::env::var("PATH").unwrap())].into();
+    let argv = argv.iter().map(|a| a.to_string()).collect();
+    let spawn = proto::Spawn { argv, env, cwd: "/".into(), cols: 80, rows: 24 };
+    raw_send(core, proto::json_frame(proto::SPAWN, id, &spawn));
+}
+
+fn raw_send(core: &mut std::os::unix::net::UnixStream, frame: Vec<u8>) {
+    std::io::Write::write_all(core, &frame).unwrap();
 }
 
 fn holder_pid(s: &Session) -> i64 {

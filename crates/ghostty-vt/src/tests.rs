@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn continuation_restores_split_sequences_and_long_strings_resume_at_ground() {
+    for prefix in [b"\x1b_Gm=1;AAAA".as_slice(), b"\x1b]2;title", b"\x1bP+q544", b"\x1b[31", b"\xf0\x9f"] {
+        let mut screen = Terminal::new(80, 24, 1 << 20);
+        screen.write(prefix);
+        assert_eq!(screen.continuation().unwrap(), prefix);
+    }
+    let mut screen = Terminal::new(80, 24, 1 << 20);
+    screen.write(b"\x1b_Gm=1;");
+    screen.write(&vec![b'A'; CONTINUATION_MAX_BYTES]);
+    assert!(screen.continuation().is_none());
+    assert_eq!(screen.write_until_ground(b"AAAA"), None);
+    assert_eq!(screen.write_until_ground(b"AA\x1b\\\x1b_Gm=1;BBBB"), Some(4));
+    assert_eq!(screen.continuation(), Some(Vec::new()));
+}
+
+#[test]
 fn display_changes_report_to_subscribers_and_queries_use_the_latest_facts() {
     let mut t = Terminal::new(80, 24, 0);
     t.write(b"\x1b[?2031h");
@@ -194,4 +210,15 @@ fn answers_queries_like_ghostty_with_viewer_facts() {
     assert_eq!(ask(&mut t, b"\x1b[18t"), "\x1b[8;24;80t");
     assert_eq!(ask(&mut t, b"\x1b[?2004$p"), "\x1b[?2004;2$y");
     assert_eq!(ask(&mut t, b"\x1b[?u"), "\x1b[?0u");
+}
+
+#[test]
+fn grapheme_clustering_is_on_like_ghostty() {
+    let mut t = Terminal::new(10, 2, 0);
+    t.write(b"\x1b[?2027$p");
+    assert_eq!(String::from_utf8_lossy(&t.take_responses()), "\x1b[?2027;1$y");
+    t.write("\u{270d}\u{fe0f}!".as_bytes());
+    assert_eq!(t.plain_text().trim_end(), "\u{270d}\u{fe0f}!");
+    t.write(b"\x1bc");
+    assert!(t.dec_mode(2027), "a reset keeps it on");
 }

@@ -127,6 +127,40 @@ pub fn file_identity(m: &std::fs::Metadata) -> String {
 
 // --- Processes -------------------------------------------------------------
 
+pub(super) fn raise_nofile_limit() -> io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let target = nofile_soft_limit(limit.rlim_cur, limit.rlim_max);
+    if target == limit.rlim_cur {
+        return Ok(());
+    }
+    limit.rlim_cur = target;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn nofile_soft_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
+    // Below Darwin's OPEN_MAX; requesting an unlimited soft limit fails there.
+    soft.max(hard.min(8192))
+}
+
+#[cfg(test)]
+mod nofile_tests {
+    use super::*;
+
+    #[test]
+    fn nofile_target_respects_hard_limit_cap_and_existing_soft_limit() {
+        assert_eq!(nofile_soft_limit(256, libc::RLIM_INFINITY), 8192);
+        assert_eq!(nofile_soft_limit(256, 1024), 1024);
+        assert_eq!(nofile_soft_limit(16384, 32768), 16384);
+        assert_eq!(nofile_soft_limit(256, 256), 256);
+    }
+}
+
 /// Starts `cmd` in its own session (ending the terminal it was started from
 /// won't end it), stdin/stdout to /dev/null, stderr to `log`.
 pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
@@ -147,6 +181,18 @@ pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
 /// Puts the hc at `from` where `dest` is: a copy beside it that `works`,
 /// then renamed over it (InvalidData: the copy doesn't run).
 pub fn swap_in(from: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if super::macos_bundle::source_is_bundle(from) {
+            return super::macos_bundle::install(from, dest, works);
+        }
+        if super::macos_bundle::source_is_bundle(dest) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a bundled core needs a complete signed bundle, not a bare executable",
+            ));
+        }
+    }
     let tmp = dest.with_file_name(format!(".herdr-core.new.{}", std::process::id()));
     let staged = std::fs::copy(from, &tmp).and_then(|_| make_executable(&tmp));
     if staged.is_err() || !works(&tmp) {
@@ -171,9 +217,243 @@ pub fn own_shell() -> Vec<String> {
     if cfg!(target_os = "macos") { vec![shell, "-l".into()] } else { vec![shell] }
 }
 
+/// Drops displays whose local servers no longer accept connections.
+pub fn drop_unreachable_displays(env: &mut std::collections::BTreeMap<String, String>) {
+    if let Some(display) = env.get("DISPLAY").cloned()
+        && !display_is_live(&display, Path::new("/tmp/.X11-unix"))
+    {
+        env.remove("DISPLAY");
+        env.remove("XAUTHORITY");
+    }
+    if let Some(display) = env.get("WAYLAND_DISPLAY").cloned() {
+        let runtime = env.get("XDG_RUNTIME_DIR").map(std::path::Path::new);
+        if !wayland_is_live(&display, runtime) {
+            env.remove("WAYLAND_DISPLAY");
+        }
+    }
+}
+
+/// Only probe local X transports. Host displays may use TCP or SSH forwarding
+/// without any corresponding Unix socket.
+fn display_is_live(display: &str, sockets: &Path) -> bool {
+    let Some((host, rest)) = display.rsplit_once(':') else { return true };
+    if !matches!(host, "" | "unix") {
+        return true;
+    }
+    let number = rest.split('.').next().unwrap_or(rest);
+    let Ok(number) = number.parse::<u32>() else { return true };
+    let path = sockets.join(format!("X{number}"));
+    if socket_is_live(&path, false) {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if socket_is_live(&path, true) {
+        return true;
+    }
+    false
+}
+
+/// Whether the Wayland compositor accepts connections at its socket.
+fn wayland_is_live(display: &str, runtime: Option<&Path>) -> bool {
+    let path = if display.starts_with('/') {
+        PathBuf::from(display)
+    } else {
+        match runtime {
+            Some(runtime) => runtime.join(display),
+            None => return true,
+        }
+    };
+    socket_is_live(&path, false)
+}
+
+/// Only absence or a refused connection proves a server is gone. In
+/// particular, a full listener backlog must not stall program startup.
+fn socket_is_live(path: &Path, abstract_socket: bool) -> bool {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = path.as_os_str().as_bytes();
+    let prefix = usize::from(abstract_socket);
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if name.len() + prefix >= address.sun_path.len() {
+        return true;
+    }
+    address.sun_family = libc::AF_UNIX as _;
+    for (dest, byte) in address.sun_path[prefix..].iter_mut().zip(name) {
+        *dest = *byte as libc::c_char;
+    }
+    let length =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + prefix + name.len() + usize::from(!abstract_socket))
+            as libc::socklen_t;
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = length as u8;
+    }
+    let socket_type = libc::SOCK_STREAM;
+    #[cfg(target_os = "linux")]
+    let socket_type = socket_type | libc::SOCK_CLOEXEC;
+    let fd = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
+    if fd < 0 {
+        return true;
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    #[cfg(not(target_os = "linux"))]
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return true;
+    }
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return true;
+    }
+    if unsafe { libc::connect(fd.as_raw_fd(), (&raw const address).cast(), length) } == 0 {
+        return true;
+    }
+    !matches!(io::Error::last_os_error().raw_os_error(), Some(libc::ENOENT | libc::ECONNREFUSED))
+}
+
 /// A shell line as this machine runs one.
 pub fn shell_line(line: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), line.into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn assert_socket_gone(mut live: impl FnMut() -> bool) {
+        // Concurrent tests may fork with this listener open; CLOEXEC closes it at exec, not fork.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while live() {
+            assert!(std::time::Instant::now() < deadline, "display socket stayed live after listener drop");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_display_whose_server_is_gone_is_not_handed_out() {
+        let sockets = dir("x11");
+        let listener = Listener::bind(sockets.join("X1")).unwrap();
+        assert!(display_is_live(":1", &sockets));
+        assert!(display_is_live(":1.0", &sockets));
+        assert!(display_is_live("unix:1", &sockets));
+        assert!(!display_is_live(":2", &sockets));
+        assert!(display_is_live("otherhost:2", &sockets));
+        assert!(display_is_live("localhost:2.0", &sockets));
+        assert!(display_is_live("127.0.0.1:2", &sockets));
+        drop(listener);
+        assert_socket_gone(|| display_is_live(":1", &sockets));
+        // macOS answers a connect to a regular file with an errno we treat as uncertain.
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::write(sockets.join("X2"), "").unwrap();
+            assert!(!display_is_live(":2", &sockets));
+        }
+        std::fs::remove_dir_all(&sockets).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_abstract_x_socket_needs_no_filesystem_entry() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::ffi::OsStrExt;
+
+        let sockets = dir("abstract-x11");
+        let path = sockets.join("X1");
+        let address = std::os::unix::net::SocketAddr::from_abstract_name(path.as_os_str().as_bytes()).unwrap();
+        let listener = Listener::bind_addr(&address).unwrap();
+        assert!(!path.exists());
+        assert!(display_is_live(":1", &sockets));
+        assert!(display_is_live("unix:1.0", &sockets));
+        drop(listener);
+        assert_socket_gone(|| display_is_live(":1", &sockets));
+        std::fs::remove_dir_all(&sockets).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_full_listener_backlog_does_not_block_or_remove_a_display() {
+        let runtime = dir("full-backlog");
+        let path = runtime.join("wayland-0");
+        let listener = Listener::bind(&path).unwrap();
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let _queued = Stream::connect(&path).unwrap();
+        assert!(socket_is_live(&path, false));
+        assert!(wayland_is_live("wayland-0", Some(&runtime)));
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn an_uncertain_socket_error_keeps_the_display() {
+        let runtime = dir("uncertain-socket");
+        std::fs::write(runtime.join("file"), "").unwrap();
+        assert!(wayland_is_live("file/not-a-socket", Some(&runtime)));
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_missing_cookie_does_not_remove_a_host_display() {
+        let mut env = std::collections::BTreeMap::from([
+            ("DISPLAY".into(), "localhost:10.0".into()),
+            ("XAUTHORITY".into(), "/nonexistent/hc-cookie".into()),
+        ]);
+        let before = env.clone();
+        drop_unreachable_displays(&mut env);
+        assert_eq!(env, before);
+    }
+
+    #[test]
+    fn a_wayland_listener_inherited_at_fork_closes_in_the_child() {
+        use std::os::fd::AsRawFd;
+        let runtime = dir("forked-wayland");
+        let path = runtime.join("wayland-0");
+        let listener = Listener::bind(&path).unwrap();
+        let (release, wait) = Stream::pair().unwrap();
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // Only async-signal-safe calls between fork and exit: other test threads existed at fork.
+            unsafe {
+                let mut byte = 0u8;
+                libc::read(wait.as_raw_fd(), (&raw mut byte).cast(), 1);
+                libc::close(listener.as_raw_fd());
+                libc::_exit(0);
+            }
+        }
+        drop(wait);
+        drop(listener);
+        let live = wayland_is_live("wayland-0", Some(&runtime));
+        assert!(live, "fork keeps the listener open until the child closes it");
+        io::Write::write_all(&mut &release, b"x").unwrap();
+        assert_socket_gone(|| wayland_is_live("wayland-0", Some(&runtime)));
+        assert_eq!(unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) }, pid);
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_wayland_socket_must_accept_connections() {
+        let runtime = dir("wayland");
+        let path = runtime.join("wayland-0");
+        assert!(!wayland_is_live("wayland-0", Some(&runtime)));
+        let listener = Listener::bind(&path).unwrap();
+        assert!(wayland_is_live("wayland-0", Some(&runtime)));
+        assert!(wayland_is_live(path.to_str().unwrap(), None));
+        assert!(wayland_is_live(path.to_str().unwrap(), Some(Path::new("/nonexistent"))));
+        assert!(wayland_is_live("wayland-0", None));
+        drop(listener);
+        assert_socket_gone(|| wayland_is_live("wayland-0", Some(&runtime)));
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::write(runtime.join("regular-file"), "").unwrap();
+            assert!(!wayland_is_live("regular-file", Some(&runtime)));
+        }
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
 }
 
 /// Returns once the child exited, leaving it unreaped: until it is reaped

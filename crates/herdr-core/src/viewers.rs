@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(test)]
+mod tests;
+
 /// What a viewer's own terminal looks like, reported by the client.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Default, Debug, PartialEq)]
 pub struct Display {
@@ -29,10 +32,21 @@ pub struct Viewer {
     pub conn: Arc<Conn>,
     pub channel: u32,
     pub observe: bool,
+    resize_notifications: bool,
+    repaint_pending: bool,
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
     active_at: Option<Instant>,
     display: Display,
+    /// An unfinished sequence exceeded continuation tracking; skip its tail.
+    pub(crate) recovering: bool,
+}
+
+impl Display {
+    /// Answer the program's color and cell-size queries with these facts.
+    pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) {
+        screen.set_display(rgb(&self.fg), rgb(&self.bg), rgb(&self.cursor), self.cell.map(|[w, h]| (w, h)));
+    }
 }
 
 fn rgb(hex: &Option<String>) -> Option<Rgb> {
@@ -43,6 +57,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 
 pub struct AttachRequest {
     pub observe: bool,
+    pub resize_notifications: bool,
     pub history: usize,
     pub size: (u16, u16),
     pub display: Display,
@@ -64,18 +79,28 @@ impl Core {
             ));
         }
         let channel = conn.new_channel();
+        let recovering = st.screens[&id].continuation().is_none();
         st.viewers.entry(id).or_default().push(Viewer {
             conn: conn.clone(),
             channel,
             observe: req.observe,
+            resize_notifications: req.observe && req.resize_notifications,
+            repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
             display: req.display,
+            recovering,
         });
         self.apply_size(&mut st, id);
         let paint = first_paint(&st, id, req.history);
+        st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
-            out.open(channel);
+            out.open_paused(channel);
+            if req.observe && req.resize_notifications {
+                let t = &st.reg.terminals[&id];
+                let size = [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat();
+                out.resize(channel, &size);
+            }
             out.data(channel, &paint);
         });
         Ok(channel)
@@ -96,7 +121,9 @@ impl Core {
         let holder = holders.iter().find(|l| Some(&l.instance) == instance.as_ref());
         let Some(screen) = screens.get_mut(&id) else { return };
         let relay = relays.entry(id).or_default();
-        let out = relay.feed(screen, bytes);
+        let recovering = viewers.get(&id).into_iter().flatten().any(|v| v.recovering);
+        let (out, recovered) =
+            if recovering { relay.feed_to_ground(screen, bytes) } else { (relay.feed(screen, bytes), None) };
         let win32_input = relay.win32_input.take();
         if let Some(watchers) = output_watch.get_mut(&id).filter(|_| !scrolling) {
             watchers.retain(|w| w.send(out.clone()).is_ok());
@@ -107,14 +134,6 @@ impl Core {
         let reports = screen.take_status_reports();
         let title = screen.take_title_changed().then(|| screen.title());
         let full_screen = screen.alt_screen();
-        let mut behind = Vec::new();
-        for v in viewers.get(&id).into_iter().flatten().filter(|_| !scrolling) {
-            v.conn.with(|ob| {
-                if !ob.data(v.channel, &out) {
-                    behind.push((v.conn.clone(), v.channel));
-                }
-            });
-        }
         // Before any repaint below, so it carries the mode this output just set.
         if let Some(on) = win32_input
             && let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.win32_input != on)
@@ -122,11 +141,40 @@ impl Core {
             t.win32_input = on;
             self.save(st);
         }
-        for (conn, channel) in behind {
-            let paint = first_paint(st, id, 0); // too far behind: start over from now
-            conn.with(|ob| {
-                ob.data(channel, &paint);
+        let recovered = recovered.map(|(at, paint)| {
+            let mut paint = paint_state(st, id, paint);
+            paint.extend_from_slice(&out[at..]);
+            paint
+        });
+        let mut behind = Vec::new();
+        for (index, v) in st.viewers.get_mut(&id).into_iter().flatten().enumerate().filter(|_| !scrolling) {
+            if v.repaint_pending {
+                continue;
+            }
+            let bytes = if v.recovering {
+                let Some(paint) = &recovered else { continue };
+                v.recovering = false;
+                paint
+            } else {
+                &out
+            };
+            v.conn.with(|ob| {
+                if !ob.data(v.channel, bytes) {
+                    behind.push(index);
+                }
             });
+        }
+        if !behind.is_empty() {
+            let paint = first_paint(st, id, 0);
+            let recovering = st.screens[&id].continuation().is_none();
+            let viewers = st.viewers.get_mut(&id).expect("viewers with queued output");
+            for index in behind {
+                let v = &mut viewers[index];
+                v.recovering = recovering;
+                v.conn.with(|ob| {
+                    ob.data(v.channel, &paint);
+                });
+            }
         }
         if full_screen && let Some(t) = st.reg.terminals.get_mut(&id) {
             t.full_screen = true;
@@ -152,13 +200,21 @@ impl Core {
             self.status_changed(st, id, change);
             word_changed |= word(st) != was;
         }
-        // Losing the holder too (a reboot) leaves no tail to replay: a new word, and
-        // with it a turn or news, must already be on disk. Messages and progress can wait.
+        // Losing the holder too (a reboot) leaves no tail to replay: queue a new word,
+        // and with it a turn or news, for immediate persistence. Messages and progress can wait.
         if word_changed { self.save(st) } else { self.save_soon() }
     }
 
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
-        let t = &st.reg.terminals[&id];
+        let t = st.reg.terminals.get_mut(&id).expect("reported terminal");
+        let first_task_finished = t.first_task_turn.is_some_and(|turn| {
+            t.turn > turn
+                || (change.root_report
+                    && t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error")))
+        });
+        if first_task_finished {
+            t.first_task_turn = None;
+        }
         let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
         if change.status {
             self.emit(
@@ -172,7 +228,7 @@ impl Core {
             let state = status.map(|s| s.state);
             self.emit(st, "turn", id, serde_json::json!({"turn": turn, "state": state}));
         }
-        if (change.turn_ended || change.stuck) && st.reg.terminals[&id].is_live() {
+        if (change.turn_ended || change.stuck || first_task_finished) && st.reg.terminals[&id].is_live() {
             self.news(st, id);
         }
     }
@@ -195,10 +251,15 @@ impl Core {
         Some(id)
     }
 
-    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8]) {
+    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8], automatic: bool) {
         let mut st = self.lock();
-        if let Some(id) = self.touch(&mut st, conn, channel, |_| {}) {
-            let now = st.gates.entry(id).or_default().human(bytes);
+        let id = if automatic {
+            Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
+        } else {
+            self.touch(&mut st, conn, channel, |_| {})
+        };
+        if let Some(id) = id {
+            let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
@@ -212,12 +273,20 @@ impl Core {
 
     pub fn viewer_facts(&self, conn: &Arc<Conn>, channel: u32, display: Display) {
         let mut st = self.lock();
-        self.touch(&mut st, conn, channel, |v| {
-            v.display.fg = display.fg.or(v.display.fg.take());
-            v.display.bg = display.bg.or(v.display.bg.take());
-            v.display.cursor = display.cursor.or(v.display.cursor.take());
-            v.display.cell = display.cell.or(v.display.cell);
-        });
+        let Some((id, v)) = Self::viewer(&mut st, conn, channel) else { return };
+        v.display.fg = display.fg.or(v.display.fg.take());
+        v.display.bg = display.bg.or(v.display.bg.take());
+        v.display.cursor = display.cursor.or(v.display.cursor.take());
+        v.display.cell = display.cell.or(v.display.cell);
+        let display = st.viewers[&id]
+            .iter()
+            .filter(|v| !v.observe)
+            .max_by_key(|v| v.active_at)
+            .filter(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
+            .map(|v| v.display.clone());
+        if let Some(display) = display {
+            self.apply_display(&mut st, id, Some(&display));
+        }
     }
 
     /// Focus changes count as activity, and reach programs that asked for them.
@@ -260,15 +329,10 @@ impl Core {
         let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
         let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
         let display = leader.map(|v| v.display.clone());
-        let Some(screen) = st.screens.get_mut(&id) else { return };
-        if let Some(d) = display {
-            screen.set_display(rgb(&d.fg), rgb(&d.bg), rgb(&d.cursor), d.cell.map(|[w, h]| (w, h)));
+        if !st.screens.contains_key(&id) {
+            return;
         }
-        // Display changes can notify an idle program, even without a resize or output.
-        let replies = Relay::take_responses(screen);
-        if let Some(link) = st.link(id) {
-            link.input(id, &replies);
-        }
+        self.apply_display(st, id, display.as_ref());
         let rec = st.reg.terminals.get_mut(&id).expect("live terminal");
         if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
             return;
@@ -279,8 +343,53 @@ impl Core {
         if let Some(link) = st.link(id) {
             link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
         }
+        let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
+            v.repaint_pending = true;
+            v.conn.with(|out| out.resize(v.channel, &size));
+        }
         self.save_soon();
         self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
+    }
+
+    /// Serialize only the latest grid, when a viewer has credit to receive it.
+    pub fn prepare_repaints(&self, conn: &Arc<Conn>) {
+        let mut st = self.lock();
+        let ids: Vec<u32> = st.viewers.keys().copied().collect();
+        for id in ids {
+            self.queue_resize_paints(&mut st, id, Some(conn));
+        }
+    }
+
+    /// On exit there will be no later writer pass over this screen.
+    pub(crate) fn queue_resize_paints(&self, st: &mut State, id: u32, conn: Option<&Arc<Conn>>) {
+        let ready = |v: &Viewer| {
+            v.repaint_pending && conn.is_none_or(|conn| Arc::ptr_eq(&v.conn, conn) && conn.outbox().can_send(v.channel))
+        };
+        if !st.viewers.get(&id).into_iter().flatten().any(ready) {
+            return;
+        }
+        let paint = first_paint(st, id, 0);
+        let recovering = st.screens[&id].continuation().is_none();
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| ready(v)) {
+            v.conn.with(|out| {
+                out.data(v.channel, &paint);
+            });
+            v.repaint_pending = false;
+            v.recovering = recovering;
+        }
+    }
+
+    fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
+        let Some(screen) = st.screens.get_mut(&id) else { return };
+        if let Some(d) = display {
+            d.apply(screen);
+        }
+        // Display changes can notify an idle program, even without a resize or output.
+        let replies = Relay::take_responses(screen);
+        if let Some(link) = st.link(id) {
+            link.input(id, &replies);
+        }
     }
 }
 
@@ -289,7 +398,20 @@ impl Core {
 /// must see them too; a viewer repainted after falling behind gets the mode
 /// either way).
 pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
-    let mut paint = st.screens[&id].paint(history);
+    #[cfg(test)]
+    tests::PAINTS.with(|n| n.set(n.get() + 1));
+    let screen = &st.screens[&id];
+    let mut paint = paint_state(st, id, screen.paint(history));
+    if let Some(continuation) = screen.continuation() {
+        paint.extend(continuation);
+    }
+    paint
+}
+
+fn paint_state(st: &State, id: u32, screen: Vec<u8>) -> Vec<u8> {
+    // A backlog may have ended in any parser state, not at an escape boundary.
+    let mut paint = vec![0x18];
+    paint.extend(screen);
     let t = &st.reg.terminals[&id];
     paint.extend(if t.win32_input { b"\x1b[?9001h" } else { b"\x1b[?9001l" });
     let root = t.status.iter().map(|s| ("", s));

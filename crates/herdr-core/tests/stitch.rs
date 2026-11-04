@@ -88,6 +88,31 @@ fn pinned_headers_scrollbars_loading_frames_and_synchronized_output() {
 }
 
 #[test]
+fn repainting_blocked_and_error_prompts_are_read_without_scrolling() {
+    let s = session_with_limit("15000");
+    std::fs::write(s.root.join("config/herdr-core/config.toml"), "headless = \"200x120\"\n").unwrap();
+    for state in ["blocked", "error"] {
+        let flag = format!("--{state}");
+        let t = app(&s, &["--lines", "10", "--blink", "600", "--fixed", &flag]);
+        assert_eq!(s.json(&["get", &t])["status"]["state"], state);
+        let started = std::time::Instant::now();
+        let r = s.json(&["read", &t, "--lines", "30"]);
+        let elapsed = started.elapsed();
+        eprintln!("{state} prompt: {elapsed:?}, how={}, complete={}", r["how"], r["complete"]);
+        assert_eq!((r["how"].as_str(), r["complete"].as_bool()), (Some("screen"), Some(false)), "{r}");
+        assert_eq!(r["why"], state, "{r}");
+        assert!(elapsed < std::time::Duration::from_secs(1), "took {elapsed:?}");
+        assert!(whole(r["text"].as_str().unwrap(), 10), "{r}");
+        let plain = String::from_utf8(s.hc(&["read", &t, "--lines", "30"]).stdout).unwrap();
+        assert!(plain.contains(&format!("only its screen: it is {state}")), "{plain}");
+        let after = screen(&s, &t);
+        assert!(whole(&after, 10));
+        assert!(after.contains("wheels=0 keys="), "a read must not send input: {after}");
+        assert_eq!(s.json(&["get", &t])["status"]["state"], state);
+    }
+}
+
+#[test]
 fn slow_redraws_still_stitch() {
     let s = session();
     let t = app(&s, &["--lines", "30", "--slow", "60"]);

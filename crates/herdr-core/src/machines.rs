@@ -95,6 +95,23 @@ pub fn save(state: &Path, machines: &[Machine]) {
     }
 }
 
+/// `can@rohan:2222`, as people write a port, in the form ssh takes it
+/// (`ssh://can@rohan:2222`): ssh reads a plain `rohan:2222` as a host name.
+pub fn ssh_target(target: String) -> String {
+    let host = target.rsplit_once('@').map_or(target.as_str(), |(_, host)| host);
+    match host.split_once(':') {
+        Some((h, port))
+            if !target.starts_with("ssh://")
+                && !h.is_empty()
+                && !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            format!("ssh://{target}")
+        }
+        _ => target,
+    }
+}
+
 /// A free name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay whole.
 pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
     let t = target.strip_prefix("ssh://").unwrap_or(target);
@@ -204,11 +221,6 @@ fn is_windows(target: &str) -> bool {
     WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|t| t == target)
 }
 
-/// cmd and PowerShell, asked to run `sh`.
-fn no_sh(err: &str) -> bool {
-    err.contains("'sh' is not recognized") || err.contains("The term 'sh' is not recognized")
-}
-
 /// Where install.ps1 puts hc, from the home folder an ssh session starts in.
 /// Not PATH: sessions riding a shared login keep the PATH from before an
 /// install. `.\` reads the same in cmd and PowerShell.
@@ -220,7 +232,10 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// person must type fails fast.
 fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
     let remote = if windows {
-        format!("{WINDOWS_HC} connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+        let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
+        format!(
+            "cmd /d /c \"if exist {WINDOWS_HC} ({WINDOWS_HC} connect{session}) else (echo {NOT_HERE} 1>&2 & exit /b 127)\""
+        )
     } else {
         let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
         format!(
@@ -276,10 +291,6 @@ pub async fn dial(
 ) -> Result<Dialed, RpcError> {
     let mut probe_windows = false;
     match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
-        Err(e) if e.kind == "windows" => {
-            WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-            dial_once(paths, to, session, hello, true, &mut probe_windows).await
-        }
         Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
             Err(_) if !is_windows(to.target) => Err(e),
             result => result,
@@ -336,21 +347,16 @@ async fn dial_once(
             .ok()
             .flatten();
             if !windows {
-                if no_sh(&err) {
-                    return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
-                }
                 // Windows may find Git's sh but fail in its shim or mangle
                 // the script's quoting. Only our marker proves the script ran.
-                *probe_windows = !err.contains(NOT_HERE) && !wants_login(&err);
+                *probe_windows = status != Some(255) && !err.contains(NOT_HERE) && !wants_login(&err);
             }
-            // cmd and PowerShell, when hc isn't where install.ps1 puts it.
-            let missing_windows =
-                windows && (err.contains("is not recognized") || err.contains("cannot find the path"));
+            let missing_windows = windows && err.contains(NOT_HERE);
             if missing_windows && !is_windows(target) {
                 WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
             }
             // Some connection wrappers collapse all remote failures to exit code 1.
-            if status == Some(127) || err.contains(NOT_HERE) || missing_windows {
+            if status == Some(127) || err.contains(NOT_HERE) {
                 return Err(RpcError::new(
                     "hc_missing",
                     format!("hc is not installed on {target}"),
@@ -454,12 +460,14 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     }
     let here = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     let probe = run_raw(paths, to, "uname -sm", b"")?;
-    let err = String::from_utf8_lossy(&probe.stderr);
     let there = platform(&last_line(&probe.stdout));
-    if err.contains("'uname' is not recognized")
-        || err.contains("The term 'uname' is not recognized")
-        || (probe.status.success() && there.starts_with("windows "))
-    {
+    let windows = if probe.status.success() {
+        there.starts_with("windows ")
+    } else {
+        let native = run_raw(paths, to, "cmd /d /c \"echo herdr-core-windows\"", b"")?;
+        native.status.success() && last_line(&native.stdout) == "herdr-core-windows"
+    };
+    if windows {
         if to.via {
             return Err(RpcError::new("install_failed", format!("{target} runs Windows"), "install hc there yourself"));
         }
@@ -474,12 +482,13 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
         ));
     }
     // Same OS and CPU: this very hc. Else this version's released build for it.
-    let exe = if there == here {
-        std::env::current_exe()
-            .and_then(std::fs::read)
-            .map_err(|e| RpcError::internal(format!("cannot read this hc: {e}")))?
+    let scratch = crate::releases::Scratch::new()?;
+    let macos = there.starts_with("macos ");
+    let bundle = !macos || run_there(paths, to, "id -u", b"")? != "0";
+    let current = std::env::current_exe().map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
+    let bin = if there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core")) {
+        current
     } else {
-        let scratch = crate::releases::Scratch::new()?;
         let version = env!("CARGO_PKG_VERSION");
         let not_released = |_| {
             RpcError::new(
@@ -489,20 +498,61 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
             )
         };
         let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
-        let bin = crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0)?;
-        std::fs::read(bin).map_err(|e| RpcError::internal(e.to_string()))?
+        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, bundle)?
     };
+    let (exe, bundled) = install_payload(&bin, &scratch.0)?;
     let n = exe.len();
     let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
+    if bundled {
+        let script = format!(
+            "set -e; d=$HOME/.local/bin; mkdir -p \"$d\"; t=$(mktemp -d); trap \"rm -rf \\\"$t\\\"\" EXIT; \
+             head -c {n} > \"$t/core.tar\"; [ $(wc -c < \"$t/core.tar\") -eq {n} ]; \
+             tar -xf \"$t/core.tar\" -C \"$t\"; b=\"$t/Herdr Core.app/Contents/MacOS/herdr-core\"; \
+             \"$b\" --hc-install-bundle \"$b\" \"$d/herdr-core\"; \
+             {session}\"$d/herdr-core\" server restart > /dev/null; \"$d/herdr-core\" --version"
+        );
+        return run_there(paths, to, &format!("sh -c '{script}'"), &exe);
+    }
+    let guard = if macos {
+        "case $(readlink \"$d/herdr-core\" || true) in */Contents/MacOS/herdr-core) \
+         echo \"a bundled remote core needs a complete bundle; run hc update on that machine\" >&2; exit 5;; esac; "
+    } else {
+        ""
+    };
     // Into a temp file beside the target, checked whole and running, then swapped.
     let script = format!(
-        "set -e; d=$HOME/.local/bin; mkdir -p $d; rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
+        "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
          head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
          chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this hc does not run there\" >&2; exit 4; }}; \
          mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \
          {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
     );
     run_there(paths, to, &format!("sh -c '{script}'"), &exe)
+}
+
+fn install_payload(bin: &Path, scratch: &Path) -> Result<(Vec<u8>, bool), RpcError> {
+    let bundled = bin.ends_with("Herdr Core.app/Contents/MacOS/herdr-core");
+    let path = if bundled {
+        let root = bin.parent().unwrap().parent().unwrap().parent().unwrap();
+        let archive = scratch.join("core-bundle.tar");
+        let status = std::process::Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(root.parent().unwrap())
+            .arg("Herdr Core.app")
+            .env("COPYFILE_DISABLE", "1")
+            .status()
+            .map_err(|e| RpcError::internal(e.to_string()))?;
+        if !status.success() {
+            return Err(RpcError::internal("cannot pack the core bundle"));
+        }
+        archive
+    } else {
+        bin.to_path_buf()
+    };
+    let bytes = std::fs::read(path).map_err(|e| RpcError::internal(e.to_string()))?;
+    Ok((bytes, bundled))
 }
 
 /// Windows there: this version's release zip and the installer go to its
@@ -561,6 +611,11 @@ mod tests {
         assert_eq!(default_name("rohan").as_deref(), Some("rohan"));
         assert_eq!(default_name("can@Rohan.lan").as_deref(), Some("rohan"));
         assert_eq!(default_name("ssh://can@rohan:2222").as_deref(), Some("rohan"));
+        assert_eq!(ssh_target("can@10.0.0.7:4396".into()), "ssh://can@10.0.0.7:4396");
+        assert_eq!(ssh_target("rohan:2222".into()), "ssh://rohan:2222");
+        for unchanged in ["rohan", "can@rohan", "ssh://can@rohan:2222", "can@fe80::1", "[::1]:22x", "can@rohan:"] {
+            assert_eq!(ssh_target(unchanged.into()), unchanged);
+        }
         assert_eq!(default_name("root@10.0.0.7").as_deref(), Some("10.0.0.7"));
         assert_eq!(default_name("[::1]"), None);
         assert_eq!(default_name(&format!("{}-extra.example.com", "a".repeat(31))), Some("a".repeat(31)));
@@ -576,12 +631,14 @@ mod tests {
 
     #[test]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
-        assert!(no_sh("'sh' is not recognized as an internal or external command,"));
-        assert!(no_sh("sh : The term 'sh' is not recognized as the name of a cmdlet"));
-        assert!(!no_sh("sh: herdr-core: not found"));
         let paths = crate::paths::Paths::from_env().unwrap();
         let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
-        assert_eq!(line, r".\AppData\Local\Programs\herdr-core\herdr-core.exe connect --session s1");
+        assert_eq!(
+            line,
+            format!(
+                "cmd /d /c \"if exist {WINDOWS_HC} ({WINDOWS_HC} connect --session s1) else (echo {NOT_HERE} 1>&2 & exit /b 127)\""
+            )
+        );
     }
 }

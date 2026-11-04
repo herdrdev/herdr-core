@@ -13,12 +13,14 @@ pub const DATA: u8 = 0;
 pub const CREDIT: u8 = 1;
 /// The channel is over (JSON reason from the core, empty from a client).
 pub const CLOSE: u8 = 2;
-/// Viewer → core: u16 LE cols, u16 LE rows.
+/// u16 LE cols, u16 LE rows: viewer → core, core → observer.
 pub const RESIZE: u8 = 3;
 /// Viewer → core: 1 = gained focus, 0 = lost it.
 pub const FOCUS: u8 = 4;
 /// Viewer → core: JSON display facts (colors, cell size).
 pub const FACTS: u8 = 5;
+/// Viewer → core: terminal-generated replies, not human activity.
+pub const AUTOMATIC_INPUT: u8 = 6;
 
 /// Credit a stream starts with before the viewer acknowledges anything.
 pub const WINDOW: usize = 256 * 1024;
@@ -144,6 +146,8 @@ impl Conn {
 
 struct Stream {
     pending: VecDeque<u8>,
+    resizes: VecDeque<(usize, Vec<u8>)>,
+    paused: bool,
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
     ending: Option<Vec<u8>>,
@@ -176,7 +180,43 @@ impl Outbox {
     }
 
     pub fn open(&mut self, channel: u32) {
-        self.streams.insert(channel, Stream { pending: VecDeque::new(), credit: WINDOW, ending: None });
+        self.streams.insert(
+            channel,
+            Stream { pending: VecDeque::new(), resizes: VecDeque::new(), paused: false, credit: WINDOW, ending: None },
+        );
+    }
+
+    /// Attach output must wait until the reply installs the receiver's channel mapping.
+    pub fn open_paused(&mut self, channel: u32) {
+        self.open(channel);
+        self.streams.get_mut(&channel).unwrap().paused = true;
+    }
+
+    pub fn resume(&mut self, channel: u32) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.paused = false;
+        }
+    }
+
+    pub fn can_send(&self, channel: u32) -> bool {
+        self.streams.get(&channel).is_some_and(|s| !s.paused && s.credit > 0)
+    }
+
+    /// Supersede pending output with a new grid and an authoritative repaint.
+    /// A partly delivered escape sequence is cancelled by the repaint's CAN.
+    pub fn resize(&mut self, channel: u32, size: &[u8]) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.pending.clear();
+            s.resizes.clear();
+            s.resizes.push_back((0, size.to_vec()));
+        }
+    }
+
+    /// Relay boundaries keep bytes already charged to the upstream credit window.
+    pub fn ordered_resize(&mut self, channel: u32, size: &[u8]) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.resizes.push_back((s.pending.len(), size.to_vec()));
+        }
     }
 
     /// Ends a stream now (the viewer detached): whatever is queued is dropped.
@@ -200,6 +240,11 @@ impl Outbox {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
         if s.pending.len() + bytes.len() > MAX_PENDING {
             s.pending.clear();
+            let latest = s.resizes.pop_back();
+            s.resizes.clear();
+            if let Some((_, size)) = latest {
+                s.resizes.push_back((0, size));
+            }
             return false;
         }
         s.pending.extend(bytes);
@@ -235,16 +280,30 @@ impl Outbox {
             self.control_bytes -= frame.len();
             return Some(frame);
         }
-        if let Some((&channel, _)) = self.streams.iter().find(|(_, s)| s.ending.is_some() && s.pending.is_empty()) {
+        if let Some((&channel, _)) =
+            self.streams.iter().find(|(_, s)| !s.paused && s.ending.is_some() && s.pending.is_empty())
+        {
             let reason = self.streams.remove(&channel).and_then(|s| s.ending).unwrap_or_default();
             return Some(encode(channel, CLOSE, &reason));
         }
-        let ready: Vec<u32> =
-            self.streams.iter().filter(|(_, s)| s.credit > 0 && !s.pending.is_empty()).map(|(ch, _)| *ch).collect();
+        let ready: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| !s.paused && s.credit > 0 && !s.pending.is_empty())
+            .map(|(ch, _)| *ch)
+            .collect();
         let channel = *ready.iter().find(|ch| **ch > self.turn).or(ready.first())?;
         self.turn = channel;
         let s = self.streams.get_mut(&channel).expect("ready stream");
-        let n = s.pending.len().min(s.credit).min(CHUNK);
+        if s.resizes.front().is_some_and(|(at, _)| *at == 0) {
+            let (_, size) = s.resizes.pop_front().unwrap();
+            return Some(encode(channel, RESIZE, &size));
+        }
+        let boundary = s.resizes.front().map_or(usize::MAX, |(at, _)| *at);
+        let n = s.pending.len().min(s.credit).min(CHUNK).min(boundary);
+        for (at, _) in &mut s.resizes {
+            *at -= n;
+        }
         s.credit -= n;
         let chunk: Vec<u8> = s.pending.drain(..n).collect();
         Some(encode(channel, DATA, &chunk))
@@ -254,6 +313,65 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_replaces_stalled_and_partially_sent_paints_atomically() {
+        let mut out = Outbox::default();
+        out.open(1);
+        out.data(1, &vec![b'a'; WINDOW + 10]);
+        while out.next_frame().is_some() {}
+        out.resize(1, &[80, 0, 24, 0]);
+        out.data(1, b"paint A");
+        out.resize(1, &[90, 0, 30, 0]);
+        out.data(1, &vec![b'b'; CHUNK * 2]);
+        assert!(out.next_frame().is_none(), "no size transition ahead of stalled DATA");
+        out.credit(1, CHUNK);
+        let size = out.next_frame().unwrap();
+        assert_eq!(size[4], RESIZE);
+        assert_eq!(&size[HEADER..], &[90, 0, 30, 0]);
+        assert_eq!(out.next_frame().unwrap()[4], DATA);
+        out.resize(1, &[100, 0, 40, 0]);
+        assert!(!out.data(1, &vec![0; MAX_PENDING + 1]));
+        out.data(1, b"\x18latest");
+        assert!(out.next_frame().is_none());
+        out.credit(1, 100);
+        let size = out.next_frame().unwrap();
+        assert_eq!(size[4], RESIZE);
+        assert_eq!(&size[HEADER..], &[100, 0, 40, 0]);
+        assert_eq!(&out.next_frame().unwrap()[HEADER..], b"\x18latest");
+        assert!(out.next_frame().is_none());
+    }
+
+    #[test]
+    fn a_relay_keeps_charged_bytes_before_their_resize_boundary() {
+        let mut out = Outbox::default();
+        out.open(1);
+        out.data(1, &vec![b'a'; WINDOW + 10]);
+        while out.next_frame().is_some() {}
+        out.ordered_resize(1, &[90, 0, 30, 0]);
+        out.data(1, b"paint");
+        assert_eq!(out.queued(1), 15, "upstream bytes must not lose their eventual CREDIT");
+        assert!(out.next_frame().is_none());
+        out.credit(1, 15);
+        assert_eq!(&out.next_frame().unwrap()[HEADER..], &[b'a'; 10]);
+        assert_eq!(out.next_frame().unwrap()[4], RESIZE);
+        assert_eq!(&out.next_frame().unwrap()[HEADER..], b"paint");
+        assert!(out.next_frame().is_none());
+    }
+
+    #[test]
+    fn attach_stream_waits_for_its_reply_before_announcing_the_grid() {
+        let mut out = Outbox::default();
+        out.open_paused(1);
+        out.resize(1, &[80, 0, 24, 0]);
+        out.data(1, b"paint");
+        assert!(out.next_frame().is_none());
+        out.control(encode(0, DATA, b"attach reply"));
+        out.resume(1);
+        assert_eq!(&out.next_frame().unwrap()[HEADER..], b"attach reply");
+        assert_eq!(out.next_frame().unwrap()[4], RESIZE);
+        assert_eq!(out.next_frame().unwrap()[4], DATA);
+    }
 
     #[test]
     fn round_trips_and_rejects_oversized_frames() {

@@ -134,6 +134,33 @@ fn powershell_with_git_sh_retries_after_a_mangled_script() {
 }
 
 #[test]
+fn localized_windows_shells_connect_to_an_installed_core() {
+    for (error, code) in [
+        ("'sh' 不是內部或外部命令、可執行的程式或批次檔。", 9009),
+        ("sh : 無法辨識 'sh' 詞彙是否為 Cmdlet、函數、指令檔或可執行程式的名稱。", 1),
+        ("Der Befehl 'sh' ist entweder falsch geschrieben oder konnte nicht gefunden werden.", 9009),
+    ] {
+        let rohan = Session::new();
+        let mut s = Session::new();
+        let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+        let wrapper = s.root.join("localized-ssh");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\ncase \"$2\" in sh\\ *) cat >&2 <<'ERROR'\n{error}\nERROR\nexit {code};; esac\nexec {ssh} rohan '{} connect'\n",
+                rohan.bin.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+        let added = s.json(&["machine", "add", "localized-windows"]);
+        assert_eq!(added["id"], rohan.json(&["server", "status"])["core"]["id"], "{added}");
+        s.json(&["machine", "rm", "localized-windows"]);
+    }
+}
+
+#[test]
 fn a_missing_unix_core_does_not_try_the_windows_line() {
     let mut s = Session::new();
     let wrapper = s.root.join("missing-unix-ssh");
@@ -151,6 +178,32 @@ fn a_missing_unix_core_does_not_try_the_windows_line() {
     let (_, missing) = s.err(&["--json", "machine", "add", "unix-no-core"]);
     assert_eq!(missing["error"]["kind"], "hc_missing", "{missing}");
     assert_eq!(std::fs::read_to_string(calls).unwrap(), "call\n");
+}
+
+#[test]
+fn an_ssh_connection_failure_does_not_try_the_windows_line() {
+    for via in [false, true] {
+        let mut s = Session::new();
+        let wrapper = s.root.join("offline-ssh");
+        let calls = s.root.join("calls");
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\necho call >> '{}'\necho 'Connection timed out' >&2\nexit 255\n", calls.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let wrapper = wrapper.display().to_string();
+        let args = if via {
+            vec!["--json", "machine", "add", "--via", &wrapper, "--name", "offline"]
+        } else {
+            s.env.push(("HC_SSH".into(), wrapper.clone()));
+            vec!["--json", "machine", "add", "offline"]
+        };
+        let (_, error) = s.err(&args);
+        assert_eq!(error["error"]["kind"], "unreachable", "{error}");
+        assert!(error["error"]["message"].as_str().unwrap().ends_with("Connection timed out"), "{error}");
+        assert_eq!(std::fs::read_to_string(calls).unwrap(), "call\n", "via={via}: dial only once");
+    }
 }
 
 #[test]
@@ -178,7 +231,18 @@ fn a_windows_probe_keeps_native_core_errors() {
 
 #[test]
 fn a_windows_machine_with_git_sh_installs_the_native_build_when_missing() {
-    for uname in ["MINGW64_NT-10.0 x86_64", "MSYS_NT-10.0 x86_64"] {
+    for (uname, sh_error, sh_code, missing_error) in [
+        ("MINGW64_NT-10.0 x86_64", "", 0, "is not recognized"),
+        ("MSYS_NT-10.0 x86_64", "", 0, "is not recognized"),
+        ("", "'sh' 不是內部或外部命令、可執行的程式或批次檔。", 9009, "系統找不到指定的路徑。"),
+        ("", "sh : 無法辨識 'sh' 詞彙是否為 Cmdlet、函數、指令檔或可執行程式的名稱。", 1, "系統找不到指定的路徑。"),
+        (
+            "",
+            "Der Befehl 'sh' konnte nicht gefunden werden.",
+            9009,
+            "Das System kann den angegebenen Pfad nicht finden.",
+        ),
+    ] {
         let rohan = Session::new();
         let mut s = Session::new();
         let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
@@ -202,13 +266,20 @@ fn a_windows_machine_with_git_sh_installs_the_native_build_when_missing() {
         let wrapper = bin.join("ssh");
         std::fs::write(&wrapper, format!(r#"#!/bin/sh
 case "$2" in
-  sh\ *) exit 0;;
-  'uname -sm') echo '{uname}'; exit 0;;
+  sh\ *) cat >&2 <<'ERROR'
+{sh_error}
+ERROR
+    exit {sh_code};;
+  'uname -sm') [ -n '{uname}' ] || {{ echo '無法辨識 uname' >&2; exit 1; }}; echo '{uname}'; exit 0;;
+  'cmd /d /c "echo herdr-core-windows"') echo herdr-core-windows; exit 0;;
   powershell\ *) [ -f '{root}/copied' ] || exit 1; touch '{root}/installed'; exit 0;;
   *--version) echo 'herdr-core test'; exit 0;;
 esac
 if [ ! -f '{root}/installed' ]; then
-  echo "'.\\AppData\\Local\\Programs\\herdr-core\\herdr-core.exe' is not recognized as an internal or external command" >&2
+  case "$2" in
+    'cmd /d /c '*"if exist "*"herdr-core is not installed here"*"exit /b 127"*) echo 'herdr-core is not installed here' >&2; exit 127;;
+  esac
+  echo '{missing_error}' >&2
   exit 1
 fi
 exec {ssh} rohan '{core} connect'

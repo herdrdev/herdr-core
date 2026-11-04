@@ -17,6 +17,7 @@ type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
 pub fn serve() -> io::Result<()> {
+    platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
     paths.create_dirs()?;
     let mut lock =
@@ -29,6 +30,7 @@ pub fn serve() -> io::Result<()> {
     // Where we listen, for clients whose env points elsewhere.
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;
+    platform::legacy_bundle_notice(&paths.state);
     let info = load_identity(&paths.state, platform::machine_id())?;
     let socket = paths.socket.clone();
     let _shutdown_watch = platform::monitor_host_shutdown();
@@ -69,11 +71,19 @@ pub fn serve() -> io::Result<()> {
             }
         }
         platform::remove_endpoint(&socket);
-        if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
-            core.handover();
-        }
-        Ok(())
+        finish(&core).await
     })
+}
+
+/// Finish queued registry work before the runtime cancels its tasks (which still own Core).
+pub(crate) async fn finish(core: &Core) -> io::Result<()> {
+    if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
+        core.handover().await?;
+    }
+    if let Err(e) = core.flush_saved().await {
+        eprintln!("core: final registry flush failed: {}", e.message);
+    }
+    Ok(())
 }
 
 /// core.json: the identity, and the system's machine id it was made on.
@@ -173,7 +183,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         }
     }
     let conn = Arc::new(Conn::default());
-    let mut writer = tokio::spawn(write_frames(conn.clone(), write));
+    let mut writer = tokio::spawn(write_frames(core.clone(), conn.clone(), write));
     // Another core dialing in says who it is in its hello.
     let hello: Value = serde_json::from_str(&line).unwrap_or_default();
     crate::remote::peer_joined(&core, &conn, &hello["params"]);
@@ -276,9 +286,10 @@ pub fn heartbeat(core: Arc<Core>, conn: Arc<Conn>, channel: u32) {
 }
 
 /// Sends whatever the outbox hands out: control first, then streams by credit.
-async fn write_frames(conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
+async fn write_frames(core: Arc<Core>, conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
     loop {
         conn.wake.notified().await;
+        core.prepare_repaints(&conn);
         loop {
             let next = conn.outbox().next_frame();
             match next {
@@ -318,7 +329,12 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 let task = tokio::spawn(async move {
                     let handled = handle(&core, Some(&conn), None, &payload).await;
                     if let Some(reply) = &handled.reply {
-                        conn.with(|out| out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes())));
+                        conn.with(|out| {
+                            out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes()));
+                            if let Some(channel) = reply["result"]["channel"].as_u64() {
+                                out.resume(channel as u32);
+                            }
+                        });
                     }
                     if handled.stop {
                         // Give the writer a moment to put the reply on the wire before we exit.
@@ -332,7 +348,8 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 }
             }
             (0, _) => {}
-            (ch, wire::DATA) => core.viewer_input(conn, ch, &payload),
+            (ch, wire::DATA) => core.viewer_input(conn, ch, &payload, false),
+            (ch, wire::AUTOMATIC_INPUT) => core.viewer_input(conn, ch, &payload, true),
             (ch, wire::CREDIT) if payload.len() == 4 => {
                 let n = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
                 conn.with(|out| out.credit(ch, n));

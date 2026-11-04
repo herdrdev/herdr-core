@@ -3,11 +3,19 @@
     "schemas": {
       "AttachResult": {
         "properties": {
+          "automatic_input": {
+            "description": "The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.",
+            "type": "boolean"
+          },
           "channel": {
             "description": "Stream channel: first paint, then live bytes. Send keys as DATA on it;\nRESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "resize_notifications": {
+            "description": "True only when the entire path sends RESIZE before replacement paints.\nFalse or absent means the observer must track size changes separately.",
+            "type": "boolean"
           },
           "terminal": {
             "$ref": "#/components/schemas/Terminal"
@@ -15,7 +23,9 @@
         },
         "required": [
           "channel",
-          "terminal"
+          "terminal",
+          "resize_notifications",
+          "automatic_input"
         ],
         "type": "object"
       },
@@ -368,6 +378,29 @@
         ],
         "type": "string"
       },
+      "InitialSize": {
+        "properties": {
+          "cols": {
+            "description": "Initial terminal width in columns (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Initial terminal height in rows (at least 1).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "type": "object"
+      },
       "InterruptResult": {
         "properties": {
           "key": {
@@ -599,7 +632,7 @@
             "type": "string"
           },
           "why": {
-            "description": "Why only the screen: \"working\" (a full-screen app isn't scrolled while\nit works; read again once it stops).",
+            "description": "Why only the screen: \"working\", \"blocked\" or \"error\" (a full-screen app\nis not scrolled in these states).",
             "type": [
               "string",
               "null"
@@ -858,6 +891,11 @@
               }
             ],
             "description": "With `wait`: how the wait ended (exit, a status, or timeout: still running)."
+          },
+          "waiting_for_person": {
+            "default": false,
+            "description": "An incoming message is held for the person's unsent draft (not composer detection).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -905,10 +943,15 @@
               }
             ],
             "description": "With `wait`: how that turn ended."
+          },
+          "waited_for_person": {
+            "description": "True when delivery was held for a person's unsent draft.",
+            "type": "boolean"
           }
         },
         "required": [
-          "turn"
+          "turn",
+          "waited_for_person"
         ],
         "type": "object"
       },
@@ -1143,6 +1186,17 @@
               "null"
             ]
           },
+          "first_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A template first message that was not sent; retained for later inspection."
+          },
           "foreground": {
             "anyOf": [
               {
@@ -1303,6 +1357,11 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "waiting_for_person": {
+            "default": false,
+            "description": "An incoming message is held for the person's unsent draft (not composer detection).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1389,7 +1448,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.15"
+    "version": "0.1.17"
   },
   "methods": [
     {
@@ -1432,6 +1491,19 @@
               }
             ],
             "description": "Another core dialing in: who it is. Its terminals may then be parents\nof terminals here, and hear from them."
+          }
+        },
+        {
+          "description": "Features supported by a core dialing in, including relaying size notifications.",
+          "name": "features",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Features supported by a core dialing in, including relaying size notifications.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         {
@@ -1616,6 +1688,22 @@
           }
         },
         {
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "name": "display",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Display"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
+          }
+        },
+        {
           "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
           "name": "env",
           "required": false,
@@ -1737,6 +1825,22 @@
             "default": false,
             "description": "Remove it right after it exits (once a waiting parent has the exit code).",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "name": "size",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitialSize"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
           }
         },
         {
@@ -2246,6 +2350,16 @@
           }
         },
         {
+          "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+          "name": "resize_notifications",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Back after a dropped line: sets the size only once active again.",
           "name": "resumed",
           "required": false,
@@ -2283,7 +2397,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after the person submits or clears their draft (up to 3 min), then ~3 s quiet; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
       "errors": [
         {
           "code": -32000,
@@ -2487,7 +2601,7 @@
           }
         },
         {
-          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).",
+          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.",
           "name": "children",
           "required": false,
           "schema": {
@@ -2499,7 +2613,7 @@
                 "type": "null"
               }
             ],
-            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`)."
+            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped."
           }
         },
         {
@@ -3536,11 +3650,11 @@
           }
         },
         {
-          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
           "name": "target",
           "required": false,
           "schema": {
-            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
             "type": [
               "string",
               "null"

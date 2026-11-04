@@ -283,18 +283,29 @@ fn linger() {
     if Path::new("/var/lib/systemd/linger").join(&user).exists() {
         return;
     }
-    let enabled = Command::new("loginctl")
-        .args(["--no-ask-password", "enable-linger", &user])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if enabled {
-        eprintln!("hc: turned on linger for {user}, so the core outlives your logins");
-    } else {
-        eprintln!("hc: the core stops when your last login ends; `sudo loginctl enable-linger {user}` keeps it");
-    }
+    // Polkit can leave loginctl waiting for 25 seconds, longer than a
+    // holder's handshake deadline. Try once per process, off the startup path.
+    static ATTEMPT: std::sync::Once = std::sync::Once::new();
+    ATTEMPT.call_once(|| {
+        let _ = enable_linger(Command::new("loginctl"), user);
+    });
+}
+
+fn enable_linger(mut command: Command, user: String) -> io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("hc-linger".into()).spawn(move || {
+        let enabled = command
+            .args(["--no-ask-password", "enable-linger", &user])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if enabled {
+            eprintln!("hc: turned on linger for {user}, so the core outlives your logins");
+        } else {
+            eprintln!("hc: the core stops when your last login ends; `sudo loginctl enable-linger {user}` keeps it");
+        }
+    })
 }
 
 /// The user manager's environment now (a core may have started before the
@@ -333,6 +344,23 @@ mod tests {
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn linger_does_not_wait_for_loginctl() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 1"]);
+        let start = std::time::Instant::now();
+        let worker = super::enable_linger(command, "hc-test".into()).unwrap();
+        let elapsed = start.elapsed();
+        worker.join().unwrap();
+        assert!(elapsed < std::time::Duration::from_millis(500), "loginctl blocked startup");
+    }
+
+    #[test]
+    fn missing_loginctl_is_best_effort() {
+        let worker = super::enable_linger(Command::new("/no-such-hc-test-loginctl"), "hc-test".into()).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

@@ -344,7 +344,7 @@ Add a machine you reach with ssh: hc machine add vps
 Usage: hc machine add [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET]  How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config
+  [TARGET]  How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config
 
 Options:
       --json               JSON output even in a terminal
@@ -638,7 +638,7 @@ Options:
       --children <CHILDREN>
           Wait on children instead: all = until none is working, any = next news or a message to you.
           
-          `all`: until none of the children is working (one that hasn't reported yet counts as working). `any`: the parent's unseen news (a turn ended, it blocked, it hit an error, it exited), else the next child to stop working; for the parent itself, also a message typed into it while it worked (reason `message`).
+          `all`: until none of the children is working (one that hasn't reported yet counts as working). `any`: the parent's unseen news (a turn ended, it blocked, it hit an error, it exited), else the next child to stop working; for the parent itself, also a message typed into it while it worked (reason `message`). A child with a sent launch task counts as working until its turn advances past delivery, or it reports done, blocked, error, or exits. Startup idle does not complete that task in either mode. Without a launch task, idle still counts as stopped.
           
           [possible values: any, all]
 

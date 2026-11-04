@@ -176,15 +176,20 @@ fn a_client_that_stops_reading_its_replies_is_disconnected_not_kept_in_memory() 
     let s = Session::new();
     s.json(&["server", "start"]);
     let mut stream = std::os::unix::net::UnixStream::connect(s.socket()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     writeln!(stream, r#"{{"jsonrpc":"2.0","id":0,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
     for id in 1..=8 {
         let call = json!({"jsonrpc": "2.0", "id": id, "method": "machine.exec",
             "params": {"argv": ["head", "-c", "8388608", "/dev/zero"]}});
         stream.write_all(&herdr_core::wire::encode(0, herdr_core::wire::DATA, call.to_string().as_bytes())).unwrap();
     }
-    // 8 replies of ~11 MB, none read: past the cap it hangs up on us.
-    std::thread::sleep(Duration::from_secs(3));
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // Do not drain replies until the core closes: reading early can keep the queue below its cap.
+    use std::os::fd::AsRawFd;
+    wait_until_for("the non-reading client is disconnected", Duration::from_secs(30), || {
+        let mut fd = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        assert!(unsafe { libc::poll(&mut fd, 1, 0) } >= 0);
+        fd.revents & libc::POLLHUP != 0
+    });
     let mut got = Vec::new();
     stream.read_to_end(&mut got).expect("hung up on, not left waiting");
     assert!(got.len() < 64 << 20, "only what was in flight came");

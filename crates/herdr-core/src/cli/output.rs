@@ -29,9 +29,14 @@ pub(super) fn agent(t: &Value) -> String {
     t["status"]["app"].as_str().unwrap_or_else(|| program.rsplit('/').next().unwrap_or_default()).into()
 }
 
-/// The last folder of a terminal's cwd, `~` for home.
+/// The current folder, falling back to where the terminal started.
+fn cwd(t: &Value) -> Option<&str> {
+    t["foreground"]["cwd"].as_str().or_else(|| t["cwd"].as_str())
+}
+
+/// The last folder of a terminal's current cwd, `~` for home.
 pub(super) fn folder(t: &Value) -> String {
-    let cwd = t["cwd"].as_str().unwrap_or_default();
+    let cwd = cwd(t).unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     if !home.is_empty() && cwd.trim_end_matches('/') == home.trim_end_matches('/') {
         return "~".into();
@@ -259,17 +264,26 @@ pub(super) fn describe(t: &Value) -> String {
         .flatten()
         .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default()))
         .collect();
-    format!(
-        "{} {}\n  name: {}\n  parent: {}\n  command: {}\n  cwd: {}\n  pid: {}\n  labels: {}",
+    let waiting = if t["waiting_for_person"] == true {
+        "\n  input: waiting for the person to submit or clear their draft"
+    } else {
+        ""
+    };
+    let mut description = format!(
+        "{} {}\n  name: {}\n  parent: {}\n  command: {}\n  cwd: {}\n  pid: {}\n  labels: {}{waiting}",
         t["address"].as_str().unwrap_or("?"),
         summary(t),
         t["name"].as_str().unwrap_or("-"),
         t["parent"].as_str().unwrap_or("-"),
         command(t),
-        t["cwd"].as_str().unwrap_or("-"),
+        cwd(t).unwrap_or("-"),
         t["pid"],
         if labels.is_empty() { "-".into() } else { labels.join(" ") },
-    )
+    );
+    if let Some(first) = t.get("first_message").filter(|f| f["sent"] == false) {
+        description.push_str(&format!("\n  first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
+    }
+    description
 }
 
 /// An exec's output as the program wrote it, then its exit code as ours.

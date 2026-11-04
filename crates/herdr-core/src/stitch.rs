@@ -167,15 +167,15 @@ impl Capture {
 impl Core {
     /// Reads a full-screen app's history by scrolling it with the mouse wheel,
     /// then scrolls it back. Only for an app on the alternate screen that takes
-    /// the wheel and isn't working. `None`: read the plain screen instead,
-    /// marked incomplete (any doubt ends up here).
+    /// the wheel and isn't working, blocked or in error. `None`: read the plain
+    /// screen instead, marked incomplete (any doubt ends up here).
     pub async fn stitch(&self, id: u32, lines: usize) -> Option<(String, bool)> {
         // Nothing printed since a read that covers this one: answer from memory.
         let ready = |st: &crate::runtime::State| -> Result<Option<(String, bool)>, ()> {
             let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or(())?;
             let screen = st.screens.get(&id).ok_or(())?;
-            let working = t.status.as_ref().is_some_and(|s| s.state == "working");
-            if !screen.alt_screen() || working || screen.wheel(true).is_empty() {
+            let busy = t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "working" | "blocked" | "error"));
+            if !screen.alt_screen() || busy || screen.wheel(true).is_empty() {
                 return Err(());
             }
             Ok(st
@@ -189,7 +189,7 @@ impl Core {
         }
         // The input queue: no send, keys or note in between. A person's keys wait.
         let queue = self.lock().queues.entry(id).or_default().clone();
-        let _turn = queue.lock().await;
+        let _turn = queue.delivery.lock().await;
         {
             // Whatever went in while we queued (a send) may have changed that.
             let mut st = self.lock();
@@ -208,7 +208,9 @@ impl Core {
         }
         if st.screens.contains_key(&id) {
             let paint = crate::viewers::first_paint(&st, id, 0);
-            for v in st.viewers.get(&id).into_iter().flatten() {
+            let recovering = st.screens[&id].continuation().is_none();
+            for v in st.viewers.get_mut(&id).into_iter().flatten() {
+                v.recovering = recovering;
                 v.conn.with(|out| {
                     out.data(v.channel, &paint);
                 });

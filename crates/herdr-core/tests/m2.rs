@@ -180,6 +180,85 @@ fn size_follows_the_last_active_typing_viewer() {
 }
 
 #[test]
+fn observers_receive_the_terminal_grid_and_a_repaint_when_it_changes() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&s, &t).contains("retained"));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true, "resize_notifications": true}));
+    let mut initial: Vec<_> = observer.conn.stash.drain(..).collect();
+    while let Some(frame) = observer.conn.read(Duration::from_millis(200)) {
+        initial.push(frame);
+    }
+    let mut active = Viewer::attach(&s, &t, 60, 20, json!({}));
+
+    let mut check = |cols: u16, rows: u16| {
+        wait_until("terminal resized", || size(&s, &t) == (cols.into(), rows.into()));
+        let mut frames = Vec::new();
+        while let Some(frame) = observer.conn.read(Duration::from_millis(200)) {
+            frames.push(frame);
+        }
+        let payload = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+        eprintln!(
+            "terminal {cols}x{rows}; observer frames: {:?}",
+            frames.iter().map(|(_, k, p)| (*k, p.len())).collect::<Vec<_>>()
+        );
+        let resize = frames
+            .iter()
+            .position(|(ch, kind, p)| *ch == observer.channel && *kind == wire::RESIZE && *p == payload)
+            .expect("observer must learn the terminal's size");
+        let paint: Vec<_> = frames[resize + 1..]
+            .iter()
+            .filter(|(ch, kind, _)| *ch == observer.channel && *kind == wire::DATA)
+            .flat_map(|(_, _, p)| p.iter().copied())
+            .collect();
+        let mut screen = ghostty_vt::Terminal::new(cols, rows, 1 << 20);
+        screen.write(&paint);
+        assert!(screen.plain_text().contains("retained"), "observer needs a fresh paint");
+    };
+    check(60, 20);
+    active.conn.send(active.channel, wire::RESIZE, &[100, 0, 30, 0]);
+    check(100, 30);
+    drop(active);
+    check(200, 120);
+    assert!(
+        initial.iter().any(|(_, kind, p)| *kind == wire::RESIZE && p == &[200, 0, 120, 0]),
+        "first paint must also announce the actual grid"
+    );
+}
+
+#[test]
+fn legacy_observers_do_not_receive_unsolicited_resize_paints() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&s, &t).contains("retained"));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true}));
+    observer.conn.stash.clear();
+    while observer.conn.read(Duration::from_millis(100)).is_some() {}
+    let _active = Viewer::attach(&s, &t, 60, 20, json!({}));
+    wait_until("terminal resized", || size(&s, &t) == (60, 20));
+    assert!(
+        observer.conn.read(Duration::from_millis(200)).is_none(),
+        "legacy mobile ignores RESIZE and must not paint before its size event"
+    );
+}
+
+#[test]
+fn display_facts_do_not_take_size_leadership_from_an_active_viewer() {
+    let s = Session::new();
+    let t = run(&s, &["sleep", "100"]);
+    let mut a = Viewer::attach(&s, &t, 100, 30, json!({}));
+    let mut b = Viewer::attach(&s, &t, 80, 24, json!({}));
+    b.typed(b"typing");
+    b.conn.call("terminal.get", json!({"terminal": t}));
+    assert_eq!(size(&s, &t), (80, 24));
+
+    a.conn.send(a.channel, wire::FACTS, br##"{"bg":"#ffffff"}"##);
+    let record = a.conn.call("terminal.get", json!({"terminal": t}));
+    assert_eq!((record["result"]["cols"].as_u64(), record["result"]["rows"].as_u64()), (Some(80), Some(24)));
+    assert_eq!(size(&s, &t), (80, 24));
+}
+
+#[test]
 fn a_stalled_viewer_blocks_nobody_and_catches_up_with_a_repaint() {
     let s = Session::new();
     let flood = after_go(&s, "head -c 8000000 /dev/zero | tr '\\0' x; echo; echo DONE; sleep 100");
@@ -203,6 +282,64 @@ fn a_stalled_viewer_blocks_nobody_and_catches_up_with_a_repaint() {
     stalled.conn.send(stalled.channel, wire::CREDIT, &(64u32 << 20).to_le_bytes());
     stalled.shows("DONE");
     assert!(stalled.received < 6 << 20, "replayed the whole backlog: {} bytes", stalled.received);
+}
+
+#[test]
+fn a_stalled_viewer_never_prints_the_tail_of_dropped_image_data() {
+    let s = Session::new();
+    let flood = after_go(
+        &s,
+        "printf 'before\\r\\n\\033_Gm=1;'; head -c 8000000 /dev/zero | tr '\\0' A; \
+         printf '\\033\\\\\\r\\nafter\\r\\n'; sleep 100",
+    );
+    let t = run(&s, &["sh", "-c", &flood]);
+    let mut stalled = Viewer::attach(&s, &t, 80, 24, json!({}));
+    stalled.credit = false;
+    let mut live = Viewer::attach(&s, &t, 80, 24, json!({"observe": true}));
+    go(&s);
+    live.shows("after");
+    stalled.drain(Duration::from_millis(100));
+    stalled.credit = true;
+    stalled.conn.send(stalled.channel, wire::CREDIT, &(64u32 << 20).to_le_bytes());
+    stalled.shows("after");
+    for viewer in [&live, &stalled] {
+        let text = viewer.text();
+        assert!(!text.contains("AAAA"), "image payload leaked: {text:?}");
+    }
+}
+
+#[test]
+fn attaching_and_resizing_mid_image_never_turns_its_tail_into_text() {
+    for bytes in [4000, 100_000] {
+        let s = Session::new();
+        let ready = s.root.join("ready");
+        let finish = s.root.join("finish");
+        let program = after_go(
+            &s,
+            &format!(
+                "printf 'before\\r\\n\\033_Gm=1;'; head -c {bytes} /dev/zero | tr '\\0' A; \
+             touch {}; while [ ! -e {} ]; do sleep 0.02; done; \
+             printf 'AAAAAAAA\\033\\\\\\r\\nafter\\r\\n'; sleep 100",
+                ready.display(),
+                finish.display()
+            ),
+        );
+        let t = run(&s, &["sh", "-c", &program]);
+        let mut original = Viewer::attach(&s, &t, 80, 24, json!({}));
+        go(&s);
+        wait_until("image prefix written", || ready.exists());
+        original.drain(Duration::from_millis(100));
+        let mut late = Viewer::attach(&s, &t, 80, 24, json!({}));
+        late.shows("before");
+        late.conn.send(late.channel, wire::RESIZE, &[90, 0, 25, 0]);
+        std::fs::write(&finish, "").unwrap();
+        late.shows("after");
+        original.shows("after");
+        for viewer in [&original, &late] {
+            let text = viewer.text();
+            assert!(!text.contains("AAAA"), "image payload leaked after attach/resize: {text:?}");
+        }
+    }
 }
 
 #[test]

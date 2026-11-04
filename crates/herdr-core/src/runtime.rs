@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{Notify, oneshot};
 
+mod persistence;
+use persistence::RegistryWriter;
+
 pub struct Core {
     pub info: CoreInfo,
     pub started: Instant,
@@ -37,6 +40,7 @@ pub struct Core {
     /// The registry changed in a way a crash may lose: `save_soon` writes it shortly.
     dirty: std::sync::atomic::AtomicBool,
     save_due: Notify,
+    registry_writer: RegistryWriter,
 }
 
 #[derive(Default)]
@@ -48,7 +52,7 @@ pub struct State {
     pub viewers: HashMap<u32, Vec<Viewer>>,
     pub events: crate::events::Events,
     pub gates: HashMap<u32, crate::input::Gate>,
-    pub queues: HashMap<u32, Arc<tokio::sync::Mutex<()>>>,
+    pub queues: HashMap<u32, Arc<crate::input::Queue>>,
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
     /// Waits matching output: they get every byte viewers get.
     pub output_watch: HashMap<u32, Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
@@ -87,6 +91,10 @@ pub struct State {
     pub afar_notes: HashMap<u32, Vec<String>>,
     /// What a machine must hear once its line is back (a parent here finished).
     pub machine_outbox: HashMap<String, Vec<serde_json::Value>>,
+    /// When each holder was last reconnected to after our reading of it failed.
+    pub relinked: HashMap<String, Instant>,
+    /// Failed relinks still own programs; explicit stop must tell them to exit.
+    pub disconnected: HashMap<String, PathBuf>,
     /// Each connected machine's terminals as seen from here, kept current by
     /// its events: machine id -> address (`rohan/t7`) -> record.
     pub mirrors: HashMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
@@ -131,6 +139,10 @@ impl Link {
 }
 
 const SAVE_SOON: Duration = Duration::from_secs(2);
+/// At most one reconnect per holder in this long: a failure that comes back is not retried.
+const RELINK_GAP: Duration = Duration::from_secs(5);
+/// How long a reconnect waits for the holder's welcome.
+const RELINK_WAIT: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 5000 });
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -168,6 +180,7 @@ impl Core {
             started: Instant::now(),
             stop: Notify::new(),
             restart: Default::default(),
+            registry_writer: RegistryWriter::new(paths.state.join("terminals.json"))?,
             paths,
             state: Mutex::new(State { reg, docs, machines, peers, ..Default::default() }),
             changed: Notify::new(),
@@ -207,9 +220,23 @@ impl Core {
     pub fn save(&self, st: &State) {
         self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
-        if let Err(e) = write_atomic(&self.paths.state.join("terminals.json"), &bytes) {
-            eprintln!("core: cannot save terminals: {e}");
-        }
+        self.registry_writer.save(bytes);
+    }
+
+    /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
+    /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
+    /// Completed write failures are logged, as before; a stuck disk still times out.
+    pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
+            .await
+            .map_err(|_| {
+                crate::rpc::RpcError::new(
+                    "unavailable",
+                    "registry persistence timed out; the operation may already have completed",
+                    "check the terminal and disk before retrying",
+                )
+            })?
+            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -250,7 +277,7 @@ impl Core {
             format!("{}{}.sock", self.holder_prefix(), &crate::platform::random_hex()[..crate::paths::HOLDER_ID]);
         crate::client::spawn_detached(&self.paths, &["hold", "--socket", &socket], "holder.log")?;
         let stream = crate::client::wait_for_socket(socket.as_ref(), "holder").map_err(io::Error::other)?;
-        self.take_over(stream, true).map(drop)
+        self.take_over(stream, true, socket.as_ref(), None).map(drop)
     }
 
     /// Holder sockets are `<session>.holder.<id>.sock`, next to `<session>.holder.sock`
@@ -279,7 +306,7 @@ impl Core {
         let mut adopted = HashSet::new();
         for socket in sockets {
             match platform::connect(&socket) {
-                Ok(stream) => adopted.extend(self.take_over(stream, false)?),
+                Ok(stream) => adopted.extend(self.take_over(stream, false, &socket, None)?),
                 Err(_) => {
                     platform::remove_endpoint(&socket); // its holder is gone
                 }
@@ -306,7 +333,14 @@ impl Core {
     }
 
     /// Takes over one holder and adopts what it runs; returns the adopted ids.
-    fn take_over(self: &Arc<Self>, mut stream: UnixStream, require_current: bool) -> io::Result<Vec<u32>> {
+    /// `answered` is dropped once the holder's welcome and tails are in.
+    fn take_over(
+        self: &Arc<Self>,
+        mut stream: UnixStream,
+        require_current: bool,
+        path: &std::path::Path,
+        answered: Option<mpsc::Sender<()>>,
+    ) -> io::Result<Vec<u32>> {
         std::io::Write::write_all(
             &mut stream,
             &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }),
@@ -322,6 +356,7 @@ impl Core {
                 _ => return Err(io::Error::other("holder sent no tail")),
             };
         }
+        drop(answered);
         let (bye, bye_rx) = mpsc::channel();
         let build = crate::client::build_id();
         let current = welcome.build == build;
@@ -346,14 +381,15 @@ impl Core {
         }
         let (adopted, nudge) = {
             let mut st = self.lock();
+            st.disconnected.remove(&welcome.instance);
             st.holders.push(link);
             let adopted = self.adopt(&mut st, &welcome, tails);
             self.save(&st);
             adopted
         };
         let core = self.clone();
-        let instance = welcome.instance;
-        std::thread::spawn(move || core.read_holder(stream, instance));
+        let (instance, path) = (welcome.instance, path.to_path_buf());
+        std::thread::spawn(move || core.read_holder(stream, instance, path));
         if !nudge.is_empty() {
             let core = self.clone();
             std::thread::spawn(move || core.nudge(nudge));
@@ -414,24 +450,40 @@ impl Core {
             if let Some(on) = relay.win32_input {
                 rec.win32_input = on;
             }
-            // A crash tail repeats reports we already counted: take its final word,
-            // but count at most the one turn that may have ended while we were down.
-            let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
-            for r in &reports {
-                crate::status::apply(rec, r);
-            }
-            if !exact {
+            st.screens.insert(id, screen);
+            st.relays.remove(&id); // half a sequence from the old link must not prefix the new
+            rec.pid = Some(h.pid);
+            rec.cols = h.cols;
+            rec.rows = h.rows;
+            rec.screen = if exact { "exact" } else { "inexact" }.into();
+            let spawning = rec.reason.is_some() || st.pending.contains_key(&id);
+            if exact {
+                // Every handover report is fresh, including endpoints followed by idle.
+                for r in &reports {
+                    let rec = st.reg.terminals.get_mut(&id).expect("live id");
+                    let change = crate::status::apply(rec, r);
+                    self.status_changed(st, id, change);
+                }
+            } else {
+                // A crash tail repeats reports we already counted: take its final word,
+                // but count at most the one turn that may have ended while we were down.
+                let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
+                for r in &reports {
+                    crate::status::apply(rec, r);
+                }
                 let now = rec.status.as_ref().map(|s| s.state.clone());
                 rec.turn = turn + (was.as_deref() == Some("working") && now.as_deref() != Some("working")) as u64;
                 if now == was {
                     rec.status_ms = since;
                 }
+                // Only a changed final word/turn proves new activity in a crash replay.
+                // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
+                let root_report = rec.turn != turn || now != was;
+                self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
             }
-            st.screens.insert(id, screen);
-            rec.pid = Some(h.pid);
-            rec.cols = h.cols;
-            rec.rows = h.rows;
-            rec.screen = if exact { "exact" } else { "inexact" }.into();
+            if spawning {
+                self.spawn_result(st, instance, id, Ok(h.pid));
+            }
             match h.exit {
                 Some(exit) => exited.push((id, exit)),
                 None if !exact => nudge.push((id, h.cols, h.rows)),
@@ -460,8 +512,102 @@ impl Core {
         }
     }
 
-    fn read_holder(self: Arc<Self>, mut stream: UnixStream, instance: String) {
-        while let Ok(Some((kind, id, payload))) = proto::read(&mut stream) {
+    fn read_holder(self: Arc<Self>, mut stream: UnixStream, instance: String, socket: PathBuf) {
+        let ended =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.holder_frames(&mut stream, &instance)));
+        if matches!(ended, Ok(Ok(true))) {
+            return;
+        }
+        // Never leave the link open with nobody reading: the holder would wait on us.
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        // Only our reading failed (a panic, a bad frame): a holder still there takes us
+        // back. Not while stopping: the goodbye holds `holder_start` until this link ends.
+        let stopping = || self.lock().stopping || self.restart.load(std::sync::atomic::Ordering::SeqCst);
+        let mut relink = !matches!(ended, Ok(Ok(false))) && !stopping();
+        let _starting = relink.then(|| self.holder_start.lock().unwrap_or_else(|p| p.into_inner()));
+        relink &= !stopping(); // a stop that began meanwhile
+        let mut st = self.lock();
+        let Some(at) = st.holders.iter().position(|l| l.instance == instance) else { return };
+        // Kept to the end: dropping it wakes a goodbye, which must find the sweep below counted.
+        let link = st.holders.remove(at);
+        let current = link.current;
+        if relink {
+            drop(st);
+            // Fully closed first (its writer holds a copy): an older holder stuck
+            // writing to us only lets go when our end is gone, not just shut down.
+            drop(link);
+            drop(stream);
+            if let Ok(stream) = platform::connect(&socket) {
+                return self.relink(stream, &instance, &socket);
+            }
+            st = self.lock();
+        }
+        // The holder is gone (drained, or died), and with it every program it ran.
+        let theirs: Vec<u32> = st
+            .reg
+            .terminals
+            .values()
+            .filter(|t| t.is_live() && t.holder.as_deref() == Some(instance.as_str()))
+            .map(|t| t.id())
+            .collect();
+        // Its programs may have outlived it (closing the PTY is only a hangup).
+        self.sweep_in_background(theirs.iter().filter_map(|id| st.reg.terminals[id].scope.clone()).collect());
+        for id in theirs {
+            self.record_finish(&mut st, id, Exit { code: None, signal: None }, "holder_lost");
+        }
+        if current {
+            for (_, tx) in st.pending.drain() {
+                let _ = tx.send(Err("the holder exited".into()));
+            }
+        }
+        self.save(&st);
+        self.changed.notify_waiters();
+    }
+
+    /// Takes over a holder that still answers after our reading of it failed. If
+    /// that fails too (a panic replaying its tails), or keeps happening, it is left
+    /// alone: its programs run on, for the next core start to adopt.
+    fn relink(self: &Arc<Self>, stream: UnixStream, instance: &str, socket: &std::path::Path) {
+        let last = self.lock().relinked.insert(instance.into(), Instant::now());
+        let ours = stream.try_clone();
+        // A holder that doesn't answer must not keep `holder_start` (runs, stops) waiting:
+        // past the deadline its link is cut, which ends the wait (no read timeouts on Windows).
+        // Only the handshake is timed: what follows it is ours, however slow.
+        let (answered, waiting) = mpsc::channel::<()>();
+        if let Ok(watch) = stream.try_clone() {
+            std::thread::spawn(move || {
+                if waiting.recv_timeout(RELINK_WAIT) == Err(mpsc::RecvTimeoutError::Timeout) {
+                    let _ = watch.shutdown(std::net::Shutdown::Both);
+                }
+            });
+        }
+        let taken = last.is_none_or(|at| at.elapsed() >= RELINK_GAP)
+            && matches!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.take_over(
+                    stream,
+                    false,
+                    socket,
+                    Some(answered)
+                ))),
+                Ok(Ok(_))
+            );
+        if taken {
+            eprintln!("core: lost the link to holder {instance}, reconnected");
+            return;
+        }
+        eprintln!("core: lost the link to holder {instance} for good; its terminals wait for the next core start");
+        // Closed, so the holder sees us leave instead of waiting on a link nobody reads.
+        if let Ok(ours) = ours {
+            let _ = ours.shutdown(std::net::Shutdown::Both);
+        }
+        let mut st = self.lock();
+        st.holders.retain(|l| l.instance != instance);
+        st.disconnected.insert(instance.into(), socket.to_path_buf());
+    }
+
+    /// Handles the holder's frames until it says goodbye (true) or the link ends (false).
+    fn holder_frames(&self, stream: &mut UnixStream, instance: &str) -> io::Result<bool> {
+        while let Some((kind, id, payload)) = proto::read(stream)? {
             let mut st = self.lock();
             match kind {
                 proto::OUTPUT => self.output(&mut st, id, &payload),
@@ -471,45 +617,7 @@ impl Core {
                     } else {
                         Err(proto::parse::<proto::SpawnFailed>(&payload).map_or_else(|e| e.to_string(), |f| f.error))
                     };
-                    // Recorded here, on the thread that also handles exits, so `created`
-                    // always comes before `finished`.
-                    let waiting = st.pending.get(&id).is_some_and(|tx| !tx.is_closed());
-                    let result = match (result, st.reg.terminals.get_mut(&id)) {
-                        (Ok(pid), Some(t)) if t.is_live() => {
-                            let restarted = t.reason.is_some();
-                            t.pid = Some(pid);
-                            t.program_started_ms = Some(now_ms());
-                            t.reason = None;
-                            t.exit_code = None;
-                            t.signal = None;
-                            let created = t.clone();
-                            let public =
-                                serde_json::to_value(crate::terminals::Public(created.clone())).unwrap_or_default();
-                            self.emit(&mut st, if restarted { "restarted" } else { "created" }, id, public);
-                            self.save(&st);
-                            Ok(created)
-                        }
-                        (Ok(_), _) => {
-                            // Its run gave up waiting: nobody can address it, so it must not live.
-                            if let Some(link) = st.holders.iter().find(|l| l.instance == instance) {
-                                link.send(&proto::json_frame(
-                                    proto::SIGNAL,
-                                    id,
-                                    &proto::Signal { signal: signal::KILL },
-                                ));
-                                link.send(&proto::frame(proto::RELEASE, id, &[]));
-                            }
-                            Err("removed while starting".into())
-                        }
-                        (Err(e), Some(t)) if t.is_live() && (t.reason.is_some() || !waiting) => {
-                            self.spawn_failed(&mut st, id);
-                            Err(e)
-                        }
-                        (Err(e), _) => Err(e),
-                    };
-                    if let Some(tx) = st.pending.remove(&id) {
-                        let _ = tx.send(result);
-                    }
+                    self.spawn_result(&mut st, instance, id, result);
                 }
                 proto::EXITED => {
                     if let Ok(exit) = proto::parse::<Exit>(&payload) {
@@ -527,34 +635,49 @@ impl Core {
                     if let Some(at) = st.holders.iter().position(|l| l.instance == instance) {
                         let _ = st.holders.remove(at).bye.send(());
                     }
-                    return;
+                    return Ok(true);
                 }
                 _ => {}
             }
         }
-        // The holder is gone (drained, or died), and with it every program it ran.
-        let mut st = self.lock();
-        let Some(at) = st.holders.iter().position(|l| l.instance == instance) else { return };
-        let link = st.holders.remove(at);
-        let theirs: Vec<u32> = st
-            .reg
-            .terminals
-            .values()
-            .filter(|t| t.is_live() && t.holder.as_deref() == Some(instance.as_str()))
-            .map(|t| t.id())
-            .collect();
-        // Its programs may have outlived it (closing the PTY is only a hangup).
-        self.sweep_in_background(theirs.iter().filter_map(|id| st.reg.terminals[id].scope.clone()).collect());
-        for id in theirs {
-            self.record_finish(&mut st, id, Exit { code: None, signal: None }, "holder_lost");
-        }
-        if link.current {
-            for (_, tx) in st.pending.drain() {
-                let _ = tx.send(Err("the holder exited".into()));
+        Ok(false)
+    }
+
+    fn spawn_result(&self, st: &mut State, instance: &str, id: u32, result: Result<u32, String>) {
+        // Recorded here, on the thread that also handles exits, so `created`
+        // always comes before `finished`.
+        let waiting = st.pending.get(&id).is_some_and(|tx| !tx.is_closed());
+        let result = match (result, st.reg.terminals.get_mut(&id)) {
+            (Ok(pid), Some(t)) if t.is_live() => {
+                let restarted = t.reason.is_some();
+                t.pid = Some(pid);
+                t.program_started_ms = Some(now_ms());
+                t.reason = None;
+                t.exit_code = None;
+                t.signal = None;
+                let created = t.clone();
+                let public = serde_json::to_value(crate::terminals::Public(created.clone())).unwrap_or_default();
+                self.emit(st, if restarted { "restarted" } else { "created" }, id, public);
+                self.save(st);
+                Ok(created)
             }
+            (Ok(_), _) => {
+                // Its run gave up waiting: nobody can address it, so it must not live.
+                if let Some(link) = st.holders.iter().find(|l| l.instance == instance) {
+                    link.send(&proto::json_frame(proto::SIGNAL, id, &proto::Signal { signal: signal::KILL }));
+                    link.send(&proto::frame(proto::RELEASE, id, &[]));
+                }
+                Err("removed while starting".into())
+            }
+            (Err(e), Some(t)) if t.is_live() && (t.reason.is_some() || !waiting) => {
+                self.spawn_failed(st, id);
+                Err(e)
+            }
+            (Err(e), _) => Err(e),
+        };
+        if let Some(tx) = st.pending.remove(&id) {
+            let _ = tx.send(result);
         }
-        self.save(&st);
-        self.changed.notify_waiters();
     }
 
     /// A program ended: record it, keep its final screen on disk, let the holder forget it.
@@ -580,6 +703,7 @@ impl Core {
             reason
         };
         if let Some(t) = st.reg.terminals.get_mut(&id) {
+            t.first_task_turn = None;
             let change = crate::status::reset(t);
             self.status_changed(st, id, change);
         }
@@ -597,11 +721,12 @@ impl Core {
             let _ = self.jobs.send(crate::notes::Job::Orphaned(id));
             crate::remote::orphaned_afar(self, st, id); // before `--rm` forgets where it reached
         }
-        for v in st.viewers.remove(&id).unwrap_or_default() {
-            v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
-        }
         if let (Some(relay), Some(screen)) = (st.relays.get_mut(&id), st.screens.get_mut(&id)) {
             relay.flush(screen);
+        }
+        self.queue_resize_paints(st, id, None);
+        for v in st.viewers.remove(&id).unwrap_or_default() {
+            v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }
         st.relays.remove(&id);
         if let Some(snapshot) = st.screens.remove(&id).and_then(|s| s.snapshot())
@@ -720,6 +845,29 @@ impl Core {
                 })
                 .collect()
         };
+        if mode == Goodbye::Shutdown {
+            let sockets: Vec<_> = self.lock().disconnected.drain().map(|(_, path)| path).collect();
+            for path in sockets {
+                if let Ok(mut stream) = platform::connect(&path) {
+                    let Ok(watch) = stream.try_clone() else { continue };
+                    let (done, waiting) = mpsc::channel::<()>();
+                    std::thread::spawn(move || {
+                        if waiting.recv_timeout(Duration::from_secs(6)) == Err(mpsc::RecvTimeoutError::Timeout) {
+                            let _ = watch.shutdown(std::net::Shutdown::Both);
+                        }
+                    });
+                    // The welcome may be unreadable (the reason relink failed).
+                    // Shutdown needs no inventory: the holder sweeps everything it owns.
+                    let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
+                    if io::Write::write_all(&mut stream, &hello).is_ok()
+                        && io::Write::write_all(&mut stream, &proto::json_frame(proto::GOODBYE, 0, &mode)).is_ok()
+                    {
+                        let _ = io::copy(&mut stream, &mut io::sink());
+                    }
+                    drop(done);
+                }
+            }
+        }
         for rx in byes {
             // A holder told to shut down first ends every leftover (up to ~3 s).
             let _ = rx.recv_timeout(Duration::from_secs(6));
@@ -748,26 +896,29 @@ impl Core {
     }
 
     /// Planned restart: the holder keeps programs; we save every screen exactly.
-    pub fn handover(&self) {
+    pub async fn handover(&self) -> io::Result<()> {
         self.wait_for_sweeps();
         self.goodbye(Goodbye::Handover);
         self.wait_for_sweeps(); // a holder that died during goodbye left one
-        let mut st = self.lock();
-        st.holders.clear();
-        let State { screens, relays, .. } = &mut *st;
-        for (id, screen) in screens.iter_mut() {
-            if let Some(relay) = relays.get_mut(id) {
-                relay.flush(screen);
+        {
+            let mut st = self.lock();
+            st.holders.clear();
+            let State { screens, relays, .. } = &mut *st;
+            for (id, screen) in screens.iter_mut() {
+                if let Some(relay) = relays.get_mut(id) {
+                    relay.flush(screen);
+                }
+                if let Some(snapshot) = screen.snapshot() {
+                    let _ = write_atomic(&self.snapshot_path(*id), &snapshot);
+                }
             }
-            if let Some(snapshot) = screen.snapshot() {
-                let _ = write_atomic(&self.snapshot_path(*id), &snapshot);
-            }
+            self.save(&st);
         }
-        self.save(&st);
+        self.registry_writer.flush().await
     }
 
     /// Server stop: end every program, then let the holder exit.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), crate::rpc::RpcError> {
         let live: Vec<u32> = {
             let mut st = self.lock();
             st.stopping = true;
@@ -779,11 +930,14 @@ impl Core {
         self.wait_for_sweeps();
         self.goodbye(Goodbye::Shutdown);
         self.wait_for_sweeps(); // a holder that died during goodbye left one
-        let mut st = self.lock();
-        for id in live {
-            self.record_finish(&mut st, id, Exit { code: None, signal: None }, "server_stop");
+        {
+            let mut st = self.lock();
+            for id in live {
+                self.record_finish(&mut st, id, Exit { code: None, signal: None }, "server_stop");
+            }
+            self.save(&st);
         }
-        self.save(&st);
+        self.flush_saved().await
     }
 }
 

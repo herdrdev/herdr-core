@@ -299,10 +299,14 @@ pub fn write_new_build(to: &std::path::Path) {
     std::fs::set_permissions(to, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
-pub fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+pub fn wait_until(what: &str, ok: impl FnMut() -> bool) {
+    wait_until_for(what, Duration::from_secs(10), ok);
+}
+
+pub fn wait_until_for(what: &str, timeout: Duration, mut ok: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ok() {
-        assert!(start.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+        assert!(start.elapsed() < timeout, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }

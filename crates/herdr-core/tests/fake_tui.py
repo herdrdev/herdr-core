@@ -10,6 +10,10 @@ screen, scrolled by the mouse wheel, with a status row at the bottom.
   --chatty         keep changing the title, so output never goes quiet
   --no-mouse       never ask for mouse reports
   --working        report status working instead of idle
+  --blink MS       repaint a clock on the status row
+  --fixed          ignore wheel scrolling, like a permission prompt
+  --blocked        report a permission prompt
+  --error          report status error
 """
 import os, re, sys, termios, time, tty, select
 
@@ -25,6 +29,8 @@ view = rows - 1  # the last row is the status row
 offset = 0  # rows scrolled up from the bottom
 wheels = 0
 keys = ""
+blink = value("--blink", 0) / 1000
+last_blink = time.monotonic()
 
 def out(s):
     os.write(1, s.encode())
@@ -42,6 +48,10 @@ def frame():
             row += "┃" if thumb <= i < thumb + 3 else "│"
         body.append(row)
     status = f"status wheels={wheels} keys={keys}"
+    if flag("--blocked"):
+        status += " approve shell? [Yes] No"
+    if blink:
+        status += f" clock={time.monotonic():.2f}"
     return "\x1b[H\x1b[2J" + "\r\n".join(body) + f"\x1b[{rows};1H" + status
 
 def draw():
@@ -57,7 +67,14 @@ tty.setraw(fd)
 out("\x1b[?1049h")
 if not flag("--no-mouse"):
     out("\x1b[?1000h\x1b[?1006h")
-out("\x1b]7501;state=" + ("working" if flag("--working") else "idle") + "\x1b\\")
+state = "idle"
+if flag("--working"):
+    state = "working"
+elif flag("--blocked"):
+    state = "blocked:kind=permission"
+elif flag("--error"):
+    state = "error"
+out("\x1b]7501;state=" + state + "\x1b\\")
 draw()
 pending = b""
 try:
@@ -65,6 +82,9 @@ try:
         ready, _, _ = select.select([fd], [], [], 0.004 if flag("--chatty") else 0.02)
         if flag("--chatty"):
             out(f"\x1b]2;tick {time.time()}\x07")
+        if blink and time.monotonic() - last_blink >= blink:
+            last_blink = time.monotonic()
+            draw()
         if not ready:
             continue
         pending += os.read(fd, 1024)
@@ -76,7 +96,8 @@ try:
                 if button in (64, 65):
                     wheels += 1
                     step = 1 if button == 64 else -1
-                    offset = min(max(0, offset + step), max(0, len(lines) - view))
+                    if not flag("--fixed"):
+                        offset = min(max(0, offset + step), max(0, len(lines) - view))
                     time.sleep(slow)
                     draw()
                 continue

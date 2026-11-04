@@ -22,6 +22,34 @@ fn with_rohan_env(env: &[(&str, &str)]) -> (Session, Session) {
 }
 
 #[test]
+fn a_remote_send_waits_for_the_person_instead_of_timing_out_in_transit() {
+    let (mut rohan, mut s) = (Session::new(), Session::new());
+    rohan.env.push(("HC_QUIET_MS".into(), "50".into()));
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    let t = run(&rohan, &["sh", "-c", "stty -echo; while IFS= read -r l; do echo submitted:$l; done"]);
+    s.json(&["machine", "add", "rohan"]);
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "machine_timeout = 0.2\n").unwrap();
+    let mut person = Viewer::attach(&rohan, &t, 80, 24, json!({}));
+    person.typed(b"human draft");
+    let mut conn = s.connect();
+    let target = format!("rohan/{t}");
+    let sending = std::thread::spawn(move || {
+        conn.call(1, "terminal.send", json!({"terminal": target, "text": "remote message"}))
+    });
+    wait_until("draft held there", || rohan.json(&["get", &t])["waiting_for_person"] == true);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let still_waiting = !sending.is_finished();
+    person.typed(b"\r");
+    let sent = sending.join().unwrap();
+    assert!(still_waiting, "the transport must allow the draft hold: {sent}");
+    assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    wait_until("separate message there", || text(&rohan, &t).contains("submitted:remote message"));
+    assert!(!text(&rohan, &t).contains("submitted:human draftremote message"));
+}
+
+#[test]
 fn a_frozen_machine_never_freezes_hc() {
     // rohan answers heartbeats every 200 ms; here, 2 s is all a machine gets.
     let mut rohan = Session::new();
@@ -126,7 +154,8 @@ fn two_machines_that_added_each_other_never_echo_events_back() {
     });
     let mut c = s.connect();
     c.call(1, "events.subscribe", json!({}));
-    c.call(2, "doc.set", json!({"name": "app", "value": 1, "version": 0}));
+    // A plain subscription only receives events; make changes on a separate connection.
+    s.connect().call(2, "doc.set", json!({"name": "app", "value": 1, "version": 0}));
     // Two sleeping terminals and one document change: a handful of events, not a storm.
     c.reader.get_ref().set_read_timeout(Some(std::time::Duration::from_millis(100))).unwrap();
     let (started, mut events) = (std::time::Instant::now(), 0);
@@ -200,6 +229,55 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
     wait_until("the exit note", || {
         text(&s, &parent).contains(&format!("<hc>{child} exited (exit 3). Read: hc read {child}</hc>"))
     });
+}
+
+#[test]
+fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
+    let mut rohan = Session::new();
+    rohan.env.extend(
+        [("HC_READY_MS", "1500"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
+    );
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    s.env.extend(
+        [("HC_READY_MS", "1500"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+    );
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    let templates = rohan.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&templates).unwrap();
+    rohan.json(&["server", "start"]);
+    s.json(&["machine", "add", "rohan"]);
+    let parent = run(&s, &["sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("parent reported", || get(&s, &parent)["reported"] == true);
+
+    for (name, command, sent) in [
+        ("mute", "stty -echo; cat", false),
+        ("slow", "stty -echo; sleep 1; printf \"\\033]7501;state=idle\\033\\\\\"; cat", true),
+    ] {
+        std::fs::write(templates.join(format!("{name}.md")), format!("---\ncommand: sh -c '{command}'\n---\nhello\n"))
+            .unwrap();
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--bg", "--on", "rohan", name, "task"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let started: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(started["first_message"]["sent"], sent, "{started}");
+        if !sent {
+            assert!(started["first_message"]["reason"].as_str().unwrap().contains("never reported"), "{started}");
+        }
+        let child = started["address"].as_str().unwrap();
+        let local = child.strip_prefix("rohan/").unwrap();
+        let parent_there = get(&rohan, local)["parent"].as_str().unwrap().to_string();
+        let said = rohan.cmd().env("HC_TERMINAL_ID", local).args(["send", &parent_there, name]).output().unwrap();
+        assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stderr));
+        wait_until("child reports back", || text(&s, &parent).contains(&format!("<hc from=\"{child}\">{name}</hc>")));
+    }
 }
 
 #[test]
@@ -344,6 +422,52 @@ fn attaching_to_a_terminal_on_another_machine() {
     let mut v = Viewer::attach(&s, &t, 80, 24, json!({}));
     v.typed(b"bye\r");
     v.until("the end", |v| v.closed.is_some());
+}
+
+#[test]
+fn remote_observer_receives_grid_and_paint_including_after_reconnect() {
+    use herdr_core::wire;
+    use std::time::Duration;
+    let (rohan, s) = with_rohan();
+    let t = run(&s, &["--on", "rohan", "sh", "-c", "echo retained; exec sleep 100"]);
+    wait_until("retained", || text(&rohan, "t1").contains("retained"));
+    let _leader = Viewer::attach(&rohan, "t1", 80, 24, json!({}));
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true, "resize_notifications": true}));
+    let mut check = |cols: u16, rows: u16| {
+        let mut frames: Vec<_> = observer.conn.stash.drain(..).collect();
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        let mut screen = ghostty_vt::Terminal::new(cols, rows, 1 << 20);
+        let mut sized = false;
+        loop {
+            for (ch, kind, payload) in frames.drain(..) {
+                if ch != observer.channel {
+                    continue;
+                }
+                if kind == wire::RESIZE {
+                    assert_eq!(payload, [cols.to_le_bytes(), rows.to_le_bytes()].concat());
+                    sized = true;
+                } else if kind == wire::DATA && sized {
+                    screen.write(&payload);
+                }
+            }
+            if sized && screen.plain_text().contains("retained") {
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "missing remote grid or paint");
+            if let Some(frame) = observer.conn.read(Duration::from_millis(100)) {
+                frames.push(frame);
+            }
+        }
+    };
+    check(80, 24);
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.json(&["server", "restart"]);
+    wait_until("remote disconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    let mut leader = Viewer::attach(&rohan, "t1", 90, 30, json!({}));
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    check(90, 30);
+    leader.conn.send(leader.channel, wire::RESIZE, &[100, 0, 40, 0]);
+    check(100, 40);
 }
 
 #[test]

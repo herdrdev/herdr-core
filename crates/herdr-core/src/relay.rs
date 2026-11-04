@@ -96,6 +96,23 @@ impl Relay {
         out
     }
 
+    /// A viewer missed a sequence too large to replay. Consume just its tail,
+    /// capturing a repaint at ground even if this read also starts another image.
+    pub fn feed_to_ground(&mut self, screen: &mut Screen, input: &[u8]) -> (Vec<u8>, Option<(usize, Vec<u8>)>) {
+        let mut bytes = std::mem::take(&mut self.held);
+        bytes.extend_from_slice(input);
+        let Some(n) = screen.write_until_ground(&bytes) else {
+            return (bytes, None);
+        };
+        if let Some(keep) = self.apc.take() {
+            screen.drop_responses_after(keep);
+        }
+        let paint = screen.paint(0);
+        let mut out = bytes[..n].to_vec();
+        out.extend(self.feed(screen, &bytes[n..]));
+        (out, Some((n, paint)))
+    }
+
     /// Writes a half-received sequence to the screen (before a snapshot).
     pub fn flush(&mut self, screen: &mut Screen) {
         screen.write(&std::mem::take(&mut self.held));
@@ -206,6 +223,38 @@ mod tests {
             );
             let replies = String::from_utf8_lossy(&screen.take_responses()).into_owned();
             assert!(replies.ends_with('R') && !replies.contains("_G"), "only the cursor report: {replies:?}");
+        }
+    }
+
+    #[test]
+    fn recovery_finds_ground_between_images_even_when_every_read_ends_mid_image() {
+        for opener in [b"\x1b_Gm=1;".as_slice(), b"\x1b]2;", b"\x1bPtmux;", b"\x1b^"] {
+            for split_st in [false, true] {
+                let mut screen = Screen::new(80, 24, 1 << 20);
+                let mut relay = Relay::default();
+                let mut prefix = b"before\r\n".to_vec();
+                prefix.extend_from_slice(opener);
+                prefix.extend(vec![b'A'; 70_000]);
+                if split_st {
+                    prefix.push(ESC);
+                }
+                let passed = relay.feed(&mut screen, &prefix);
+                assert!(screen.continuation().is_none());
+                let tail = if split_st { b"\\\x1b_Gm=1;AAAA".as_slice() } else { b"AA\x1b\\\x1b_Gm=1;AAAA" };
+                let (out, recovered) = relay.feed_to_ground(&mut screen, tail);
+                let (at, paint) = recovered.expect("ground inside the read, not at its end");
+                assert_eq!([passed, out.clone()].concat(), [prefix, tail.to_vec()].concat());
+                let mut viewer = Screen::new(80, 24, 1 << 20);
+                viewer.write(b"\x1b_Gm=1;partial");
+                viewer.write(b"\x18");
+                viewer.write(&paint);
+                viewer.write(&out[at..]);
+                viewer.write(&relay.feed(&mut screen, b"AAAA\x1b\\\r\nafter"));
+                let text = viewer.plain_text();
+                assert!(text.contains("before") && text.contains("after"), "{text:?}");
+                assert!(!text.contains("AAAA"), "image data leaked: {text:?}");
+                assert!(screen.take_responses().is_empty(), "no core kitty acknowledgements");
+            }
         }
     }
 

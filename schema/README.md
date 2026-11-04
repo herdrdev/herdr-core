@@ -52,9 +52,10 @@ most 16 MiB.
 | 0 | DATA | channel 0: one JSON-RPC message; other channels: stream bytes |
 | 1 | CREDIT | u32 LE: bytes the receiver consumed |
 | 2 | CLOSE | the channel is over; from the core, a JSON reason |
-| 3 | RESIZE | viewer → core: u16 LE cols, u16 LE rows |
+| 3 | RESIZE | u16 LE cols, u16 LE rows: viewer → core, core → observer |
 | 4 | FOCUS | viewer → core: 1 gained focus, 0 lost it |
 | 5 | FACTS | viewer → core: JSON display facts (`Display` in the schema) |
+| 6 | AUTOMATIC_INPUT | viewer → core: terminal-generated reply bytes, not human activity |
 
 Channel 0 carries JSON-RPC both ways. Calls on it run side by side.
 
@@ -68,7 +69,36 @@ minus terminal queries the core already answered. The core never encodes
 keys: a viewer that honors 9001 sends key events in that format itself.
 The viewer sends keys as DATA on the same channel, and RESIZE,
 FOCUS and FACTS as it changes. The last active viewer sets the size
-(active: it typed, resized, gained focus or sent FACTS); `observe` viewers never type or resize.
+(active: it attached, typed, resized or gained focus); `observe` viewers never type or resize.
+Automatic query answers (including mode 2048 reports, kitty graphics and XTGETTCAP
+replies) use AUTOMATIC_INPUT, not DATA. Their bytes reach the program unchanged,
+including duplicates from multiple viewers, but do not take size/display ownership
+or reset the human quiet period. They follow the same input serialization as DATA.
+Tag replies at their source, never by inspecting their bytes; arbitrary splits are valid.
+Cores advertise `automatic_input` in `hello.features`; `terminal.attach` confirms
+`automatic_input: true` only for a supporting path. Clients must require both before
+sending kind 6; absent/false means send DATA (legacy activity behavior). Old cores
+ignore unknown local frame kinds, so sending kind 6 without negotiation loses input.
+Relays preserve the tag and close a previously capable stream if support is lost
+on reconnect; attach again to negotiate the fallback. Untagged DATA is unchanged.
+Observers may opt in with `resize_notifications: true` on `terminal.attach`:
+the client must apply incoming RESIZE before consuming subsequent DATA.
+The reply confirms `resize_notifications: true` only when every core on the path
+supports it. False or an absent field means the client must track size through
+size events instead; no replacement paints are injected for this request.
+Cores advertise `resize_notifications` in both hello requests and replies, so an
+older intermediate relay cannot silently drop the grid announcements. If a
+previously capable path loses support on reconnect, its stream closes; attach
+again to negotiate the fallback.
+These confirmed observers receive the terminal's actual grid before their first paint.
+When that grid changes, pending output is superseded by RESIZE followed by an
+authoritative paint (starting with CAN to cancel any unfinished sequence).
+Size/paint pairs share stream ordering and wait for DATA credit; RESIZE itself
+does not consume credit. Intermediate unsent grids are coalesced, and a paint is
+serialized only when the observer has credit. The attach reply precedes stream
+frames, including on core-to-core relays and reconnects.
+Without this opt-in, existing event-driven observers keep their previous output
+behavior: no additional resize paints or RESIZE frames.
 
 Flow control: a stream starts with 256 KiB of credit. The viewer sends
 CREDIT for the bytes it has written out. A viewer that falls more than

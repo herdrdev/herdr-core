@@ -107,6 +107,9 @@ pub struct HelloParams {
     pub core: Option<CoreInfo>,
     /// What that core calls this one (`rohan`), so news about `t7` reaches it as `rohan/t7`.
     pub calls_you: Option<String>,
+    /// Features supported by a core dialing in, including relaying size notifications.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -182,6 +185,16 @@ pub struct StopResult {
     pub stopped: bool,
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct InitialSize {
+    /// Initial terminal width in columns (at least 1).
+    #[schemars(range(min = 1))]
+    pub cols: u16,
+    /// Initial terminal height in rows (at least 1).
+    #[schemars(range(min = 1))]
+    pub rows: u16,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct RunParams {
     /// Program and arguments, or a template name and its task. With neither
@@ -195,6 +208,16 @@ pub struct RunParams {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<String>,
+    /// Initial size before the program starts. Omitted: the configured
+    /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<InitialSize>,
+    /// The caller's colors and cell size, answering the program's display queries
+    /// from its start. Omitted: Ghostty's defaults until a viewer attaches.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::viewers::Display>,
     /// Name, unique among live terminals: 1-32 of a-z 0-9 - _ .
     #[arg(long)]
     pub name: Option<String>,
@@ -343,8 +366,8 @@ pub struct ReadResult {
     pub complete: bool,
     /// "screen", "history", or "stitched" (a full-screen app, read by scrolling it).
     pub how: String,
-    /// Why only the screen: "working" (a full-screen app isn't scrolled while
-    /// it works; read again once it stops).
+    /// Why only the screen: "working", "blocked" or "error" (a full-screen app
+    /// is not scrolled in these states).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
 }
@@ -358,6 +381,10 @@ pub struct AttachParams {
     #[arg(long)]
     #[serde(default)]
     pub observe: bool,
+    /// Observer understands core-to-viewer RESIZE before replacement paints.
+    #[arg(skip)]
+    #[serde(default)]
+    pub resize_notifications: bool,
     /// Scrollback lines to show first (main screen only).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
@@ -387,6 +414,11 @@ pub struct AttachResult {
     /// RESIZE, FOCUS, FACTS, CREDIT and CLOSE frames control it.
     pub channel: u32,
     pub terminal: Public,
+    /// True only when the entire path sends RESIZE before replacement paints.
+    /// False or absent means the observer must track size changes separately.
+    pub resize_notifications: bool,
+    /// The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.
+    pub automatic_input: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema, Default)]
@@ -460,6 +492,8 @@ pub struct SendResult {
     /// Whether it went `working` within a few seconds; null when it doesn't
     /// report status, so nobody can tell.
     pub started: Option<bool>,
+    /// True when delivery was held for a person's unsent draft.
+    pub waited_for_person: bool,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<crate::wait::WaitResult>,
@@ -475,6 +509,10 @@ pub struct WaitParams {
     /// yet counts as working). `any`: the parent's unseen news (a turn ended, it
     /// blocked, it hit an error, it exited), else the next child to stop working; for the parent
     /// itself, also a message typed into it while it worked (reason `message`).
+    /// A child with a sent launch task counts as working until its turn advances
+    /// past delivery, or it reports done, blocked, error, or exits. Startup idle
+    /// does not complete that task in either mode. Without a launch task, idle
+    /// still counts as stopped.
     #[arg(long)]
     pub children: Option<Children>,
     /// For programs, not agents: end when output printed after the wait started
@@ -692,7 +730,7 @@ pub struct FileResult {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineAddParams {
-    /// How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.
+    /// How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.
     #[arg(required_unless_present = "via", conflicts_with = "via")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,

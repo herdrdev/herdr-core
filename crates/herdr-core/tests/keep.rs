@@ -98,7 +98,8 @@ fn failed_shell_restart_stays_live_and_retries() {
     assert!(r["finished_ms"].is_null());
     std::fs::write(&shell, "#!/bin/sh\nexec /bin/sh\n").unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
-    wait_until("retry succeeds", || get(&s, &t)["pid"].is_number());
+    // Failed attempts back off for 1.5, 3, then 6 seconds: already longer than wait_until allows.
+    wait_until_for("retry succeeds", std::time::Duration::from_secs(30), || get(&s, &t)["pid"].is_number());
     assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
     let r = get(&s, &t);
     assert!(r["reason"].is_null());
