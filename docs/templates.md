@@ -90,6 +90,7 @@ Enter submits it, even when the client reads all queued input together.
 This is opt-in: choose keys appropriate for that program. Increasing `paste_gap_ms`
 alone cannot separate events that a paused reader consumes together. Core sends
 the sequence once and reports whether it observed work start; it never retries it.
+Automatic child notices use the parent's `submit` keys and `paste_gap_ms` too.
 
 When a terminal is launched on another machine, that machine resolves the template and runs its command.
 Put the template and agent there first.

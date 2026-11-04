@@ -194,6 +194,47 @@ Start-Sleep -Milliseconds 100
 }
 
 #[test]
+fn child_notices_use_the_parent_templates_submit_keys() {
+    let s = Session::new();
+    let probe = s.file(
+        "notice-input.ps1",
+        r#"$e = [char]27
+[Console]::Out.Write("$e]7501;state=working$e\")
+[Console]::Out.Flush()
+$text = ''
+$keys = @()
+do {
+    $key = [Console]::ReadKey($true)
+    if ($key.KeyChar -ge ' ') { $text += $key.KeyChar } else { $keys += $key.Key.ToString() }
+} until ($key.Key -eq 'Enter')
+Start-Sleep -Milliseconds 100
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'keys.json'), (ConvertTo-Json @{text=$text; keys=$keys; extra=[Console]::KeyAvailable}))
+"#,
+    );
+    let templates = s.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&templates).unwrap();
+    std::fs::write(
+        templates.join("notice.md"),
+        format!(
+            "---\nsubmit: right enter\npaste_gap_ms: 0\ncommand: powershell.exe -NoProfile -File \"{probe}\"\n---\n"
+        ),
+    )
+    .unwrap();
+    let parent = template_with_git(&s, "notice");
+    wait_until("parent working", || s.json(&["get", &parent])["status"]["state"] == "working");
+    let out =
+        cmd(&s.name, &s.root).args(["run", "--bg", "--parent", &parent, "cmd", "/C", "exit", "0"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let child: Value = serde_json::from_slice(&out.stdout).unwrap();
+    wait_until("notice consumed", || s.json(&["get", &parent])["state"] == "finished");
+    let result: Value = serde_json::from_slice(&std::fs::read(s.root.join("keys.json")).unwrap()).unwrap();
+    let child = child["address"].as_str().unwrap();
+    assert_eq!(result["text"], format!("<hc>{child} exited (exit 0). Read: hc read {child}</hc>"));
+    assert_eq!(result["keys"], serde_json::json!(["RightArrow", "Enter"]));
+    assert_eq!(result["extra"], false, "submission must not be retried");
+}
+
+#[test]
 fn template_escape_and_character_are_separate_keys() {
     let s = Session::new();
     let probe = s.file(
