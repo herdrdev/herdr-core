@@ -1,5 +1,7 @@
 use super::*;
 
+const FORMAT_HTML: i32 = 2;
+
 #[test]
 fn continuation_restores_split_sequences_and_long_strings_resume_at_ground() {
     for prefix in [b"\x1b_Gm=1;AAAA".as_slice(), b"\x1b]2;title", b"\x1bP+q544", b"\x1b[31", b"\xf0\x9f"] {
@@ -149,6 +151,38 @@ fn repaint_uses_the_active_screen_not_stale_alternate_screen_modes() {
                 assert_eq!(viewer.dec_mode(1049), t.alt_screen(), "{case:?}");
             }
         }
+    }
+}
+
+#[test]
+fn repaint_keeps_closed_cell_hyperlinks() {
+    let mut t = Terminal::new(30, 4, 0);
+    t.write(b"\x1b]8;id=paint;https://example.invalid/paint\x1b\\linked\x1b]8;;\x1b\\ plain");
+    let paint = t.paint(0);
+    let text = String::from_utf8_lossy(&paint);
+    assert!(text.contains("https://example.invalid/paint"), "{text:?}");
+    let mut fresh = Terminal::new(30, 4, 0);
+    fresh.write(&paint);
+    // HTML already preserves cell attributes on the old pin: use it as an
+    // independent oracle, not just the text or the cursor's active hyperlink.
+    assert_eq!(fresh.format(FORMAT_HTML, None, false), t.format(FORMAT_HTML, None, false));
+}
+
+#[test]
+fn repaint_keeps_default_gaps_and_erased_backgrounds() {
+    for (bytes, control) in [
+        (b"\x1b[41mA\x1b[0m\x1b[3CB".as_slice(), b"\x1b[3C".as_slice()),
+        (b"\x1b[42m\x1b[2K\x1b[0m\rB".as_slice(), b"\x1b[11X".as_slice()),
+    ] {
+        let mut t = Terminal::new(12, 3, 0);
+        t.write(bytes);
+        let paint = t.paint(0);
+        // CUF leaves a default gap empty; ECH restores background-only cells
+        // without turning them into text spaces with different wrap behavior.
+        assert!(paint.windows(control.len()).any(|w| w == control), "{:?}", String::from_utf8_lossy(&paint));
+        let mut fresh = Terminal::new(12, 3, 0);
+        fresh.write(&paint);
+        assert_eq!(fresh.screen_rows(), t.screen_rows(), "{bytes:?}");
     }
 }
 
