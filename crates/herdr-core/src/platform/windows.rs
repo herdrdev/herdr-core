@@ -1027,9 +1027,9 @@ impl Pty {
         }
     }
 
-    /// No process groups on a pseudo console: the program it started.
+    /// No process groups on a pseudo console: follow its unique shell child.
     pub fn foreground(&self) -> i32 {
-        self.pid as i32
+        super::windows_process::shell_pid(self.pid) as i32
     }
 
     /// Ctrl+C through the console for an interrupt; anything harder ends the
