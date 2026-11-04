@@ -125,7 +125,7 @@ pub fn start(argv: &[String], env: &BTreeMap<String, String>, cwd: &str, slave: 
     let spec = Spec { argv: argv.to_vec(), env: env.clone(), cwd: cwd.into(), limits: launchd::limits()? };
     let begun = Instant::now();
     let sock = connect(&stderr_path()).map_err(unavailable)?;
-    launch(sock, slave, &spec, START.saturating_sub(begun.elapsed()).max(Duration::from_secs(1))).map(Process::Stub)
+    launch(sock, slave, &spec, begun + START).map(Process::Stub)
 }
 
 fn unavailable(error: io::Error) -> io::Error {
@@ -170,30 +170,97 @@ fn connect(log: &Path) -> io::Result<UnixStream> {
 
 /// Hello, then the slave and the spec, then the stub's answer. Whatever fails
 /// after the spec is sent, the stub ends the program once the socket closes.
-fn launch(sock: UnixStream, slave: &File, spec: &Spec, answer: Duration) -> io::Result<Remote> {
+fn launch(sock: UnixStream, slave: &File, spec: &Spec, deadline: Instant) -> io::Result<Remote> {
     no_sigpipe(&sock);
+    // connect() supplies the remaining JOB cap. It must not restart on each byte of a trickled hello.
+    let hello_deadline = sock.read_timeout()?.map_or(deadline, |left| deadline.min(Instant::now() + left));
     let mut reader = BufReader::new(sock);
-    match read_reply(&mut reader).map_err(unavailable)? {
+    match startup_reply(&mut reader, hello_deadline).map_err(unavailable)? {
         Reply::Hello(PROTOCOL) => {}
         other => return Err(unavailable(io::Error::other(format!("unexpected stub hello {other:?}")))),
     }
     let sock = reader.get_mut();
     // A stub that stopped reading must not hold the holder up: it acts only on a whole line.
-    sock.set_write_timeout(Some(answer)).ok();
-    send_fd(sock, slave.as_raw_fd())
-        .and_then(|()| {
-            let mut line = serde_json::to_vec(spec)?;
-            line.push(b'\n');
-            sock.write_all(&line)
-        })
-        .map_err(unavailable)?;
-    sock.set_read_timeout(Some(answer)).ok();
-    match read_reply(&mut reader) {
-        Ok(Reply::Pid(pid)) => Ok(Remote { pid, reader }),
+    let sent = (|| {
+        loop {
+            sock.set_write_timeout(Some(remaining(deadline)?))?;
+            match send_fd(sock, slave.as_raw_fd()) {
+                Ok(()) => break,
+                Err(error) if retry_startup(&error) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let mut line = serde_json::to_vec(spec)?;
+        line.push(b'\n');
+        let mut bytes = line.as_slice();
+        while !bytes.is_empty() {
+            sock.set_write_timeout(Some(remaining(deadline)?))?;
+            match sock.write(bytes) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => bytes = &bytes[n..],
+                Err(error) if retry_startup(&error) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        remaining(deadline).map(drop)
+    })();
+    sent.map_err(unavailable)?;
+    match startup_reply(&mut reader, deadline) {
+        Ok(Reply::Pid(pid)) => {
+            // Remote has no steady-state writes; wait and drop set their own read policy.
+            // Darwin rejects timeout changes after the peer closes; buffered replies remain valid then.
+            let _ = reader.get_ref().set_read_timeout(None);
+            let _ = reader.get_ref().set_write_timeout(None);
+            Ok(Remote { pid, reader })
+        }
         Ok(Reply::Errno(errno)) => Err(io::Error::from_raw_os_error(errno)),
         Ok(Reply::Error(text)) => Err(io::Error::other(text)),
         Ok(other) => Err(unavailable(io::Error::other(format!("unexpected stub answer {other:?}")))),
         Err(error) => Err(unavailable(error)),
+    }
+}
+
+fn remaining(deadline: Instant) -> io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+        // Darwin may round a smaller socket timeout down; never install a zero timeout.
+        .map(|left| left.max(Duration::from_millis(1)))
+        .ok_or_else(|| io::ErrorKind::TimedOut.into())
+}
+
+fn retry_startup(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+}
+
+/// One complete startup reply, within the same deadline even when the peer keeps making partial progress.
+/// Retain the reader and consume only this line: a buffered Exit belongs to Remote::wait.
+fn startup_reply(reader: &mut BufReader<UnixStream>, deadline: Instant) -> io::Result<Reply> {
+    let mut line = Vec::new();
+    loop {
+        if let Err(error) = reader.get_ref().set_read_timeout(Some(remaining(deadline)?)) {
+            // Darwin returns EINVAL once the peer has closed. Drain its buffered reply or observe EOF.
+            if error.kind() != io::ErrorKind::InvalidInput {
+                return Err(error);
+            }
+        }
+        let bytes = match reader.fill_buf() {
+            Ok([]) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(bytes) => bytes,
+            Err(error) if retry_startup(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        remaining(deadline)?;
+        let end = bytes.iter().position(|byte| *byte == b'\n');
+        let count = end.map_or(bytes.len(), |i| i + 1);
+        if line.len() + count > 64 * 1024 {
+            return Err(io::Error::other("startup reply exceeds 64 KiB"));
+        }
+        line.extend_from_slice(&bytes[..count]);
+        reader.consume(count);
+        if end.is_some() {
+            return Ok(serde_json::from_slice(&line)?);
+        }
     }
 }
 
@@ -398,7 +465,7 @@ mod tests {
             }
         });
         let slave = File::open("/dev/null").unwrap();
-        let launch = launch(holder, &slave, &spec(), Duration::from_millis(300));
+        let launch = launch(holder, &slave, &spec(), Instant::now() + Duration::from_millis(300));
         fake.join().unwrap();
         launch
     }
@@ -410,6 +477,53 @@ mod tests {
     }
 
     #[test]
+    fn handshake_phases_share_one_deadline() {
+        let (holder, mut stub) = UnixStream::pair().unwrap();
+        no_sigpipe(&stub);
+        let fake = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            if send_reply(&mut stub, &Reply::Hello(PROTOCOL)).is_err() {
+                return;
+            }
+            if recv_fd(&stub).is_err() {
+                return;
+            }
+            let _ = BufReader::new(&stub).read_line(&mut String::new());
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = send_reply(&mut stub, &Reply::Pid(4242));
+        });
+        let slave = File::open("/dev/null").unwrap();
+        let result = launch(holder, &slave, &spec(), Instant::now() + Duration::from_millis(650));
+        fake.join().unwrap();
+        assert_eq!(
+            result.err().expect("successive phases exceeded the total startup budget").kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn a_trickled_hello_cannot_extend_startup() {
+        let (holder, mut stub) = UnixStream::pair().unwrap();
+        no_sigpipe(&stub);
+        let fake = std::thread::spawn(move || {
+            for byte in b"{\"hello\":1}\n" {
+                std::thread::sleep(Duration::from_millis(100));
+                if stub.write_all(&[*byte]).is_err() {
+                    return;
+                }
+            }
+            if recv_fd(&stub).is_ok() {
+                let _ = BufReader::new(&stub).read_line(&mut String::new());
+                let _ = send_reply(&mut stub, &Reply::Pid(4242));
+            }
+        });
+        let slave = File::open("/dev/null").unwrap();
+        let result = launch(holder, &slave, &spec(), Instant::now() + Duration::from_millis(650));
+        fake.join().unwrap();
+        assert_eq!(result.err().expect("progress must not reset the startup budget").kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
     fn a_started_program_reports_its_pid_then_its_exit() {
         let started = |s: &mut UnixStream| {
             send_reply(s, &Reply::Pid(4242)).unwrap();
@@ -417,6 +531,30 @@ mod tests {
         };
         let mut remote = against(Some(Reply::Hello(PROTOCOL)), started).unwrap();
         assert_eq!((remote.pid, remote.wait().unwrap()), (4242, (Some(3), None)));
+    }
+
+    #[test]
+    fn startup_replies_require_a_complete_bounded_line_and_remaining_time() {
+        fn read(bytes: Vec<u8>, deadline: Instant) -> io::Result<Reply> {
+            let (holder, mut stub) = UnixStream::pair().unwrap();
+            no_sigpipe(&stub);
+            let peer = std::thread::spawn(move || {
+                let _ = stub.write_all(&bytes);
+            });
+            let result = startup_reply(&mut BufReader::new(holder), deadline);
+            peer.join().unwrap();
+            result
+        }
+        let expired = read(b"{\"pid\":1}\n".to_vec(), Instant::now() - Duration::from_millis(1)).unwrap_err();
+        assert_eq!(expired.kind(), io::ErrorKind::TimedOut);
+        let incomplete = read(b"{\"pid\":1}".to_vec(), Instant::now() + Duration::from_secs(2)).unwrap_err();
+        assert_eq!(incomplete.kind(), io::ErrorKind::UnexpectedEof);
+        let mut limit = b"{\"pid\":1}".to_vec();
+        limit.resize(64 * 1024 - 1, b' ');
+        limit.push(b'\n');
+        assert_eq!(read(limit.clone(), Instant::now() + Duration::from_secs(2)).unwrap(), Reply::Pid(1));
+        limit.insert(limit.len() - 1, b' ');
+        assert!(read(limit, Instant::now() + Duration::from_secs(2)).unwrap_err().to_string().contains("64 KiB"));
     }
 
     #[test]
