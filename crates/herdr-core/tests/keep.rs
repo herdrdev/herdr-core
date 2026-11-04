@@ -380,6 +380,10 @@ fn stopped_kept_terminal_returns_at_next_start() {
 fn keep_off_on_a_lost_terminal_reports_it_finished() {
     let s = Session::new();
     let t = run(&s, &["--keep", "sleep", "100"]);
+    // A bad shell setting holds recovery, so the record stays lost without a holder.
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "shell = []").unwrap();
     let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
     unsafe {
         libc::kill(holder as i32, libc::SIGKILL);
