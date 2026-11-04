@@ -258,6 +258,12 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
     let bin = s.root.join("bin");
     let tmp = s.root.join("noexec-tmp");
     std::fs::create_dir(&tmp).unwrap();
+    // The runner may forbid user namespaces (hardened CI): probe with a
+    // no-op before relying on it, and skip when unprivileged mounting is out.
+    let probe = Command::new("unshare").args(["-rm", "--map-root-user", "true"]).output().unwrap();
+    if !probe.status.success() {
+        return;
+    }
     // Root inside a fresh mount namespace: a noexec tmpfs for TMPDIR, the
     // install dir on a normal filesystem. (Root cannot bypass noexec: the
     // refusal is a mount flag, not a permission bit.)
@@ -272,11 +278,9 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
         ROOT
     );
     let out = Command::new("unshare").args(["-rm", "--map-root-user", "sh", "-c", &script]).output().unwrap();
-    if !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("mount") {
-        return; // user namespaces or mounting unavailable (hardened CI): skip
-    }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("does not run"), "the noexec mount was read as a wrong machine: {stdout}{stderr}");
     assert!(out.status.success(), "{stdout}{stderr}");
     assert!(stdout.contains("installed"));
     assert!(bin.join("herdr-core").is_file());
