@@ -8,23 +8,6 @@ use serde_json::json;
 use std::time::Duration;
 
 #[test]
-fn kitty_replies_over_data_do_not_hold_agent_messages() {
-    let mut s = Session::new();
-    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
-    let t = run(&s, &["sh", "-c", "stty raw -echo; echo ready; cat"]);
-    let mut viewer = Viewer::attach(&s, &t, 80, 24, json!({}));
-    viewer.shows("ready");
-    for byte in b"\x1b_Gi=31;OK\x1b\\" {
-        viewer.conn.send(viewer.channel, wire::DATA, &[*byte]);
-    }
-    viewer.conn.call("terminal.get", json!({"terminal": t}));
-    let sent = s.json(&["send", &t, "agent-message"]);
-    assert_eq!(sent["waited_for_person"], false, "{sent}");
-    assert_eq!(get(&s, &t)["waiting_for_person"], false);
-    viewer.shows("agent-message");
-}
-
-#[test]
 fn automatic_replies_do_not_take_the_size() {
     let s = Session::new();
     let log = s.root.join("input");

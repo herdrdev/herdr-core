@@ -73,9 +73,6 @@ pub struct Terminal {
     /// Whether the program ever sent a 7501 report.
     #[serde(default)]
     pub reported: bool,
-    /// An incoming message is held for the person's unsent draft (not composer detection).
-    #[serde(default)]
-    pub waiting_for_person: bool,
     #[serde(default)]
     pub title: String,
     /// The terminal that started it (`t3`), set once at start.
@@ -297,7 +294,6 @@ impl Registry {
                 noted: 0,
                 told_parent: false,
                 scope: None,
-                waiting_for_person: false,
                 printed: 0,
                 full_screen: false,
                 win32_input: false,

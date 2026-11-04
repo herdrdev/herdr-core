@@ -264,13 +264,8 @@ pub(super) fn describe(t: &Value) -> String {
         .flatten()
         .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default()))
         .collect();
-    let waiting = if t["waiting_for_person"] == true {
-        "\n  input: waiting for the person to submit or clear their draft"
-    } else {
-        ""
-    };
     let mut description = format!(
-        "{} {}\n  name: {}\n  parent: {}\n  command: {}\n  cwd: {}\n  pid: {}\n  labels: {}{waiting}",
+        "{} {}\n  name: {}\n  parent: {}\n  command: {}\n  cwd: {}\n  pid: {}\n  labels: {}",
         t["address"].as_str().unwrap_or("?"),
         summary(t),
         t["name"].as_str().unwrap_or("-"),

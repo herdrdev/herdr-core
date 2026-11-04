@@ -22,34 +22,6 @@ fn with_rohan_env(env: &[(&str, &str)]) -> (Session, Session) {
 }
 
 #[test]
-fn a_remote_send_waits_for_the_person_instead_of_timing_out_in_transit() {
-    let (mut rohan, mut s) = (Session::new(), Session::new());
-    rohan.env.push(("HC_QUIET_MS".into(), "50".into()));
-    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
-    let t = run(&rohan, &["sh", "-c", "stty -echo; while IFS= read -r l; do echo submitted:$l; done"]);
-    s.json(&["machine", "add", "rohan"]);
-    let config = s.root.join("config/herdr-core/config.toml");
-    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.2\n").unwrap();
-    let mut person = Viewer::attach(&rohan, &t, 80, 24, json!({}));
-    person.typed(b"human draft");
-    let mut conn = s.connect();
-    let target = format!("rohan/{t}");
-    let sending = std::thread::spawn(move || {
-        conn.call(1, "terminal.send", json!({"terminal": target, "text": "remote message"}))
-    });
-    wait_until("draft held there", || rohan.json(&["get", &t])["waiting_for_person"] == true);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let still_waiting = !sending.is_finished();
-    person.typed(b"\r");
-    let sent = sending.join().unwrap();
-    assert!(still_waiting, "the transport must allow the draft hold: {sent}");
-    assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
-    wait_until("separate message there", || text(&rohan, &t).contains("submitted:remote message"));
-    assert!(!text(&rohan, &t).contains("submitted:human draftremote message"));
-}
-
-#[test]
 fn a_frozen_machine_never_freezes_hc() {
     // rohan answers heartbeats every 200 ms; here, 2 s is all a machine gets.
     let mut rohan = Session::new();

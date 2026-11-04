@@ -75,22 +75,6 @@ full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,
 marked incomplete with `why` set to that status; no scroll input is sent.
 
-A send stays pending while the person has an unsent draft in that terminal.
-Enter, Ctrl+C or Ctrl+U releases it; Escape and backspace do not reliably
-mean clear, so they do not. Only human viewer input counts, not automatic
-terminal replies. This tracks keys, not the program's composer state.
-Leaving `blocked` also releases the draft, such as after a single-key
-approval. Other status changes do not consume human typing.
-After three minutes the draft hold
-expires; the normal ~3 s quiet gate still applies. A delivered message
-consumes the old draft, but keys typed during delivery stay protected.
-Messages are not dropped on clear or expiry.
-`hc get <t>` shows `waiting_for_person: true` during the hold; the eventual
-send reply includes `waited_for_person: true`. Do not resend while it waits.
-With `--wait`, `--timeout` still applies to watching the turn **after**
-delivery, not to this bounded draft hold. Core notes respect drafts too;
-`keys` and `interrupt` keep their existing behavior.
-
 Keep doing useful work while children work. When you need their results:
 
 ```sh

@@ -96,7 +96,7 @@ methods! { Ctx<'_>;
         "Open a raw stream to a live terminal on this framed connection (see `hello` with `framed`). Loss ends the stream even when kept; reattach after the restarted event.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
-        "Paste text and press Enter after the person submits or clears their draft (up to 3 min), then ~3 s quiet; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+        "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
@@ -161,12 +161,9 @@ fn resolve(core: &Core, address: &str) -> Result<u32, RpcError> {
 }
 
 fn record(core: &Core, id: u32) -> Result<Terminal, RpcError> {
-    let st = core.lock();
-    let mut t = st.reg.terminals.get(&id).cloned().ok_or_else(|| {
+    core.lock().reg.terminals.get(&id).cloned().ok_or_else(|| {
         RpcError::new("not_found", format!("{} was removed", crate::terminals::address(id)), "see `hc ls --all`")
-    })?;
-    t.waiting_for_person = st.gates.get(&id).is_some_and(|g| g.waiting_for_person);
-    Ok(t)
+    })
 }
 
 async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
@@ -486,13 +483,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
         None
     };
     core.flush_saved().await?;
-    Ok(SendResult {
-        status: sent.status,
-        turn: sent.turn,
-        started: sent.started,
-        waited_for_person: sent.waited_for_person,
-        wait,
-    })
+    Ok(SendResult { status: sent.status, turn: sent.turn, started: sent.started, wait })
 }
 
 async fn machine_exec(core: Ctx<'_>, p: ExecParams) -> Result<ExecResult, RpcError> {

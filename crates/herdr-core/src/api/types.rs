@@ -492,8 +492,6 @@ pub struct SendResult {
     /// Whether it went `working` within a few seconds; null when it doesn't
     /// report status, so nobody can tell.
     pub started: Option<bool>,
-    /// True when delivery was held for a person's unsent draft.
-    pub waited_for_person: bool,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<crate::wait::WaitResult>,
