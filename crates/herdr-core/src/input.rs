@@ -36,9 +36,19 @@ pub struct Gate {
     busy: bool,
     held: Vec<u8>,
     held_human: bool,
+    held_draft: Draft,
 }
 
 impl Gate {
+    pub fn clear_draft(&mut self) {
+        self.draft = Draft::default();
+    }
+
+    fn submitted(&mut self) {
+        // Held human keys have not reached the program's composer yet.
+        self.draft = std::mem::take(&mut self.held_draft);
+    }
+
     /// A person pressed keys while an agent's input was going in.
     pub fn has_held(&self) -> bool {
         self.held_human
@@ -48,6 +58,7 @@ impl Gate {
     pub fn set_busy(&mut self, busy: bool) -> Vec<u8> {
         self.busy = busy;
         if busy {
+            self.held_draft = Draft::default();
             Vec::new()
         } else {
             self.held_human = false;
@@ -61,6 +72,9 @@ impl Gate {
         if human && !bytes.is_empty() {
             self.last_human = Some(Instant::now());
             self.draft.feed(bytes);
+            if self.busy {
+                self.held_draft.feed(bytes);
+            }
         }
         if self.busy {
             self.held_human |= human && !bytes.is_empty();
@@ -329,7 +343,7 @@ impl Core {
                 } else {
                     let t = &st.reg.terminals[&id];
                     let prepared = prepare.take().expect("prepared once")(&st, t)?;
-                    st.gates.entry(id).or_default().busy = true;
+                    st.gates.entry(id).or_default().set_busy(true);
                     Some(prepared)
                 }
             };
@@ -363,6 +377,9 @@ impl Core {
         }
         let mut st = self.lock();
         let gate = st.gates.entry(id).or_default();
+        if protect_draft {
+            gate.submitted();
+        }
         let held = gate.set_busy(false);
         if let Some(link) = st.link(id) {
             link.input(id, &held);
@@ -577,6 +594,22 @@ mod tests {
         assert!(gate.has_held());
         assert_eq!(gate.set_busy(false), b"automatic\r\x15typed");
         assert!(!gate.has_held());
+    }
+
+    #[test]
+    fn delivery_consumes_the_old_draft_but_preserves_held_human_keys() {
+        for held in [b"".as_slice(), b"new draft", b"\x1b[97u", b"discarded\r"] {
+            let mut gate = Gate::default();
+            gate.viewer(b"old draft", true);
+            gate.set_busy(true);
+            gate.viewer(held, true);
+            gate.viewer(b"automatic reply", false);
+            gate.submitted();
+            assert_eq!(gate.draft.pending, !held.is_empty() && !held.ends_with(b"\r"), "{held:?}");
+            let mut expected = held.to_vec();
+            expected.extend_from_slice(b"automatic reply");
+            assert_eq!(gate.set_busy(false), expected);
+        }
     }
 
     #[test]

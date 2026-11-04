@@ -197,8 +197,15 @@ impl Core {
             let was = word(st);
             let t = st.reg.terminals.get_mut(&id).expect("live terminal");
             let change = crate::status::apply(t, r);
+            let now = word(st);
+            if now != was
+                && was.as_deref() == Some("blocked")
+                && let Some(gate) = st.gates.get_mut(&id)
+            {
+                gate.clear_draft();
+            }
             self.status_changed(st, id, change);
-            word_changed |= word(st) != was;
+            word_changed |= now != was;
         }
         // Losing the holder too (a reboot) leaves no tail to replay: queue a new word,
         // and with it a turn or news, for immediate persistence. Messages and progress can wait.
