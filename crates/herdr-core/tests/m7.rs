@@ -14,6 +14,17 @@ fn session() -> Session {
     s
 }
 
+fn wait_children(s: &Session, parent: &str, mode: &str, timeout: &str) -> Value {
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", parent)
+        .args(["--json", "wait", "--children", mode, "--timeout", timeout])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
 fn template(s: &Session, name: &str, body: &str) {
     let dir = s.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&dir).unwrap();
@@ -22,6 +33,251 @@ fn template(s: &Session, name: &str, body: &str) {
 
 /// An agent that says idle, then echoes each line it reads, working while it does.
 const ECHO_AGENT: &str = r#"sh -c 'printf "\033]7501;state=idle\033\\"; stty -echo; while read -r l; do printf "\033]7501;state=working\033\\"; echo "got:$l"; printf "\033]7501;state=done\033\\"; done'"#;
+
+#[test]
+fn first_task_can_finish_without_a_working_report() {
+    for mode in ["all", "any"] {
+        for state in ["done", "blocked", "error", "exit"] {
+            let mut s = session();
+            s.env.push(("HC_STARTED_MS".into(), "100".into()));
+            let gate = s.root.join("finish");
+            let end = if state == "exit" {
+                "exit 7".to_string()
+            } else {
+                format!(r#"printf "\033]7501;state={state}\033\\"; sleep 100"#)
+            };
+            let command = format!(
+                r#"sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; {end}'"#,
+                gate.display()
+            );
+            template(&s, "worker", &format!("---\ncommand: {command}\n---\n"));
+            let parent = s.json(&["run", "--bg", "sh", "-c", "sleep 100"])["address"].as_str().unwrap().to_string();
+            let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+            assert_eq!(r["first_message"]["sent"], true, "{r}");
+            std::fs::write(gate, "").unwrap();
+            let r = wait_children(&s, &parent, mode, "5");
+            assert_eq!(r["reason"], "children", "{mode} {state}: {r}");
+            assert_eq!(r["children"][0]["ended"], true, "{r}");
+            if state == "exit" {
+                assert_eq!(r["children"][0]["exit_code"], 7, "{r}");
+            } else {
+                assert_eq!(r["children"][0]["status"], state, "{r}");
+            }
+        }
+    }
+}
+
+#[test]
+fn first_task_completion_inside_started_window_is_not_forgotten() {
+    for mode in ["all", "any"] {
+        let s = session();
+        template(
+            &s,
+            "worker",
+            r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; printf "\033]7501;state=done\033\\"; printf "\033]7501;state=idle\033\\"; sleep 100'
+---
+"#,
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let r = wait_children(&s, &parent, mode, "0.1");
+        assert_eq!(r["reason"], "children", "{mode}: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+    }
+}
+
+#[test]
+fn first_task_does_not_consume_a_pre_delivery_done_word() {
+    let mut s = session();
+    s.env.push(("HC_STARTED_MS".into(), "100".into()));
+    let gate = s.root.join("finish");
+    template(
+        &s,
+        "worker",
+        &format!(
+            r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; sleep 100'
+---
+"#,
+            gate.display()
+        ),
+    );
+    let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+    let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+    assert_eq!(r["first_message"]["sent"], true, "{r}");
+    let wait = || wait_children(&s, &parent, "all", "0.1");
+    let r = wait();
+    assert_eq!(r["reason"], "timeout", "startup done is not task completion: {r}");
+    std::fs::write(gate, "").unwrap();
+    wait_until("delivered task completed", || wait()["reason"] == "children");
+}
+
+#[test]
+fn first_task_startup_done_is_not_completion_after_recovery() {
+    for recovery in ["restart", "crash"] {
+        startup_done_stays_pending(Some(recovery));
+    }
+}
+
+#[test]
+fn first_task_startup_done_is_not_completion_after_a_child_report() {
+    startup_done_stays_pending(None);
+}
+
+fn startup_done_stays_pending(recovery: Option<&str>) {
+    for mode in ["all", "any"] {
+        let mut s = session();
+        s.env.push(("HC_STARTED_MS".into(), "100".into()));
+        s.env.push(("HC_HOLDER_GRACE_MS".into(), "60000".into()));
+        let child_gate = s.root.join("child-report");
+        let finish = s.root.join("finish");
+        template(
+            &s,
+            "worker",
+            &format!(
+                r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=done\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done:id=sub\033\\"; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; sleep 100'
+---
+"#,
+                child_gate.display(),
+                finish.display()
+            ),
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let child = r["address"].as_str().unwrap();
+        if recovery == Some("restart") {
+            s.json(&["server", "restart"]);
+        } else if recovery == Some("crash") {
+            let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+            wait_until("core absent", || !s.connect_ok());
+        } else {
+            std::fs::write(&child_gate, "").unwrap();
+            wait_until("child report", || s.json(&["get", child])["records"]["sub"]["state"] == "done");
+        }
+        let wait = |timeout: &str| wait_children(&s, &parent, mode, timeout);
+        let r = wait("0.1");
+        assert_eq!(r["reason"], "timeout", "{mode}: startup done is not task completion: {r}");
+        assert_eq!(r["children"][0]["ended"], false, "{r}");
+        std::fs::write(child_gate, "").unwrap();
+        std::fs::write(finish, "").unwrap();
+        let r = wait("5");
+        assert_eq!(r["reason"], "children", "{mode}: fresh root done completes the task: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+    }
+}
+
+#[test]
+fn first_task_completed_while_core_was_absent_is_reconciled() {
+    for mode in ["all", "any"] {
+        let mut s = session();
+        s.env.push(("HC_HOLDER_GRACE_MS".into(), "60000".into()));
+        s.env.push(("HC_STARTED_MS".into(), "100".into()));
+        let gate = s.root.join("finish");
+        let finished = s.root.join("finished");
+        template(
+            &s,
+            "worker",
+            &format!(
+                r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; touch "{}"; sleep 100'
+---
+"#,
+                gate.display(),
+                finished.display()
+            ),
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        wait_until("core absent", || !s.connect_ok());
+        std::fs::write(&gate, "").unwrap();
+        wait_until("task finished without core", || finished.exists());
+        let r = wait_children(&s, &parent, mode, "0.1");
+        assert_eq!(r["reason"], "children", "{mode}: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+        if mode == "any" {
+            s.json(&["server", "restart"]);
+            let r = wait_children(&s, &parent, "any", "0.1");
+            assert_eq!(r["reason"], "timeout", "completion news must only be emitted once: {r}");
+        }
+    }
+}
+
+#[test]
+fn first_task_done_then_idle_during_handover_is_not_forgotten() {
+    for mode in ["all", "any"] {
+        let mut s = session();
+        s.env.push(("HC_HOLDER_GRACE_MS".into(), "60000".into()));
+        s.env.push(("HC_STARTED_MS".into(), "100".into()));
+        let gate = s.root.join("finish");
+        let finished = s.root.join("finished");
+        template(
+            &s,
+            "worker",
+            &format!(
+                r#"---
+command: sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=done\033\\"; printf "\033]7501;state=idle\033\\"; touch "{}"; sleep 100'
+---
+"#,
+                gate.display(),
+                finished.display()
+            ),
+        );
+        let parent = s.json(&["run", "--bg", "sleep", "100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let child = r["address"].as_str().unwrap();
+        let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+        wait_until("core exited gracefully", || !pid_alive(pid));
+        std::fs::write(gate, "").unwrap();
+        wait_until("task finished without core", || finished.exists());
+        let r = wait_children(&s, &parent, mode, "0.1");
+        assert_eq!(r["reason"], "children", "{mode}: {r}");
+        assert_eq!(r["children"][0]["ended"], true, "{r}");
+        assert_eq!(r["children"][0]["status"], "idle", "{r}");
+        assert_eq!(s.json(&["get", child])["screen"], "exact");
+    }
+}
+
+#[test]
+fn children_wait_for_a_sent_first_task_not_startup_idle() {
+    for mode in ["all", "any"] {
+        let s = session();
+        let gate = s.root.join("start");
+        let finish = s.root.join("finish");
+        let command = format!(
+            r#"sh -c 'stty -echo; printf "\033]7501;state=idle\033\\"; read -r task; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=working\033\\"; while [ ! -f "{}" ]; do sleep 0.01; done; printf "\033]7501;state=idle\033\\"; sleep 100'"#,
+            gate.display(),
+            finish.display()
+        );
+        template(&s, "worker", &format!("---\ncommand: {command}\n---\n"));
+        let parent = s.json(&["run", "--bg", "sh", "-c", "sleep 100"])["address"].as_str().unwrap().to_string();
+        let r = s.json(&["run", "--bg", "--parent", &parent, "worker", "first task"]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        assert_eq!(r["first_message"]["started"], false, "{r}");
+        let child = r["address"].as_str().unwrap();
+        let wait = |timeout: &str| wait_children(&s, &parent, mode, timeout);
+        let r = wait("0.1");
+        assert_eq!(r["reason"], "timeout", "{mode}: startup idle is not task completion: {r}");
+        assert_eq!(r["children"][0]["ended"], false, "{r}");
+        std::fs::write(gate, "").unwrap();
+        wait_until("first task working", || s.json(&["get", child])["status"]["state"] == "working");
+        assert_eq!(wait("0.1")["reason"], "timeout");
+        std::fs::write(finish, "").unwrap();
+        let r = wait("5");
+        assert_eq!(r["reason"], "children", "{r}");
+        assert_eq!(r["children"][0]["turn"], 1, "{r}");
+        assert_eq!(r["children"][0]["status"], "idle", "{r}");
+    }
+}
 
 #[test]
 fn a_template_starts_its_command_and_sends_body_and_prompt_first() {

@@ -42,6 +42,13 @@ pub struct Viewer {
     pub(crate) recovering: bool,
 }
 
+impl Display {
+    /// Answer the program's color and cell-size queries with these facts.
+    pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) {
+        screen.set_display(rgb(&self.fg), rgb(&self.bg), rgb(&self.cursor), self.cell.map(|[w, h]| (w, h)));
+    }
+}
+
 fn rgb(hex: &Option<String>) -> Option<Rgb> {
     let hex = hex.as_deref()?.strip_prefix('#')?;
     let n = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
@@ -190,8 +197,15 @@ impl Core {
             let was = word(st);
             let t = st.reg.terminals.get_mut(&id).expect("live terminal");
             let change = crate::status::apply(t, r);
+            let now = word(st);
+            if now != was
+                && was.as_deref() == Some("blocked")
+                && let Some(gate) = st.gates.get_mut(&id)
+            {
+                gate.clear_draft();
+            }
             self.status_changed(st, id, change);
-            word_changed |= word(st) != was;
+            word_changed |= now != was;
         }
         // Losing the holder too (a reboot) leaves no tail to replay: queue a new word,
         // and with it a turn or news, for immediate persistence. Messages and progress can wait.
@@ -199,7 +213,15 @@ impl Core {
     }
 
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
-        let t = &st.reg.terminals[&id];
+        let t = st.reg.terminals.get_mut(&id).expect("reported terminal");
+        let first_task_finished = t.first_task_turn.is_some_and(|turn| {
+            t.turn > turn
+                || (change.root_report
+                    && t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "blocked" | "error")))
+        });
+        if first_task_finished {
+            t.first_task_turn = None;
+        }
         let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
         if change.status {
             self.emit(
@@ -213,7 +235,7 @@ impl Core {
             let state = status.map(|s| s.state);
             self.emit(st, "turn", id, serde_json::json!({"turn": turn, "state": state}));
         }
-        if (change.turn_ended || change.stuck) && st.reg.terminals[&id].is_live() {
+        if (change.turn_ended || change.stuck || first_task_finished) && st.reg.terminals[&id].is_live() {
             self.news(st, id);
         }
     }
@@ -236,10 +258,15 @@ impl Core {
         Some(id)
     }
 
-    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8]) {
+    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8], automatic: bool) {
         let mut st = self.lock();
-        if let Some(id) = self.touch(&mut st, conn, channel, |_| {}) {
-            let now = st.gates.entry(id).or_default().human(bytes);
+        let id = if automatic {
+            Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
+        } else {
+            self.touch(&mut st, conn, channel, |_| {})
+        };
+        if let Some(id) = id {
+            let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
@@ -363,7 +390,7 @@ impl Core {
     fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
         let Some(screen) = st.screens.get_mut(&id) else { return };
         if let Some(d) = display {
-            screen.set_display(rgb(&d.fg), rgb(&d.bg), rgb(&d.cursor), d.cell.map(|[w, h]| (w, h)));
+            d.apply(screen);
         }
         // Display changes can notify an idle program, even without a resize or output.
         let replies = Relay::take_responses(screen);

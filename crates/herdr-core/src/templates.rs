@@ -5,7 +5,7 @@ use crate::paths::Paths;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -39,6 +39,7 @@ pub fn dir(paths: &Paths) -> PathBuf {
 }
 
 fn parse(name: &str, text: &str) -> Result<Template, String> {
+    let text = text.replace("\r\n", "\n");
     let rest = text.strip_prefix("---\n").ok_or("no frontmatter (start the file with ---)")?;
     let end = rest.find("\n---").ok_or("frontmatter never closes (---)")?;
     let (front, body) = (&rest[..end], &rest[end + 4..]);
@@ -109,7 +110,7 @@ pub fn list(paths: &Paths) -> Vec<TemplateInfo> {
         .collect()
 }
 
-#[derive(Serialize, JsonSchema, Debug)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FirstMessage {
     pub sent: bool,
     /// Whether the agent started working on it (see terminal.send).
@@ -124,7 +125,7 @@ pub struct FirstMessage {
 }
 
 pub(crate) fn ready_timeout() -> Duration {
-    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
     Duration::from_millis(ms)
 }
 
@@ -168,9 +169,21 @@ impl Core {
             return not_sent("it exited before it was ready".into());
         }
         let text = self.tagged(from, id, text, true);
-        match self.send(id, &text, false, None).await {
-            Ok(sent) => FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) },
-            Err(e) => not_sent(e.message),
+        loop {
+            match self.send_first_task(id, &text).await {
+                Ok(sent) => {
+                    return FirstMessage { sent: true, started: sent.started, reason: None, turn: Some(sent.turn) };
+                }
+                // Only settle failures guarantee no input was typed. Never retry a paste.
+                Err(e)
+                    if e.kind == "unavailable"
+                        && e.message.ends_with("is still starting: its output has not settled")
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => return not_sent(format!("{}; {}", e.message, e.hint)),
+            }
         }
     }
 }
@@ -183,6 +196,17 @@ pub fn first_message(t: &Template, prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_frontmatter_and_body_match_lf() {
+        let text = "---\nname: reviewer\ndescription: Review code\ncommand: pi\nready: quiet\n\
+                    submit: enter\nstop: ctrl-c\npaste_gap_ms: 10\n---\nFirst line.\nSecond line.\n";
+        let expected = parse("reviewer", text).unwrap();
+        assert_eq!(expected.body, "First line.\nSecond line.");
+        assert_eq!(parse("reviewer", &text.replace('\n', "\r\n")).unwrap(), expected);
+        let mixed = text.replacen("---\n", "---\r\n", 1).replace("Second line.\n", "Second line.\r\n");
+        assert_eq!(parse("reviewer", &mixed).unwrap(), expected);
+    }
 
     #[test]
     fn frontmatter_and_body_parse_like_the_spec_example() {

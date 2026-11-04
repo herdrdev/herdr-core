@@ -9,13 +9,18 @@
             "minimum": 0,
             "type": "integer"
           },
+          "resize_notifications": {
+            "description": "True only when the entire path sends RESIZE before replacement paints.\nFalse or absent means the observer must track size changes separately.",
+            "type": "boolean"
+          },
           "terminal": {
             "$ref": "#/components/schemas/Terminal"
           }
         },
         "required": [
           "channel",
-          "terminal"
+          "terminal",
+          "resize_notifications"
         ],
         "type": "object"
       },
@@ -599,7 +604,7 @@
             "type": "string"
           },
           "why": {
-            "description": "Why only the screen: \"working\" (a full-screen app isn't scrolled while\nit works; read again once it stops).",
+            "description": "Why only the screen: \"working\", \"blocked\" or \"error\" (a full-screen app\nis not scrolled in these states).",
             "type": [
               "string",
               "null"
@@ -1389,7 +1394,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.16"
+    "version": "0.1.17"
   },
   "methods": [
     {
@@ -1432,6 +1437,19 @@
               }
             ],
             "description": "Another core dialing in: who it is. Its terminals may then be parents\nof terminals here, and hear from them."
+          }
+        },
+        {
+          "description": "Features supported by a core dialing in, including relaying size notifications.",
+          "name": "features",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Features supported by a core dialing in, including relaying size notifications.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         {
@@ -2242,6 +2260,16 @@
           "schema": {
             "default": false,
             "description": "Watch only: never type or resize.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
+          "name": "resize_notifications",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
             "type": "boolean"
           }
         },
@@ -3536,11 +3564,11 @@
           }
         },
         {
-          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
           "name": "target",
           "required": false,
           "schema": {
-            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, a Host from ~/.ssh/config.",
+            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
             "type": [
               "string",
               "null"

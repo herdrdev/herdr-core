@@ -185,6 +185,16 @@ pub struct StopResult {
     pub stopped: bool,
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct InitialSize {
+    /// Initial terminal width in columns (at least 1).
+    #[schemars(range(min = 1))]
+    pub cols: u16,
+    /// Initial terminal height in rows (at least 1).
+    #[schemars(range(min = 1))]
+    pub rows: u16,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct RunParams {
     /// Program and arguments, or a template name and its task. With neither
@@ -198,6 +208,16 @@ pub struct RunParams {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<String>,
+    /// Initial size before the program starts. Omitted: the configured
+    /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<InitialSize>,
+    /// The caller's colors and cell size, answering the program's display queries
+    /// from its start. Omitted: Ghostty's defaults until a viewer attaches.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::viewers::Display>,
     /// Name, unique among live terminals: 1-32 of a-z 0-9 - _ .
     #[arg(long)]
     pub name: Option<String>,
@@ -401,6 +421,8 @@ pub struct AttachResult {
     /// True only when the entire path sends RESIZE before replacement paints.
     /// False or absent means the observer must track size changes separately.
     pub resize_notifications: bool,
+    /// The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.
+    pub automatic_input: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema, Default)]
@@ -474,6 +496,8 @@ pub struct SendResult {
     /// Whether it went `working` within a few seconds; null when it doesn't
     /// report status, so nobody can tell.
     pub started: Option<bool>,
+    /// True when delivery was held for a person's unsent draft.
+    pub waited_for_person: bool,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<crate::wait::WaitResult>,
@@ -489,6 +513,10 @@ pub struct WaitParams {
     /// yet counts as working). `any`: the parent's unseen news (a turn ended, it
     /// blocked, it hit an error, it exited), else the next child to stop working; for the parent
     /// itself, also a message typed into it while it worked (reason `message`).
+    /// A child with a sent launch task counts as working until its turn advances
+    /// past delivery, or it reports done, blocked, error, or exits. Startup idle
+    /// does not complete that task in either mode. Without a launch task, idle
+    /// still counts as stopped.
     #[arg(long)]
     pub children: Option<Children>,
     /// For programs, not agents: end when output printed after the wait started

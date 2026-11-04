@@ -1,0 +1,48 @@
+#!/bin/bash
+# Submit the signed bundle and staple its ticket before packaging.
+set -euo pipefail
+
+bin=${1:?usage: mac-notarize signed-herdr-core}
+: "${APPLE_API_KEY:?missing notary API private key}"
+: "${APPLE_API_KEY_ID:?missing notary API key ID}"
+: "${APPLE_API_ISSUER:?missing notary API issuer}"
+umask 077
+work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-notary.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+codesign --verify --strict "$bin"
+signature=$(codesign -dvv "$bin" 2>&1)
+[[ $signature == *"Authority=Developer ID Application:"* ]] || { echo 'notarization requires Developer ID Application signing' >&2; exit 1; }
+printf '%s' "$APPLE_API_KEY" > "$work/key.p8"
+auth=(--key "$work/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+ditto -c -k --keepParent "$bin" "$work/herdr-core.zip"
+status=0
+xcrun notarytool submit "$work/herdr-core.zip" "${auth[@]}" --wait --timeout 30m \
+  --output-format json | tee "$work/submission.json" || status=$?
+if [[ $status != 0 ]] || ! jq -e '.status == "Accepted"' "$work/submission.json" >/dev/null; then
+  id=$(jq -r '.id // empty' "$work/submission.json")
+  if [[ -n $id ]]; then
+    xcrun notarytool log "$id" "${auth[@]}" "$work/notary-log.json" && jq . "$work/notary-log.json"
+  fi
+  echo 'core notarization failed' >&2
+  exit 1
+fi
+if [[ -d $bin/Contents ]]; then
+  xcrun stapler staple "$bin"
+  xcrun stapler validate "$bin"
+  assess=(--type execute)
+else
+  # Gatekeeper rejects a bare executable as "not an app" under --type execute.
+  assess=(--type open --context context:primary-signature)
+fi
+codesign --verify --strict "$bin"
+# Without a stapled ticket, Gatekeeper can call a just-accepted executable
+# unnotarized for a few minutes.
+for try in {1..40}; do
+  spctl --assess "${assess[@]}" --verbose=2 "$bin" && exit 0
+  ((try == 40)) || sleep 30
+done
+echo 'Gatekeeper still rejects the notarized executable' >&2
+exit 1

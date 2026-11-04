@@ -327,6 +327,9 @@ fn identity_env() -> std::collections::BTreeMap<String, String> {
 /// program's argument that happens to read `--json`.
 fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcError> {
     let paths = Paths::from_env()?;
+    if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
+        crate::platform::legacy_bundle_notice(&paths.state);
+    }
     let Some(cmd) = cmd else {
         return bare(&paths, json);
     };
@@ -369,6 +372,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             };
             let mut human =
                 format!("sent at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
+            if r["waited_for_person"] == true {
+                human.push_str("; waited for the person's draft");
+            }
             if !r["wait"].is_null() {
                 human = format!("{human}\n{}", describe_wait(&r["wait"]));
             }
@@ -580,13 +586,17 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             if let Some(v) = &version
                 && !force
                 && !older(&this, &format!("hc {v}"))
+                && !crate::platform::needs_bundle_update()
             {
                 let human = format!("{this} is already {v} or newer");
                 return Ok(Some(up_to_date(&paths, v, human)?));
             }
             // Only when asked: hc never checks for updates on its own.
             let scratch = crate::releases::Scratch::new()?;
-            let m = crate::releases::manifest(version.as_deref(), &scratch.0)?;
+            let requested = version
+                .as_deref()
+                .map(|v| if !force && !older(&this, &format!("hc {v}")) { env!("CARGO_PKG_VERSION") } else { v });
+            let m = crate::releases::manifest(requested, &scratch.0)?;
             // Apps and scripts built for this generation would break on another one.
             if m.generation != crate::api::GENERATION && !force {
                 return Err(RpcError::new(
@@ -600,11 +610,20 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
                     "update the apps that use hc first, then hc update --force",
                 ));
             }
-            if version.is_none() && !force && !older(&this, &format!("hc {}", m.version)) {
+            if version.is_none()
+                && !force
+                && !older(&this, &format!("hc {}", m.version))
+                && !crate::platform::needs_bundle_update()
+            {
                 let human = format!("{this} is up to date (latest release: {})", m.version);
                 up_to_date(&paths, &m.version, human)?
             } else {
-                let file = crate::releases::download(&m, &crate::releases::this_target(), &scratch.0)?;
+                let file = crate::releases::download(
+                    &m,
+                    &crate::releases::this_target(),
+                    &scratch.0,
+                    crate::platform::prefer_release_bundle(),
+                )?;
                 let mut out = update(&paths, &file, force)?;
                 out.json["release"] = m.version.into();
                 out
@@ -930,6 +949,36 @@ mod tests {
             "{rest}"
         );
         assert_eq!(t(serde_json::json!({"labels": {"ws": "x9"}})).1, "pi \u{b7} bliss");
+    }
+
+    #[test]
+    fn human_folders_follow_the_foreground_but_json_keeps_the_launch_folder() {
+        for foreground in [json!({"cwd": "/current/work"}), json!({"cwd": null}), Value::Null] {
+            let t = json!({"address": "t1", "argv": ["bash"], "cwd": "/launch/start", "foreground": foreground});
+            let original = t.clone();
+            let cwd = if foreground["cwd"].is_string() { "/current/work" } else { "/launch/start" };
+            assert_eq!(folder(&t), cwd.rsplit('/').next().unwrap());
+            assert!(picker::plain(&items(std::slice::from_ref(&t), false)[0].rest).contains(&folder(&t)));
+            assert!(describe(&t).contains(&format!("  cwd: {cwd}\n")));
+            assert_eq!(short(&t), json!({"address": "t1", "cwd": "/launch/start", "agent": "bash"}));
+            assert_eq!(t, original, "formatting must not change the full get record");
+        }
+    }
+
+    #[test]
+    fn get_keeps_an_unsent_first_message_visible_to_people() {
+        let mut t = json!({"address": "t1", "argv": ["pi"], "state": "live"});
+        assert!(!describe(&t).contains("first message"));
+        t["first_message"] = json!({"sent": false, "reason": "output did not settle"});
+        assert!(describe(&t).contains("first message NOT sent: output did not settle"));
+    }
+
+    #[test]
+    fn get_says_when_input_is_waiting_for_a_person() {
+        let mut t = json!({"address": "t1", "waiting_for_person": true});
+        assert!(describe(&t).contains("waiting for the person to submit or clear their draft"));
+        t["waiting_for_person"] = json!(false);
+        assert!(!describe(&t).contains("waiting for the person"));
     }
 
     #[test]

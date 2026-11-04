@@ -17,6 +17,7 @@ type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
 pub fn serve() -> io::Result<()> {
+    platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
     paths.create_dirs()?;
     let mut lock =
@@ -346,7 +347,8 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 }
             }
             (0, _) => {}
-            (ch, wire::DATA) => core.viewer_input(conn, ch, &payload),
+            (ch, wire::DATA) => core.viewer_input(conn, ch, &payload, false),
+            (ch, wire::AUTOMATIC_INPUT) => core.viewer_input(conn, ch, &payload, true),
             (ch, wire::CREDIT) if payload.len() == 4 => {
                 let n = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
                 conn.with(|out| out.credit(ch, n));

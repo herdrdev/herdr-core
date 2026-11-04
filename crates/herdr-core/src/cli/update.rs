@@ -51,6 +51,8 @@ pub(super) fn up_to_date(paths: &Paths, release: &str, human: String) -> Result<
 /// the planned way: every terminal keeps running. One swap path, for people
 /// and for apps that bundle hc.
 pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Result<Out, RpcError> {
+    let source = crate::platform::update_source(from);
+    let from = source.as_path();
     let refused = |why: String, hint: &str| RpcError::new("refused", why, hint);
     let dest = std::env::current_exe().and_then(|e| e.canonicalize()).map_err(|e| RpcError::internal(e.to_string()))?;
     let shown = dest.display().to_string();
@@ -75,8 +77,9 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
     }
     // Staged beside it, checked, then swapped in: never a half-written hc.
     crate::platform::swap_in(from, &dest, |staged| version_of(staged).as_deref() == Some(now.as_str())).map_err(
-        |e| match e.kind() {
-            std::io::ErrorKind::InvalidData => refused(format!("the copy of {} does not run", from.display()), ""),
+        |e| match (e.kind(), crate::platform::bundle_update_hint()) {
+            (std::io::ErrorKind::InvalidData, _) => refused(format!("the copy of {} does not run", from.display()), ""),
+            (std::io::ErrorKind::InvalidInput, Some(hint)) => refused(e.to_string(), hint),
             _ => RpcError::internal(format!("cannot replace {shown}: {e}")),
         },
     )?;
@@ -89,7 +92,11 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         None => false,
     };
     let status = call(paths, "server.status", json!({}))?;
-    let human = format!("{shown}: {was} -> {now}; core running again (pid {}), terminals kept", status["pid"]);
+    let human = format!(
+        "{shown}: {was} -> {now}; core running again (pid {}), terminals kept{}",
+        status["pid"],
+        crate::platform::privacy_upgrade_notice(&dest)
+    );
     Ok(Out {
         json: json!({"path": shown, "was": was, "now": now, "restarted": restarted, "pid": status["pid"]}),
         human,

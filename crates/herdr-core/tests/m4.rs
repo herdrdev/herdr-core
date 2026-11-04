@@ -83,6 +83,7 @@ fn send_pastes_submits_and_reports_whether_work_started() {
     wait_until("idle", || status(&s, &agent) == "idle");
     let r = s.json(&["send", &agent, "hello-world"]);
     assert_eq!((r["status"].as_str(), r["turn"].as_u64(), r["started"].as_bool()), (Some("idle"), Some(0), Some(true)));
+    assert_eq!(r["waited_for_person"], false);
     shows(&s, &agent, "033[200~hello-world033[201~");
     wait_until("turn 1", || s.json(&["get", &agent])["turn"] == 1);
 
@@ -154,34 +155,206 @@ fn send_refuses_a_blocked_program_and_checks_status_atomically() {
 }
 
 #[test]
-fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
+fn agents_wait_for_a_person_to_pause() {
     let s = session();
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
 
-    // Someone is typing: the send waits for the quiet time.
+    // Named keys retain the quiet gate without holding for an unsent draft.
     person.typed(b"q");
     let started = Instant::now();
-    s.json(&["send", &t, "x"]);
+    s.json(&["keys", &t, "x"]);
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
+}
 
-    // Keys pressed while a paste is going in are held until it's done.
+#[test]
+fn a_send_does_not_submit_a_persons_unfinished_draft_after_a_pause() {
+    let s = session();
+    let t = run(
+        &s,
+        "stty -echo; r state=idle; while IFS= read -r l; do echo \"submitted:$l\"; r state=working; r state=done; done",
+    );
+    wait_until("idle", || status(&s, &t) == "idle");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"my half-written draft ");
+    // A thinking pause, not Enter. The draft is still in the program's input buffer.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!text(&s, &t).contains("submitted:"));
+    let mut conn = s.connect();
+    let target = t.clone();
+    let sending =
+        std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "agent-message"})));
+    std::thread::sleep(Duration::from_millis(1200));
+    let screen = text(&s, &t);
+    assert!(
+        !screen.contains("submitted:my half-written draft agent-message"),
+        "hc send appended to the person's unsent draft and submitted the combined line"
+    );
+    assert_eq!(s.json(&["get", &t])["waiting_for_person"], true);
+    assert!(!sending.is_finished());
+    person.typed(b"\r");
+    let sent = sending.join().unwrap();
+    assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    shows(&s, &t, "submitted:agent-message");
+    assert!(text(&s, &t).contains("submitted:my half-written draft"));
+    assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
+}
+
+#[test]
+fn clearing_a_draft_releases_the_message_without_dropping_it() {
+    let s = session();
+    let t = run(
+        &s,
+        "stty -echo; r state=idle; while IFS= read -r l; do echo submitted:$l; r state=working; r state=done; done",
+    );
+    wait_until("idle", || status(&s, &t) == "idle");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"discard me");
+    let mut conn = s.connect();
+    let target = t.clone();
+    let sending = std::thread::spawn(move || {
+        conn.call(1, "terminal.send", json!({"terminal": target, "text": "keep me", "wait": true, "timeout": 0.1}))
+    });
+    wait_until("waiting for person", || s.json(&["get", &t])["waiting_for_person"] == true);
     std::thread::sleep(Duration::from_millis(700));
-    let sender = {
-        let mut cmd = s.cmd();
-        cmd.args(["send", &t, "abc"]);
-        std::thread::spawn(move || cmd.output().unwrap())
-    };
-    // Inside the paste: "abc" is in, its Enter (the second 0d) is not.
-    let tokens = || text(&s, &t).split_whitespace().map(String::from).collect::<Vec<_>>();
-    wait_until("paste in", || tokens().contains(&"63".to_string()));
-    assert_eq!(tokens().iter().filter(|b| *b == "0d").count(), 1, "the paste ended already: tests nothing");
-    person.typed(b"Z");
-    assert!(sender.join().unwrap().status.success());
-    wait_until("Z delivered", || text(&s, &t).contains("5a"));
-    let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
-    let tail: Vec<&str> = bytes.iter().rev().take(5).rev().map(String::as_str).collect();
-    assert_eq!(tail, ["61", "62", "63", "0d", "5a"], "all: {bytes:?}");
+    assert!(!sending.is_finished(), "turn timeout starts after delivery, not during the draft hold");
+    assert!(!text(&s, &t).contains("submitted:"));
+    person.typed(b"\x15");
+    let sent = sending.join().unwrap();
+    assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    assert_eq!(sent["result"]["started"], true, "{sent}");
+    shows(&s, &t, "submitted:keep me");
+    assert!(!text(&s, &t).contains("discard me"));
+}
+
+#[test]
+fn held_messages_allow_interrupts_and_keys_without_losing_the_draft_or_message_order() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = run(&s, "stty raw -echo; r state=working; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done");
+    wait_until("working", || status(&s, &t) == "working");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"q");
+    shows(&s, &t, "71");
+    let mut conn = s.connect();
+    let target = t.clone();
+    let first = std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "a"})));
+    wait_until("draft held", || s.json(&["get", &t])["waiting_for_person"] == true);
+    let mut conn = s.connect();
+    let target = t.clone();
+    let second = std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "b"})));
+    let start = Instant::now();
+    s.json(&["interrupt", &t, "--timeout", "0"]);
+    assert!(start.elapsed() < Duration::from_secs(2), "interrupt waited behind the held message");
+    s.json(&["keys", &t, "up"]);
+    shows(&s, &t, "5b");
+    assert!(!first.is_finished());
+    assert!(!second.is_finished());
+    assert_eq!(s.json(&["get", &t])["waiting_for_person"], true);
+    person.typed(b"\x15");
+    for sending in [first, second] {
+        let sent = sending.join().unwrap();
+        assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    }
+    shows(&s, &t, "62");
+    let screen = text(&s, &t);
+    assert_eq!(screen.matches("61").count(), 1, "{screen}");
+    assert_eq!(screen.matches("62").count(), 1, "{screen}");
+    assert!(screen.find("61").unwrap() < screen.find("62").unwrap(), "{screen}");
+}
+
+#[test]
+fn multiline_newlines_hold_messages_after_the_person_pauses() {
+    for newline in [b"\n".as_slice(), b"\x1b[13;2u"] {
+        let s = session();
+        let t = run(&s, "stty raw -echo; r state=idle; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done");
+        wait_until("idle", || status(&s, &t) == "idle");
+        let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+        person.typed(b"q");
+        person.typed(newline);
+        shows(&s, &t, "71");
+        let mut conn = s.connect();
+        let target = t.clone();
+        let sending =
+            std::thread::spawn(move || conn.call(1, "terminal.send", json!({"terminal": target, "text": "a"})));
+        std::thread::sleep(Duration::from_millis(1000));
+        assert_eq!(s.json(&["get", &t])["waiting_for_person"], true, "{newline:?}");
+        assert!(!sending.is_finished(), "{newline:?}");
+        assert!(!text(&s, &t).contains("61"), "message entered the multiline draft: {newline:?}");
+        person.typed(b"\r");
+        let sent = sending.join().unwrap();
+        assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+        shows(&s, &t, "61");
+    }
+}
+
+#[test]
+fn a_draft_hold_has_a_cap_and_still_delivers_the_message() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1200".into()));
+    let t = run(&s, "stty -echo; r state=idle; while IFS= read -r l; do echo submitted:$l; done");
+    wait_until("idle", || status(&s, &t) == "idle");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"old draft ");
+    let mut conn = s.connect();
+    let target = t.clone();
+    let started = Instant::now();
+    let sending = std::thread::spawn(move || {
+        conn.call(1, "terminal.send", json!({"terminal": target, "text": "eventual message"}))
+    });
+    wait_until("waiting for person", || s.json(&["get", &t])["waiting_for_person"] == true);
+    let sent = sending.join().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(1200));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(sent["result"]["waited_for_person"], true, "{sent}");
+    shows(&s, &t, "submitted:old draft eventual message");
+    assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
+    let next = s.json(&["send", &t, "next message"]);
+    assert_eq!(next["waited_for_person"], false, "the previous delivery consumed the draft: {next}");
+    shows(&s, &t, "submitted:next message");
+}
+
+#[test]
+fn single_key_approvals_release_drafts_when_the_program_moves_on() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
+    for (before, after) in [("blocked", "working"), ("blocked", "idle")] {
+        let script = format!(
+            "stty raw -echo; r state={before}; dd bs=1 count=1 >/dev/null 2>&1; \
+             r state={after}; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done"
+        );
+        let t = run(&s, &script);
+        wait_until("initial status", || status(&s, &t) == before);
+        let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+        person.typed(b"y");
+        wait_until("approval consumed", || status(&s, &t) == after);
+        let sent = s.json(&["send", &t, "agent-message"]);
+        assert_eq!(sent["waited_for_person"], false, "{before} -> {after}: {sent}");
+        assert_eq!(s.json(&["get", &t])["waiting_for_person"], false);
+        shows(&s, &t, "61");
+    }
+}
+
+#[test]
+fn autonomous_work_does_not_consume_a_persons_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "1000".into()));
+    let script = format!(
+        "stty raw -echo; r state=idle; while [ ! -e {0}/resume ]; do sleep 0.02; done; \
+         r state=working; while [ ! -e {0}/finish ]; do sleep 0.02; done; r state=done; cat",
+        s.root.display()
+    );
+    let t = run(&s, &script);
+    wait_until("idle", || status(&s, &t) == "idle");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"half-written draft");
+    person.conn.call("terminal.get", json!({"terminal": t}));
+    touch(&s, "resume");
+    wait_until("autonomous work", || status(&s, &t) == "working");
+    touch(&s, "finish");
+    wait_until("autonomous completion", || status(&s, &t) == "done");
+    let sent = s.json(&["send", &t, "agent-message"]);
+    assert_eq!(sent["waited_for_person"], true, "autonomous work must preserve the draft: {sent}");
 }
 
 #[test]

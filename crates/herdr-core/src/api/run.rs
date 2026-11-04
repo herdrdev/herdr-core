@@ -40,6 +40,13 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
         Some(text) => Some(core.first_message(id, quiet_ready, &text, caller.as_deref()).await),
         None => None,
     };
+    if let Some(failed) = first_message.as_ref().filter(|f| !f.sent) {
+        let mut st = core.lock();
+        if let Some(t) = st.reg.terminals.get_mut(&id) {
+            t.first_message = Some(failed.clone());
+            core.save(&st);
+        }
+    }
     let (wait, output) = match timeout {
         None => (None, None),
         Some(timeout) => {
@@ -103,7 +110,11 @@ pub(super) async fn start(
             "run hc server restart on this machine, then retry; see holder.log and core.log in the state directory",
         )
     })?;
-    let (cols, rows) = settings.headless()?;
+    let (cols, rows) = match p.size {
+        Some(size) if size.cols > 0 && size.rows > 0 => (size.cols, size.rows),
+        Some(_) => return Err(RpcError::invalid_params("size.cols and size.rows must be at least 1")),
+        None => settings.headless()?,
+    };
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
@@ -159,6 +170,9 @@ pub(super) async fn start(
         let id = st.reg.create(new, now_ms())?;
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
+        if let Some(display) = &p.display {
+            display.apply(&mut screen);
+        }
         st.screens.insert(id, screen);
         let (env, scope) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
