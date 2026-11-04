@@ -485,7 +485,9 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     let scratch = crate::releases::Scratch::new()?;
     let macos = there.starts_with("macos ");
     let bundle = !macos || run_there(paths, to, "id -u", b"")? != "0";
-    let current = std::env::current_exe().map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
+    let current = std::env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
     let bin = if there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core")) {
         current
     } else {

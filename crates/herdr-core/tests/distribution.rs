@@ -256,7 +256,20 @@ fn machine_installs_keep_the_complete_bundle_and_both_aliases() {
         let mut local = Session::new();
         let target = if cross_arch { "macos-x86_64" } else { &here() };
         let r = Releases::new(&local, THIS, &[target]);
-        local.bin = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+        let source = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+        let installed = local.root.join(".local/bin/herdr-core");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        let out = local
+            .program(&source)
+            .arg("--hc-install-bundle")
+            .arg(&source)
+            .arg(&installed)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "local bundle install: {out:?}");
+        local.bin = installed.with_file_name("hc");
+        assert!(local.bin.is_symlink());
         local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
         local.env.push(fake_ssh(&local, &[("bare", &remote)]));
         if cross_arch {
@@ -305,7 +318,10 @@ fn a_root_remote_gets_the_independently_signed_standalone_release() {
     std::fs::set_permissions(tools.join("id"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut local = Session::new();
     let r = Releases::new(&local, THIS, &[&here()]);
-    local.bin = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    let source = local.root.join("Herdr Core.app/Contents/MacOS/herdr-core");
+    local.bin = local.root.join(".local/bin/hc");
+    std::fs::create_dir_all(local.bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&source, &local.bin).unwrap();
     local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
     local.env.push(fake_ssh(&local, &[("root", &remote)]));
     local.json(&["machine", "add", "root", "--install"]);
