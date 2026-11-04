@@ -206,6 +206,34 @@ fn keys_follow_the_programs_keyboard_modes() {
 }
 
 #[test]
+fn encode_gives_a_keys_bytes_in_the_programs_modes_at_once() {
+    let s = session();
+    let legacy =
+        s.json(&["run", "--bg", "sh", "-c", "stty raw -echo; sleep 100"])["address"].as_str().unwrap().to_string();
+    let kitty = s.json(&["run", "--bg", "sh", "-c", "printf '\\033[>1u'; stty raw -echo; sleep 100"])["address"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    shows(&s, &legacy, "");
+    shows(&s, &kitty, "");
+    std::thread::sleep(Duration::from_millis(200));
+    let mut viewer = Viewer::attach(&s, &kitty, 80, 24, json!({}));
+    viewer.typed(b"x"); // a person typing: terminal.keys would now wait the quiet time
+    let mut conn = s.connect();
+    let encode = |conn: &mut Conn, t: &str| {
+        conn.call(1, "terminal.encode", json!({"terminal": t, "keys": ["ctrl+q", "alt+enter", "enter"]}))["result"]
+            ["bytes"]
+            .clone()
+    };
+    let started = Instant::now();
+    assert_eq!(encode(&mut conn, &kitty), json!(["\u{1b}[113;5u", "\u{1b}[13;3u", "\r"]));
+    assert!(started.elapsed() < Duration::from_millis(300), "took {:?}", started.elapsed());
+    assert_eq!(encode(&mut conn, &legacy), json!(["\u{11}", "\u{1b}\r", "\r"]));
+    let bad = conn.call(2, "terminal.encode", json!({"terminal": legacy, "keys": ["hyper+q"]}));
+    assert_eq!(bad["error"]["data"]["kind"], "invalid_params");
+}
+
+#[test]
 fn interrupt_reports_what_it_observed() {
     let s = session();
     let interrupt = |t: &str| s.json(&["interrupt", t, "--timeout", "1"]);

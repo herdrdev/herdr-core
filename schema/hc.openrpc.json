@@ -139,6 +139,21 @@
         ],
         "type": "object"
       },
+      "EncodeResult": {
+        "properties": {
+          "bytes": {
+            "description": "One entry per key, in order: the bytes it sends now.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "bytes"
+        ],
+        "type": "object"
+      },
       "ExecResult": {
         "properties": {
           "code": {
@@ -2724,6 +2739,87 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/KeysResult"
+        }
+      }
+    },
+    {
+      "description": "The bytes each named key sends in the program's current keyboard modes, without pressing it. For a client that types as the person on an attach: write them there as data, which has no quiet wait.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
+      "name": "terminal.encode",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "caller",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Key names: enter, esc, tab, up, ctrl+c, alt+x, f5, a, ...",
+          "name": "keys",
+          "required": true,
+          "schema": {
+            "description": "Key names: enter, esc, tab, up, ctrl+c, alt+x, f5, a, ...",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The terminal: `t7`, a name, or `machine/t7`.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "The terminal: `t7`, a name, or `machine/t7`.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EncodeResult"
         }
       }
     },
