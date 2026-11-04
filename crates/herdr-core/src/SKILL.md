@@ -74,6 +74,12 @@ current folder in `foreground.cwd`.
 full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,
 marked incomplete with `why` set to that status; no scroll input is sent.
+History reads check the current status before each wheel batch and while
+waiting for redraws, including during restoration. Once a read finds an
+unsafe state, it stops without further scrolling and returns an incomplete
+screen read, even if the app becomes idle again. The view may remain
+scrolled; input already queued may still arrive. A terminal exiting, leaving
+the alternate screen or disabling mouse input also stops the read.
 
 A send stays pending while the person has an unsent draft in that terminal.
 Enter, Ctrl+C or Ctrl+U releases it; Escape and backspace do not reliably
