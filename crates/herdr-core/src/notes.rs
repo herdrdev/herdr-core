@@ -368,6 +368,9 @@ mod tests {
         }
         t.pid = Some(43);
         t.reason = None;
-        assert!(can_take_note(t), "restarted");
+        t.reported = false; // a fresh shell, as recovery leaves it
+        assert!(!can_take_note(t));
+        t.reported = true;
+        assert!(can_take_note(t), "its new program reported");
     }
 }
