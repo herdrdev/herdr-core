@@ -54,9 +54,13 @@ failed send: it may still have arrived; read first.
 
 `hc events --json` includes `message_sent` after a successful send, before
 any `--wait` finishes. Its data contains `source` (null for a non-terminal
-caller), `target`, `at` (epoch milliseconds), and the send result's `started`.
+caller), `target`, `at` (epoch milliseconds when emitted), and the send
+result's `started`.
 It contains no message text. This observes a send, not a read receipt or a
 promise that the recipient processed it; refused sends emit no such event.
+Only `terminal.send` (`hc send`) produces it, not keystrokes or automatic
+parent notes. Event filters apply to the target terminal. This is live
+metadata: a `missed` snapshot or reconnection does not replay past sends.
 
 ## Talk, wait, and collect results
 

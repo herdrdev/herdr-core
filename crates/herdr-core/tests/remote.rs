@@ -366,6 +366,13 @@ fn a_send_there_is_heard_here_with_addresses_as_seen_from_here() {
     // Both cores have this host's name, so Rohan calls its peer by id.
     let peer = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
     assert_eq!(e["data"]["source"], format!("{peer}/{sender}"), "{e}");
+
+    // A CLI outside any terminal travels as `<core>/ppid:...`, not a terminal address.
+    s.json(&["send", &t, "from a plain shell"]);
+    for events in [&mut here, &mut there] {
+        let e = next_params(events, |e| e["type"] == "message_sent");
+        assert!(e["data"]["source"].is_null(), "a plain shell has no terminal source: {e}");
+    }
 }
 
 #[test]
