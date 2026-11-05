@@ -104,6 +104,9 @@ methods! { Ctx<'_>;
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
         "Press named keys, encoded for the program's current keyboard modes. Same quiet rule as send.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
+    "terminal.keys_if" => terminal_keys_if, KeysIfParams => KeysResult,
+        "Press named keys only if the observed root state, turn and status_ms still match expected. Checks and queues the first key under the same lock, after the normal input queue and quiet wait.",
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params", "status_mismatch"];
     "terminal.interrupt" => terminal_interrupt, InterruptParams => InterruptResult,
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
@@ -542,6 +545,14 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
     let id = resolve(core, &p.terminal)?;
     let (status, turn) = core.keys(id, &p.keys).await?;
     core.saw(p.caller.as_deref(), id);
+    core.flush_saved().await?;
+    Ok(KeysResult { status, turn })
+}
+
+async fn terminal_keys_if(core: Ctx<'_>, p: KeysIfParams) -> Result<KeysResult, RpcError> {
+    let id = resolve(core, &p.input.terminal)?;
+    let (status, turn) = core.keys_if(id, &p.input.keys, &p.expected).await?;
+    core.saw(p.input.caller.as_deref(), id);
     core.flush_saved().await?;
     Ok(KeysResult { status, turn })
 }

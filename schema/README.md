@@ -110,6 +110,33 @@ When the program ends, the core sends CLOSE with
 `{"reason":"exited","exit_code":0,"signal":null}` (`reason` as in the
 terminal record: exited, killed, server_stop, ...).
 
+## Conditional keys
+
+API clients can bind named keys to a previously observed root state:
+
+```json
+{"method":"terminal.keys_if","params":{"terminal":"t7","keys":["y","enter"],"expected":{"state":"blocked","turn":7,"status_ms":1793806827091}}}
+```
+
+Read these three values from `terminal.get` (`status.state`, `turn`, `status_ms`).
+All are required; unknown fields inside `expected` are refused, never ignored.
+After the usual input queue and human quiet wait, core compares all three and
+queues the first key under the same state lock. A mismatch is `status_mismatch`
+and types nothing. All key names are validated before any input. Success returns
+the same `{status, turn}` as `terminal.keys`; the rest of the key sequence uses
+the normal gaps and held-key handling. The condition is not rechecked between keys.
+
+This checks core's observed state, not a program's screen or prompt identity.
+`status_ms` timestamps changes of the root state word: repeated reports of the
+same word do not change it, and it is not a unique revision. Unreported changes
+and input already queued in the program are outside this guarantee.
+
+The separate, API-only method makes older cores refuse it as `unknown_method`
+(or the forwarding core return `needs_update`) instead of ignoring new parameters
+on `terminal.keys` and typing unconditionally.
+Discover support through `hello.methods` or `rpc.discover`; never fall back to
+unguarded keys. Remote calls are checked by the core that owns the terminal.
+
 ## Events
 
 `events.subscribe` replies with a snapshot (`seq`, matching terminals) and,

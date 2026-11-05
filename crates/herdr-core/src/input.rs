@@ -137,9 +137,20 @@ impl Core {
                 )
             })?;
             t.check_program()?;
-            let prepared = prepare(&st, t)?;
+            let (out, steps) = prepare(&st, t)?;
             st.gates.entry(id).or_default().busy = true;
-            prepared
+            // Queue a leading Write under the same lock as prepare's state checks.
+            let mut steps = steps.into_iter();
+            let first = match steps.next() {
+                Some(Step::Write(bytes)) => {
+                    if let Some(link) = st.link(id) {
+                        link.input(id, &bytes);
+                    }
+                    None
+                }
+                step => step,
+            };
+            (out, first.into_iter().chain(steps))
         };
         for step in steps {
             match step {
@@ -282,7 +293,36 @@ impl Core {
 
     /// Named keys, after a person has paused typing.
     pub async fn keys(&self, id: u32, names: &[String]) -> Result<(Option<String>, u64), RpcError> {
+        self.keys_when(id, names, None).await
+    }
+
+    pub async fn keys_if(
+        &self,
+        id: u32,
+        names: &[String],
+        expected: &crate::api::KeyCondition,
+    ) -> Result<(Option<String>, u64), RpcError> {
+        self.keys_when(id, names, Some(expected)).await
+    }
+
+    async fn keys_when(
+        &self,
+        id: u32,
+        names: &[String],
+        expected: Option<&crate::api::KeyCondition>,
+    ) -> Result<(Option<String>, u64), RpcError> {
         self.type_in(id, quiet(), |st, t| {
+            if let Some(expected) = expected
+                && (state_word(t).as_deref() != Some(expected.state.as_str())
+                    || t.turn != expected.turn
+                    || t.status_ms != Some(expected.status_ms))
+            {
+                return Err(RpcError::new(
+                    "status_mismatch",
+                    "the terminal's observed state changed",
+                    "read its current state before choosing keys again",
+                ));
+            }
             let screen = st.screens.get(&id).expect("live terminal has a screen");
             let mut steps = Vec::new();
             for name in names {

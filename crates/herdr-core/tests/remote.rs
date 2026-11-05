@@ -335,6 +335,33 @@ fn events_cover_terminals_on_other_machines() {
 }
 
 #[test]
+fn conditional_keys_are_checked_on_the_owning_core() {
+    let (rohan, s) = with_rohan();
+    let t = run(
+        &s,
+        &[
+            "--on",
+            "rohan",
+            "sh",
+            "-c",
+            &script(&s, "stty -echo; r state=blocked; while read -r l; do echo answer:$l; done"),
+        ],
+    );
+    wait_until("blocked there", || get(&s, &t)["status"]["state"] == "blocked");
+    let record = get(&s, &t);
+    let params = json!({"terminal": t, "keys": ["y", "enter"], "expected": {
+        "state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]
+    }});
+    let mut stale = params.clone();
+    stale["expected"]["turn"] = json!(999);
+    let refused = s.connect().call(1, "terminal.keys_if", stale);
+    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+    let sent = s.connect().call(2, "terminal.keys_if", params);
+    assert_eq!(sent["result"]["status"], "blocked", "{sent}");
+    wait_until("one accepted input there", || text(&rohan, t.strip_prefix("rohan/").unwrap()).contains("answer:y"));
+}
+
+#[test]
 fn the_picker_starts_a_shell_on_another_machine() {
     let (rohan, s) = with_rohan();
     std::fs::write(rohan.root.join(".zshrc"), "").unwrap(); // a login zsh there skips its first-run setup

@@ -418,6 +418,31 @@
         ],
         "type": "object"
       },
+      "KeyCondition": {
+        "additionalProperties": false,
+        "description": "The root state observed before choosing an input, not a program's prompt identity.",
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "status_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "turn",
+          "status_ms"
+        ],
+        "type": "object"
+      },
       "KeysResult": {
         "properties": {
           "status": {
@@ -2696,6 +2721,103 @@
               "string",
               "null"
             ]
+          }
+        },
+        {
+          "description": "Key names: enter, esc, tab, up, ctrl+c, alt+x, f5, a, ...",
+          "name": "keys",
+          "required": true,
+          "schema": {
+            "description": "Key names: enter, esc, tab, up, ctrl+c, alt+x, f5, a, ...",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The terminal: `t7`, a name, or `machine/t7`.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "The terminal: `t7`, a name, or `machine/t7`.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KeysResult"
+        }
+      }
+    },
+    {
+      "description": "Press named keys only if the observed root state, turn and status_ms still match expected. Checks and queues the first key under the same lock, after the normal input queue and quiet wait.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "status_mismatch"
+          },
+          "message": "status_mismatch"
+        }
+      ],
+      "name": "terminal.keys_if",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "caller",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "All three values must still match when the first key is queued.",
+          "name": "expected",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/KeyCondition",
+            "description": "All three values must still match when the first key is queued."
           }
         },
         {

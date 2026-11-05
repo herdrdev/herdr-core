@@ -206,6 +206,68 @@ fn keys_follow_the_programs_keyboard_modes() {
 }
 
 #[test]
+fn conditional_keys_reject_changed_observations_without_typing() {
+    let s = session();
+    let t = run(&s, "stty -echo; r state=blocked; while read -r l; do echo answer:$l; done");
+    wait_until("blocked", || status(&s, &t) == "blocked");
+    let record = s.json(&["get", &t]);
+    let expected = json!({"state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]});
+    let params = json!({"terminal": t, "keys": ["y", "enter"], "expected": expected});
+    for (field, wrong) in [("state", json!("idle")), ("turn", json!(999)), ("status_ms", json!(0))] {
+        let mut stale = params.clone();
+        stale["expected"][field] = wrong;
+        let result = s.connect().call(1, "terminal.keys_if", stale);
+        assert_eq!(result["error"]["data"]["kind"], "status_mismatch", "{field}: {result}");
+    }
+    let mut missing = params.clone();
+    missing.as_object_mut().unwrap().remove("expected");
+    let result = s.connect().call(1, "terminal.keys_if", missing);
+    assert_eq!(result["error"]["data"]["kind"], "invalid_params", "{result}");
+    let mut unknown_condition = params.clone();
+    unknown_condition["expected"]["input_ms"] = json!(0);
+    let result = s.connect().call(1, "terminal.keys_if", unknown_condition);
+    assert_eq!(result["error"]["data"]["kind"], "invalid_params", "unknown conditions must not be ignored: {result}");
+    let mut bad_keys = params.clone();
+    bad_keys["keys"] = json!(["z", "not-a-key"]);
+    let result = s.connect().call(1, "terminal.keys_if", bad_keys);
+    assert_eq!(result["error"]["data"]["kind"], "invalid_params", "{result}");
+    assert!(!text(&s, &t).contains("answer:"), "no partial input on refusal");
+    let result = s.connect().call(1, "terminal.keys_if", params);
+    assert_eq!(result["result"]["status"], "blocked", "{result}");
+    shows(&s, &t, "answer:y");
+    assert!(!text(&s, &t).contains("answer:zy"), "an invalid suffix must not type its prefix");
+    s.json(&["keys", &t, "n", "enter"]);
+    shows(&s, &t, "answer:n");
+}
+
+#[test]
+fn conditional_keys_check_after_waiting_for_a_person_to_pause() {
+    let mut s = session();
+    s.env.push(("HC_QUIET_MS".into(), "1500".into()));
+    let body =
+        script(&s, "stty -echo; r state=blocked; (w changed; r state=idle) & while read -r l; do echo answer:$l; done");
+    let t = s.json(&["run", "--bg", "sh", "-c", &body])["address"].as_str().unwrap().to_string();
+    wait_until("blocked", || status(&s, &t) == "blocked");
+    let record = s.json(&["get", &t]);
+    let mut viewer = Viewer::attach(&s, &t, 80, 24, json!({}));
+    viewer.typed(b"x");
+    let mut conn = s.connect();
+    let params = json!({"terminal": t, "keys": ["enter"], "expected": {
+        "state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]
+    }});
+    let waiting = std::thread::spawn(move || conn.call(1, "terminal.keys_if", params));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!waiting.is_finished(), "the normal human-input quiet gate still applies");
+    touch(&s, "changed");
+    wait_until("idle", || status(&s, &t) == "idle");
+    let result = waiting.join().unwrap();
+    assert_eq!(result["error"]["data"]["kind"], "status_mismatch", "{result}");
+    assert!(!text(&s, &t).contains("answer:x"), "the stale Enter was not typed");
+    s.json(&["keys", &t, "enter"]);
+    shows(&s, &t, "answer:x");
+}
+
+#[test]
 fn interrupt_reports_what_it_observed() {
     let s = session();
     let interrupt = |t: &str| s.json(&["interrupt", t, "--timeout", "1"]);

@@ -568,6 +568,44 @@ while ($true) {
 }
 
 #[test]
+fn conditional_keys_refuse_stale_state_on_windows() {
+    let s = Session::new();
+    let agent = s.file(
+        "conditional.ps1",
+        r#"$e = [char]27
+[Console]::Out.Write("$e]7501;state=blocked$e\")
+[Console]::Out.Flush()
+while ($true) {
+    $line = [Console]::In.ReadLine()
+    [Console]::WriteLine("answer:$line")
+}
+"#,
+    );
+    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
+    wait_until("blocked", || s.json(&["get", &t])["status"]["state"] == "blocked");
+    let record = s.json(&["get", &t]);
+    let params = json!({"terminal": t, "keys": ["y", "enter"], "expected": {
+        "state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]
+    }});
+    let call = |params| {
+        let (directory, prefix) = herdr_core::platform::endpoints(&s.root);
+        let stream = herdr_core::platform::connect(&directory.join(format!("{prefix}{}.sock", s.name))).unwrap();
+        herdr_core::client::call(&stream, "terminal.keys_if", params)
+    };
+    for (field, wrong) in [("state", json!("idle")), ("turn", json!(999)), ("status_ms", json!(0))] {
+        let mut stale = params.clone();
+        stale["expected"][field] = wrong;
+        assert_eq!(call(stale).unwrap_err().kind, "status_mismatch", "{field}");
+    }
+    let mut invalid = params.clone();
+    invalid["keys"] = json!(["z", "not-a-key"]);
+    assert_eq!(call(invalid).unwrap_err().kind, "invalid_params");
+    assert_eq!(call(params).unwrap()["status"], "blocked");
+    s.shows(&t, "answer:y");
+    assert!(!s.read(&t).contains("answer:zy"), "an invalid suffix must not type its prefix");
+}
+
+#[test]
 fn kill_ends_what_the_program_started_too() {
     let s = Session::new();
     let pid_file = s.root.join("pid.txt");

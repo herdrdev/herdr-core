@@ -728,6 +728,7 @@ const ON_A_TERMINAL: &[&str] = &[
     "terminal.read",
     "terminal.send",
     "terminal.keys",
+    "terminal.keys_if",
     "terminal.interrupt",
     "terminal.wait",
     "terminal.put",
