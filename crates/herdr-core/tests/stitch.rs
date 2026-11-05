@@ -199,7 +199,7 @@ fn a_view_someone_scrolled_up_is_left_alone() {
         let mut v = Viewer::attach(&s, &t, 40, 12, json!({}));
         v.shows("line 050");
         v.typed(&b"\x1b[<64;5;5M".repeat(notches));
-        wait_until("scrolled", || !screen(&s, &t).contains("line 050"));
+        wait_until("every wheel notch rendered", || lines(&screen(&s, &t)).last().is_some_and(|l| l == last));
         let before = lines(&screen(&s, &t));
         assert!(before.last().is_some_and(|l| l == last), "{before:?}");
         let started = std::time::Instant::now();
