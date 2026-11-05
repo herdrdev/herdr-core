@@ -130,6 +130,10 @@ This checks core's observed state, not a program's screen or prompt identity.
 `status_ms` timestamps changes of the root state word: repeated reports of the
 same word do not change it, and it is not a unique revision. Unreported changes
 and input already queued in the program are outside this guarantee.
+For example, `blocked:kind=permission` followed by `blocked:kind=question`
+can keep all three values unchanged; the condition still passes. The caller
+owns the meaning of its keys. This API does not identify or authorize a prompt,
+and the observation is not consumed: a repeated call can satisfy it again.
 
 The separate, API-only method makes older cores refuse it as `unknown_method`
 (or the forwarding core return `needs_update`) instead of ignoring new parameters

@@ -551,7 +551,7 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
 
 async fn terminal_keys_if(core: Ctx<'_>, p: KeysIfParams) -> Result<KeysResult, RpcError> {
     let id = resolve(core, &p.input.terminal)?;
-    let (status, turn) = core.keys_if(id, &p.input.keys, &p.expected).await?;
+    let (status, turn) = core.keys_when(id, &p.input.keys, Some(&p.expected)).await?;
     core.saw(p.input.caller.as_deref(), id);
     core.flush_saved().await?;
     Ok(KeysResult { status, turn })

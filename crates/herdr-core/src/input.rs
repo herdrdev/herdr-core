@@ -5,6 +5,8 @@ use crate::holder_proto as proto;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use crate::terminals::Terminal;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 
 /// Pause between the paste and Enter, so the program sees them apart.
@@ -100,6 +102,15 @@ pub struct Sent {
     pub turn: u64,
     /// Whether it went `working` soon after; None when it never reports status.
     pub started: Option<bool>,
+}
+
+/// The root state observed before choosing an input, not a program's prompt identity.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyCondition {
+    pub state: String,
+    pub turn: u64,
+    pub status_ms: u64,
 }
 
 pub enum Interrupted {
@@ -296,24 +307,17 @@ impl Core {
         self.keys_when(id, names, None).await
     }
 
-    pub async fn keys_if(
+    /// An optional observation must still match when the first key is queued.
+    pub(crate) async fn keys_when(
         &self,
         id: u32,
         names: &[String],
-        expected: &crate::api::KeyCondition,
-    ) -> Result<(Option<String>, u64), RpcError> {
-        self.keys_when(id, names, Some(expected)).await
-    }
-
-    async fn keys_when(
-        &self,
-        id: u32,
-        names: &[String],
-        expected: Option<&crate::api::KeyCondition>,
+        expected: Option<&KeyCondition>,
     ) -> Result<(Option<String>, u64), RpcError> {
         self.type_in(id, quiet(), |st, t| {
+            let word = state_word(t);
             if let Some(expected) = expected
-                && (state_word(t).as_deref() != Some(expected.state.as_str())
+                && (word.as_deref() != Some(expected.state.as_str())
                     || t.turn != expected.turn
                     || t.status_ms != Some(expected.status_ms))
             {
@@ -329,7 +333,7 @@ impl Core {
                 steps.push(Step::Write(crate::keys::encode(screen, name)?));
                 steps.push(Step::Pause(KEY_GAP));
             }
-            Ok(((state_word(t), t.turn), steps))
+            Ok(((word, t.turn), steps))
         })
         .await
     }

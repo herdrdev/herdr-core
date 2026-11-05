@@ -532,42 +532,6 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
 }
 
 #[test]
-fn send_types_a_line_into_a_program_waiting_for_one() {
-    let s = Session::new();
-    let t = s.bg(&["powershell", "-NoProfile", "-Command", "$x = Read-Host 'name'; \"got-$x\""]);
-    s.shows(&t, "name");
-    s.json(&["send", &t, "bob"]);
-    let end = s.json(&["wait", &t, "--timeout", "15"]);
-    assert_eq!(end["reason"], "exit", "{end}");
-    assert!(s.read(&t).contains("got-bob"));
-}
-
-#[test]
-fn a_program_reporting_7501_has_a_status_and_send_wait_waits_for_its_turn() {
-    let s = Session::new();
-    let agent = s.file(
-        "agent.ps1",
-        r#"$e = [char]27
-function report($s) { [Console]::Out.Write("$e]7501;$s$e\"); [Console]::Out.Flush() }
-report "state=idle"
-while ($true) {
-  $line = [Console]::In.ReadLine()
-  report "state=working"
-  Start-Sleep 1
-  [Console]::Out.WriteLine("answer to: $line")
-  report "state=done"
-}
-"#,
-    );
-    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
-    wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
-    let sent = s.json(&["send", &t, "hi", "--wait", "--timeout", "15"]);
-    assert_eq!(sent["wait"]["status"], "done", "{sent}");
-    assert_eq!(sent["wait"]["turn"], 1, "{sent}");
-    assert!(s.read(&t).contains("answer to: hi"));
-}
-
-#[test]
 fn conditional_keys_refuse_stale_state_on_windows() {
     let s = Session::new();
     let agent = s.file(
@@ -603,6 +567,42 @@ while ($true) {
     assert_eq!(call(params).unwrap()["status"], "blocked");
     s.shows(&t, "answer:y");
     assert!(!s.read(&t).contains("answer:zy"), "an invalid suffix must not type its prefix");
+}
+
+#[test]
+fn send_types_a_line_into_a_program_waiting_for_one() {
+    let s = Session::new();
+    let t = s.bg(&["powershell", "-NoProfile", "-Command", "$x = Read-Host 'name'; \"got-$x\""]);
+    s.shows(&t, "name");
+    s.json(&["send", &t, "bob"]);
+    let end = s.json(&["wait", &t, "--timeout", "15"]);
+    assert_eq!(end["reason"], "exit", "{end}");
+    assert!(s.read(&t).contains("got-bob"));
+}
+
+#[test]
+fn a_program_reporting_7501_has_a_status_and_send_wait_waits_for_its_turn() {
+    let s = Session::new();
+    let agent = s.file(
+        "agent.ps1",
+        r#"$e = [char]27
+function report($s) { [Console]::Out.Write("$e]7501;$s$e\"); [Console]::Out.Flush() }
+report "state=idle"
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  report "state=working"
+  Start-Sleep 1
+  [Console]::Out.WriteLine("answer to: $line")
+  report "state=done"
+}
+"#,
+    );
+    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
+    wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
+    let sent = s.json(&["send", &t, "hi", "--wait", "--timeout", "15"]);
+    assert_eq!(sent["wait"]["status"], "done", "{sent}");
+    assert_eq!(sent["wait"]["turn"], 1, "{sent}");
+    assert!(s.read(&t).contains("answer to: hi"));
 }
 
 #[test]

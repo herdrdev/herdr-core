@@ -196,6 +196,14 @@ paths start at your current folder. Prefer explicit paths for remote work.
 
 ## Status, recovery, and cleanup
 
+- API clients can use `terminal.keys_if` with an `expected` root `state`,
+  `turn` and `status_ms` from `terminal.get`. Core checks those values after
+  the input queue and quiet wait, under the lock queuing the first key.
+  `status_mismatch` types nothing; read again before choosing new input.
+  This compares observed values, not a prompt identity or permission decision:
+  different prompts can have the same values. Later keys are not rechecked.
+  Discover the method through `hello` or `rpc.discover`; an older core refuses
+  it. Never fall back to unconditional keys when the condition is required.
 - State is `live` or `finished`. Status comes from the program's OSC 7501
   reports: `idle`, `working`, `done`, `blocked`, `error`; plain programs
   report none. Do not guess status from screen text.

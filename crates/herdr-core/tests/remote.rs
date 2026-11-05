@@ -140,6 +140,33 @@ fn two_machines_that_added_each_other_never_echo_events_back() {
 }
 
 #[test]
+fn conditional_keys_are_checked_on_the_owning_core() {
+    let (rohan, s) = with_rohan();
+    let t = run(
+        &s,
+        &[
+            "--on",
+            "rohan",
+            "sh",
+            "-c",
+            &script(&s, "stty -echo; r state=blocked; while read -r l; do echo answer:$l; done"),
+        ],
+    );
+    wait_until("blocked there", || get(&s, &t)["status"]["state"] == "blocked");
+    let record = get(&s, &t);
+    let params = json!({"terminal": t, "keys": ["y", "enter"], "expected": {
+        "state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]
+    }});
+    let mut stale = params.clone();
+    stale["expected"]["turn"] = json!(999);
+    let refused = s.connect().call(1, "terminal.keys_if", stale);
+    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+    let sent = s.connect().call(2, "terminal.keys_if", params);
+    assert_eq!(sent["result"]["status"], "blocked", "{sent}");
+    wait_until("one accepted input there", || text(&rohan, t.strip_prefix("rohan/").unwrap()).contains("answer:y"));
+}
+
+#[test]
 fn terminals_on_another_machine_work_like_local_ones() {
     let (rohan, s) = with_rohan_env(&[("HC_TEST_SSH_DELAY", "0.4")]); // a login as slow as a real one
     let local = run(&s, &["sh", "-c", "sleep 100"]);
@@ -332,33 +359,6 @@ fn events_cover_terminals_on_other_machines() {
     assert_eq!((terminals.len(), &terminals[0]["status"]["state"]), (1, &json!("idle")), "{snap}");
     s.json(&["kill", &t]);
     next_params(&mut one, |e| e["type"] == "finished" && e["terminal"] == t.as_str());
-}
-
-#[test]
-fn conditional_keys_are_checked_on_the_owning_core() {
-    let (rohan, s) = with_rohan();
-    let t = run(
-        &s,
-        &[
-            "--on",
-            "rohan",
-            "sh",
-            "-c",
-            &script(&s, "stty -echo; r state=blocked; while read -r l; do echo answer:$l; done"),
-        ],
-    );
-    wait_until("blocked there", || get(&s, &t)["status"]["state"] == "blocked");
-    let record = get(&s, &t);
-    let params = json!({"terminal": t, "keys": ["y", "enter"], "expected": {
-        "state": "blocked", "turn": record["turn"], "status_ms": record["status_ms"]
-    }});
-    let mut stale = params.clone();
-    stale["expected"]["turn"] = json!(999);
-    let refused = s.connect().call(1, "terminal.keys_if", stale);
-    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
-    let sent = s.connect().call(2, "terminal.keys_if", params);
-    assert_eq!(sent["result"]["status"], "blocked", "{sent}");
-    wait_until("one accepted input there", || text(&rohan, t.strip_prefix("rohan/").unwrap()).contains("answer:y"));
 }
 
 #[test]

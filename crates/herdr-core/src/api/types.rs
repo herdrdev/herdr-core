@@ -537,21 +537,12 @@ pub struct KeysParams {
     pub keys: Vec<String>,
 }
 
-/// The root state observed before choosing an input, not a program's prompt identity.
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct KeyCondition {
-    pub state: String,
-    pub turn: u64,
-    pub status_ms: u64,
-}
-
 #[derive(Deserialize, JsonSchema)]
 pub struct KeysIfParams {
     #[serde(flatten)]
     pub input: KeysParams,
     /// All three values must still match when the first key is queued.
-    pub expected: KeyCondition,
+    pub expected: crate::input::KeyCondition,
 }
 
 #[derive(Serialize, JsonSchema)]

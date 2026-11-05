@@ -268,6 +268,34 @@ fn conditional_keys_check_after_waiting_for_a_person_to_pause() {
 }
 
 #[test]
+fn conditional_keys_compare_observed_values_not_prompt_identity() {
+    let s = session();
+    let body = script(
+        &s,
+        "stty -echo; r state=blocked:kind=permission; w next; r state=blocked:kind=question; while read -r l; do echo answer:$l; done",
+    );
+    let t = s.json(&["run", "--bg", "sh", "-c", &body])["address"].as_str().unwrap().to_string();
+    wait_until("permission", || s.json(&["get", &t])["status"]["kind"] == "permission");
+    let before = s.json(&["get", &t]);
+    touch(&s, "next");
+    wait_until("question", || s.json(&["get", &t])["status"]["kind"] == "question");
+    let after = s.json(&["get", &t]);
+    assert_eq!(after["turn"], before["turn"]);
+    assert_eq!(after["status_ms"], before["status_ms"]);
+    // A different reported prompt can have the same three values. This is
+    // deliberately not a permission decision or a single-use prompt token.
+    let result = s.connect().call(
+        1,
+        "terminal.keys_if",
+        json!({"terminal": t, "keys": ["x", "enter"],
+            "expected": {"state": "blocked", "turn": before["turn"], "status_ms": before["status_ms"]}
+        }),
+    );
+    assert!(result.get("result").is_some(), "equal observations satisfy the condition: {result}");
+    shows(&s, &t, "answer:x");
+}
+
+#[test]
 fn interrupt_reports_what_it_observed() {
     let s = session();
     let interrupt = |t: &str| s.json(&["interrupt", t, "--timeout", "1"]);
