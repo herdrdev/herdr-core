@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>dev.herdr.core</string>
+    <key>CFBundleName</key><string>Herdr Core</string>
+    <key>CFBundleDisplayName</key><string>Herdr Core</string>
+    <key>CFBundleExecutable</key><string>herdr-core</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>LSUIElement</key><true/>
+    <key>CFBundleVersion</key><string>@VERSION@</string>
+    <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Programs running in Herdr terminals can connect to devices and services on your local network.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Programs running in Herdr terminals can control other apps at your request.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Programs running in Herdr terminals can record audio at your request.</string>
+    <key>NSCameraUsageDescription</key><string>Programs running in Herdr terminals can use the camera at your request.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key><string>Programs running in Herdr terminals can communicate with Bluetooth devices at your request.</string>
+    <key>NSDesktopFolderUsageDescription</key><string>Programs running in Herdr terminals can read and change files on your Desktop.</string>
+    <key>NSDocumentsFolderUsageDescription</key><string>Programs running in Herdr terminals can read and change files in your Documents folder.</string>
+    <key>NSDownloadsFolderUsageDescription</key><string>Programs running in Herdr terminals can read and change files in your Downloads folder.</string>
+    <key>NSNetworkVolumesUsageDescription</key><string>Programs running in Herdr terminals can read and change files on network volumes.</string>
+    <key>NSRemovableVolumesUsageDescription</key><string>Programs running in Herdr terminals can read and change files on removable volumes.</string>
+    <key>NSContactsUsageDescription</key><string>Programs running in Herdr terminals can access your contacts at your request.</string>
+    <key>NSCalendarsUsageDescription</key><string>Programs running in Herdr terminals can access your calendars at your request.</string>
+    <key>NSRemindersUsageDescription</key><string>Programs running in Herdr terminals can access your reminders at your request.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key><string>Programs running in Herdr terminals can access your calendars at your request.</string>
+    <key>NSRemindersFullAccessUsageDescription</key><string>Programs running in Herdr terminals can access your reminders at your request.</string>
+    <key>NSPhotoLibraryUsageDescription</key><string>Programs running in Herdr terminals can access your photos at your request.</string>
+    <key>NSSystemAdministrationUsageDescription</key><string>Programs running in Herdr terminals can administer your system at your request.</string>
+</dict></plist>

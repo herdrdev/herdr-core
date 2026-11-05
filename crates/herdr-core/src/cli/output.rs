@@ -264,7 +264,7 @@ pub(super) fn describe(t: &Value) -> String {
         .flatten()
         .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default()))
         .collect();
-    format!(
+    let mut description = format!(
         "{} {}\n  name: {}\n  parent: {}\n  command: {}\n  cwd: {}\n  pid: {}\n  labels: {}",
         t["address"].as_str().unwrap_or("?"),
         summary(t),
@@ -274,7 +274,11 @@ pub(super) fn describe(t: &Value) -> String {
         cwd(t).unwrap_or("-"),
         t["pid"],
         if labels.is_empty() { "-".into() } else { labels.join(" ") },
-    )
+    );
+    if let Some(first) = t.get("first_message").filter(|f| f["sent"] == false) {
+        description.push_str(&format!("\n  first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
+    }
+    description
 }
 
 /// An exec's output as the program wrote it, then its exit code as ours.

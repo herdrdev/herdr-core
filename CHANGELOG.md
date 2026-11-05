@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.1.18] - 2026-11-04
+
+### New
+- **On macOS, the core is now its own app, Herdr Core.** macOS asks once to let Herdr Core reach your local network (the prompt may say herdr-core) and once for the microphone. After that, programs in your terminals can reach machines on your network (like a model server) and use the mic. Terminals opened before the update need to be reopened once to get this. (#100)
+- On macOS, after a later core update, macOS may ask once more about the local network, or terminals opened before that update may need reopening.
+- On macOS, if you update with `hc update` in a terminal, run it again when hc asks you to. Herdr's own updates do this for you.
+- `hc wait --children` waits for a helper that was given a task when it started until that task is done. (#94)
+- Apps can start a terminal at the size and colors of the pane it will show in. (#88, thanks @tajchert)
+
+### Fixed
+- A template's first message is retried for up to a minute, and a message that still can't be sent shows in `hc get`. (#85)
+- Answers a terminal sends back on its own no longer make an idle viewer take over the terminal's size. (#69)
+- On macOS, the core can have many more files open at once (it was limited to 256). (#110)
+- `hc ls` and `hc get` show the folder a terminal is in now, not just where it started.
+- Templates saved with Windows line endings work.
+- Programs no longer get a display whose X or Wayland server is gone. (#78, thanks @baozich)
+
 ## [0.1.17] - 2026-11-02
 
 ### Fixed

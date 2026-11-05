@@ -76,11 +76,16 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));
+    s.json(&["server", "start"]);
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", serde_json::json!({}));
     let t = run(&s, &["true"]);
-    wait_finished(&s, &t);
-    std::thread::sleep(Duration::from_millis(600));
-    let all = s.json(&["ls", "--all"]);
-    assert!(!all.to_string().contains(&format!("\"{t}\"")), "kept past its time: {all}");
+    // A slow exit snapshot can outlast retention; the finished event is buffered even if get is too late.
+    next_event(&mut events, |e| e["params"]["terminal"] == t && e["params"]["type"] == "finished");
+    wait_until("finished terminal expired", || {
+        let all = s.json(&["ls", "--all"]);
+        !all["terminals"].as_array().unwrap().iter().any(|record| record["address"] == t)
+    });
 }
 
 #[test]
@@ -310,7 +315,19 @@ fn planned_restart_restores_the_exact_screen() {
     assert!(text.contains("one\ntwo\nthree"), "{text:?}");
     assert_eq!(text.matches("one").count(), 1, "replayed twice: {text:?}");
 
-    // SIGTERM (e.g. a service manager) is the same planned restart.
+    // An unsavable handoff refuses SIGTERM without losing the core or its screen.
+    let blocked = s.root.join("state/herdr-core/test/restart-env.json");
+    std::fs::create_dir(&blocked).unwrap();
+    unsafe { libc::kill(new as i32, libc::SIGTERM) };
+    wait_until("SIGTERM handoff refused", || {
+        std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log"))
+            .is_ok_and(|log| log.contains("core: cannot restart:"))
+    });
+    assert_eq!(status(&s)["pid"].as_i64(), Some(new));
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    std::fs::remove_dir(blocked).unwrap();
+
+    // SIGTERM (e.g. a service manager) can be retried after the failure.
     unsafe { libc::kill(new as i32, libc::SIGTERM) };
     wait_until("core exit", || !pid_alive(new));
     assert_eq!(get(&s, &t)["screen"], "exact");

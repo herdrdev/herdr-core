@@ -129,7 +129,7 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc, message_sent) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
         errors ["not_found", "machine_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
@@ -216,6 +216,9 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
 }
 
 async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
+    if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
+    }
     if let Err(e) = core.shutdown().await {
         eprintln!("core: shutdown registry flush failed: {}", e.message);
     }
@@ -223,7 +226,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
 }
 
 async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    core.restart.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::restart::prepare(core).await.map_err(|e| RpcError::internal(e.to_string()))?;
     Ok(StopResult { stopped: true })
 }
 
@@ -466,11 +469,9 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
             .and_then(|c| st.reg.terminals.get(&c))
             .map(|t| t.address.clone());
         let from = from.or_else(|| p.caller.clone().filter(|c| c.contains('/'))); // a caller on another machine
-        // A remote shell's caller has a prefix too (`machine/ppid:...`).
-        let source = from.as_deref().filter(|s| s.rsplit('/').next().and_then(crate::terminals::parse_id).is_some());
-        // Who messaged whom, never what: it went in, so it is told before any wait ends.
-        let data =
-            json!({"source": source, "target": crate::terminals::address(id), "at": now_ms(), "started": sent.started});
+        // Remote plain shells have a prefix too, but `ppid:...` is not a terminal.
+        let sender = from.as_deref().filter(|s| s.rsplit('/').next().and_then(crate::terminals::parse_id).is_some());
+        let data = json!({"from": sender});
         if sent.status.as_deref() == Some("working") {
             st.messages.insert(id, from);
         }

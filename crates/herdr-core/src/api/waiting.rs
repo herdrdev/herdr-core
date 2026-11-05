@@ -191,7 +191,7 @@ pub(super) async fn wait_children_everywhere(
 }
 
 /// Decided from the children's current facts, again on every change:
-/// `all`: none is working (one that hasn't reported yet is still starting);
+/// `all`: none is working (unreported children and sent first tasks still pending count too);
 /// the reply lists every child, finished ones too. `any`: a child with news
 /// (for the parent itself: news it hasn't seen, even from before the wait), or
 /// a message typed into the waiting parent (it sits in its queue until this
@@ -226,7 +226,9 @@ pub(super) async fn wait_children(
         st.reg.terminals.values().filter(|t| t.parent.as_deref() == Some(address.as_str())).cloned().collect()
     };
     let busy = |t: &Terminal| {
-        t.is_live() && !t.program_lost() && (!t.reported || t.status.as_ref().is_some_and(|s| s.state == "working"))
+        t.is_live()
+            && !t.program_lost()
+            && (!t.reported || t.first_task_turn.is_some() || t.status.as_ref().is_some_and(|s| s.state == "working"))
     };
     // While the caller waits on them, it needs no notes about them.
     let (start, _watching): (std::collections::HashMap<u32, u64>, Vec<Watching>) = {
@@ -259,7 +261,8 @@ pub(super) async fn wait_children(
         };
         let ready: Option<Vec<&Terminal>> = match any {
             true => {
-                let fresh: Vec<&Terminal> = kids.iter().filter(|t| news(t)).collect();
+                let fresh: Vec<&Terminal> =
+                    kids.iter().filter(|t| news(t) && (!busy(t) || t.first_task_turn.is_none())).collect();
                 let nothing_can_happen = !others && !kids.iter().any(Terminal::is_live) && message.is_none();
                 (!fresh.is_empty() || message.is_some() || nothing_can_happen).then_some(fresh)
             }

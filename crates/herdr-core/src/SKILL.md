@@ -45,22 +45,25 @@ hc wait helper
 hc send helper "Inspect x.rs only. No subagents. Report with hc send $HC_TERMINAL_ID when done or stuck."
 ```
 
+Template launches allow up to 60 seconds for readiness, retrying startup
+settle failures with the same safety rules as `send` (including its startup
+age limit). This covers slow startup without waiting forever on a dialog.
 Check `first_message.sent` in a launch with a task. If false, the task was
-NOT sent: `hc read <t>`; resolve readiness first (a trust dialog may need
+NOT sent; `hc get <t>` keeps `first_message: {sent: false, reason}` for later
+inspection, even after the core restarts. To recover: `hc read <t>`; resolve readiness first (a trust dialog may need
 `hc keys <t> down enter`), then send the task. Do not blindly resend after a
 failed send: it may still have arrived; read first.
 
 ## Observe sends
 
-`hc events --json` includes `message_sent` after a successful send, before
-any `--wait` finishes. Its data contains `source` (null for a non-terminal
-caller), `target`, `at` (epoch milliseconds when emitted), and the send
-result's `started`.
-It contains no message text. This observes a send, not a read receipt or a
-promise that the recipient processed it; refused sends emit no such event.
-Only `terminal.send` (`hc send`) produces it, not keystrokes or automatic
-parent notes. Event filters apply to the target terminal. This is live
-metadata: a `missed` snapshot or reconnection does not replay past sends.
+`hc events --json` includes `message_sent` after an explicit `terminal.send`
+(`hc send`), before its optional completion wait. The event's `terminal` is
+the recipient; `data.from` is the sending terminal, or null for a non-terminal
+caller. Both use the existing event address rules. It contains no text and
+does not prove that the program read or processed it. Refused sends,
+keystrokes, launch tasks and automatic parent notes produce no such event.
+Filters match the recipient. It is live observation: missed snapshots and
+reconnections do not replay sends, and absence does not prove no send occurred.
 
 ## Talk, wait, and collect results
 
@@ -97,6 +100,13 @@ children finish:
 - `reason: message`: the message arrives as your next input, possibly late;
   it is not output to fetch with `hc read`. Process it and wait again if needed.
 - `reason: timeout` (default 180 seconds): a check-in, not failure; wait again.
+- A child with a sent launch task counts as working until its turn advances
+  past delivery, its root reports done, blocked, error after delivery, or it
+  exits. Startup words and child records do not complete that task in either
+  children mode. Without a launch task, startup idle still counts as stopped.
+  After a core crash, an unchanged final root word/turn cannot prove completion:
+  a repeated done, or done followed by idle while core was absent, may leave
+  the task pending until another root report or exit.
 - `not_started` from `send --wait`: it hasn't begun; read before deciding.
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
@@ -124,7 +134,9 @@ error, exited); inspect its screen.
 API clients that already know a terminal's pane size can pass `size: {cols, rows}`
 to `terminal.run` (both positive). It applies before the program starts. Omit it
 for the unchanged configured headless size (default 200×120); later viewers
-still resize the terminal normally.
+still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
+`terminal.attach`) likewise answers the program's color and cell-size queries
+from its start, before any viewer attaches.
 
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
@@ -227,10 +239,33 @@ paths start at your current folder. Prefer explicit paths for remote work.
   is already current. JSON reports `restarted: true`; terminals keep running.
   Managed installs must be updated with their package manager instead, and
   one in a folder you can't write (Unix) the way it was installed.
+- On macOS, privacy requests from terminal programs belong to Herdr Core,
+  not Herdr.app. Existing Herdr.app grants do not transfer to the core.
+- macOS installs keep the newest bundle at the fixed physical path
+  `~/.local/share/herdr-core/active/Herdr Core.app`, selected by a `current`
+  symlink, with `hc` and `herdr-core` links in
+  `~/.local/bin` (`HC_INSTALL_DIR` overrides the links'
+  folder). Updates keep running terminals. A bundled install's `update --from`
+  needs a complete signed `.app` (or its `Contents/MacOS/herdr-core`), not a bare
+  executable. Terminals created before this bundle
+  upgrade may still have broken macOS privacy access: recreate those terminals;
+  restarting only the core cannot repair their old holders. After an old updater
+  copies only the binary, run `hc update` to finish installing the bundle, even
+  if the version is already current. The app completes this during its update.
+  Startup never downloads updates. Previous bundles stay on disk while their
+  cores or holders run; later installs reclaim unused previous bundles.
+  Per-user installs use the bundle. Root/system destinations keep the independently
+  signed standalone executable and their existing macOS privacy behavior.
+  Machine installs also preserve bundles. A standalone sender cannot replace a
+  bundled remote core: run `hc update` there instead. Root remotes receive the
+  standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
+- Planned restarts and updates preserve the core's launch environment for new
+  terminals; per-terminal API `env` overrides still apply. A stop followed by a
+  fresh start uses the new launcher's environment.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

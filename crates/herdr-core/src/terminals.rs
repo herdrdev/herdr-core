@@ -67,6 +67,9 @@ pub struct Terminal {
     /// Goes up each time the status leaves `working`.
     #[serde(default)]
     pub turn: u64,
+    /// A sent launch task still awaiting its first completed turn (private).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_task_turn: Option<u64>,
     /// Whether the program ever sent a 7501 report.
     #[serde(default)]
     pub reported: bool,
@@ -115,6 +118,9 @@ pub struct Terminal {
     /// The template that started it.
     #[serde(default)]
     pub template: Option<String>,
+    /// A template first message that was not sent; retained for later inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<crate::templates::FirstMessage>,
     /// The holder (its instance) that runs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
@@ -276,6 +282,7 @@ impl Registry {
                 status_ms: None,
                 records: BTreeMap::new(),
                 turn: 0,
+                first_task_turn: None,
                 reported: false,
                 title: String::new(),
                 parent: new.parent,
@@ -297,6 +304,7 @@ impl Registry {
                 foreground: None,
                 afar: Default::default(),
                 template: new.template.map(|t| t.name),
+                first_message: None,
                 holder: None,
             },
         );
@@ -396,6 +404,7 @@ impl Registry {
 
 /// The core's own bookkeeping in the record: saved with it, never shown.
 const PRIVATE: &[&str] = &[
+    "first_task_turn",
     "news",
     "seen",
     "noted",

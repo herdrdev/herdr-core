@@ -1,6 +1,62 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test(start_paused = true)]
+async fn keys_pressed_during_a_paste_follow_its_submit() {
+    use crate::viewers::{AttachRequest, Display};
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let (core, root) = test_core();
+    let (writer, frames) = mpsc::channel();
+    let (bye, _) = mpsc::channel();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+        id
+    };
+    let person = Arc::new(crate::wire::Conn::default());
+    let channel = core
+        .attach(
+            &person,
+            id,
+            AttachRequest {
+                observe: false,
+                resize_notifications: false,
+                history: 0,
+                size: (80, 24),
+                display: Display::default(),
+                resumed: false,
+            },
+        )
+        .unwrap();
+    // Ignore attach's resize frames. From here the fake holder sees only input.
+    while frames.try_recv().is_ok() {}
+    {
+        let sending = core.send(id, "abc", false, None);
+        tokio::pin!(sending);
+        poll_fn(|cx| {
+            assert!(sending.as_mut().poll(cx).is_pending(), "the paste must pause before submit");
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"abc"));
+        assert!(frames.try_recv().is_err());
+        core.viewer_input(&person, channel, b"Z", false);
+        assert!(frames.try_recv().is_err(), "the person's keys must stay held");
+        tokio::time::advance(crate::input::PASTE_GAP).await;
+        sending.await.unwrap();
+        assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\r"));
+        assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"Z"));
+    }
+    drop(core);
+    remove_root(&root);
+}
+
 #[tokio::test]
 async fn server_exit_flushes_even_when_background_tasks_still_own_core() {
     let (mut core, root) = test_core();
@@ -140,6 +196,30 @@ fn a_blocked_registry_write_does_not_hold_the_core_lock() {
     drop(reader);
     remove_root(&root);
     assert!(returned && unlocked, "saving to a stalled disk must leave output and input free to take the core lock");
+}
+
+#[tokio::test]
+async fn a_stop_cannot_interrupt_a_prepared_restart() {
+    let root = std::env::temp_dir().join(format!("hc-restart-stop-{}", platform::random_hex()));
+    let paths = Paths {
+        state: root.join("state"),
+        config: root.join("config.toml"),
+        socket: root.join("run/core.sock"),
+        holder_socket: root.join("run/core.holder.sock"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    crate::restart::prepare(&core).await.unwrap();
+    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let error = crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap_err();
+    assert_eq!(error.kind, "unavailable");
+    assert!(!core.lock().stopping, "a prepared handoff keeps its holders");
+    crate::restart::consumed(&core.paths).unwrap();
+    core.restart.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap();
+    assert!(crate::restart::prepare(&core).await.is_err(), "a stop already in progress wins");
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

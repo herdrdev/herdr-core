@@ -17,6 +17,7 @@ type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
 pub fn serve() -> io::Result<()> {
+    platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
     paths.create_dirs()?;
     let mut lock =
@@ -38,6 +39,7 @@ pub fn serve() -> io::Result<()> {
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;
+        crate::restart::consumed(&core.paths)?;
         let kept = core.clone();
         tokio::spawn(async move {
             kept.clone().recover_kept(true).await;
@@ -63,7 +65,11 @@ pub fn serve() -> io::Result<()> {
                 _ = core.stop.notified() => break,
                 // SIGTERM is a planned restart: programs stay, screens are saved.
                 _ = &mut term => {
-                    core.restart.store(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Err(error) = crate::restart::prepare(&core).await {
+                        eprintln!("core: cannot restart: {error}");
+                        term.set(platform::termination());
+                        continue;
+                    }
                     break;
                 }
             }

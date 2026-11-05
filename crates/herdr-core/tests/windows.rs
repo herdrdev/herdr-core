@@ -4,7 +4,7 @@
 //! these cover what Windows does differently: pipes, ConPTY, job objects,
 //! Ctrl+C, handle inheritance, the console attach runs in.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -568,7 +568,7 @@ while ($true) {
 }
 
 #[test]
-fn a_send_is_an_event_without_its_text_before_its_wait_ends() {
+fn a_send_event_has_only_its_sender_and_arrives_before_wait_finishes() {
     use std::io::BufRead;
     let s = Session::new();
     let agent = s.file(
@@ -578,43 +578,48 @@ function report($s) { [Console]::Out.Write("$e]7501;$s$e\"); [Console]::Out.Flus
 report "state=idle"
 $line = [Console]::In.ReadLine()
 report "state=working"
-Start-Sleep 3
+while (!(Test-Path -LiteralPath $args[0])) { Start-Sleep -Milliseconds 20 }
 report "state=done"
 Start-Sleep 60
 "#,
     );
-    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
+    let go = s.root.join("go");
+    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent, go.to_str().unwrap()]);
     wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
     let mut events =
         cmd(&s.name, &s.root).args(["events", "--json"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let out = events.stdout.take().unwrap();
-    std::thread::spawn(move || {
-        let mut lines = std::io::BufReader::new(out).lines().map_while(Result::ok);
-        if let Some(snapshot) = lines.next() {
-            let _ = ready_tx.send(snapshot);
-        }
-        for line in lines {
-            if line.contains("message_sent") && tx.send((line, Instant::now())).is_err() {
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
                 break;
             }
         }
     });
-    let snapshot = ready_rx.recv_timeout(Duration::from_secs(10)).expect("subscribed with a snapshot");
+    let snapshot = rx.recv_timeout(Duration::from_secs(10)).expect("subscribed with a snapshot");
     assert!(serde_json::from_str::<Value>(&snapshot).unwrap()["terminals"].is_array(), "{snapshot}");
-    let sent = s.json(&["send", &t, "secret-body", "--wait", "--timeout", "15"]);
-    let returned = Instant::now();
-    assert_eq!(sent["wait"]["status"], "done", "{sent}");
-    let (line, at) = rx.recv_timeout(Duration::from_secs(5)).expect("a message_sent event");
+    let mut send = cmd(&s.name, &s.root);
+    send.args(["send", "--json", &t, "secret-body", "--wait", "--timeout", "15"]);
+    let waiting = std::thread::spawn(move || send.output().unwrap());
+    let e = loop {
+        let line = rx.recv_timeout(Duration::from_secs(10)).expect("a message_sent event");
+        let e: Value = serde_json::from_str(&line).unwrap();
+        if e["params"]["type"] == "message_sent" {
+            break e;
+        }
+    };
+    let before_completion = !waiting.is_finished();
+    std::fs::write(&go, "").unwrap();
+    let sent = waiting.join().unwrap();
     let _ = events.kill();
     let _ = events.wait();
-    let e: Value = serde_json::from_str(&line).unwrap();
-    let data = &e["params"]["data"];
-    assert_eq!((data["target"].as_str(), data["started"].as_bool()), (Some(t.as_str()), Some(true)), "{line}");
-    assert!(data["source"].is_null(), "the CLI outside a terminal is nobody: {line}");
-    assert!(!line.contains("secret-body"), "{line}");
-    assert!(returned.duration_since(at) > Duration::from_secs(1), "heard while the send still waited");
+    reader.join().unwrap();
+    assert_eq!(e["params"]["terminal"], t);
+    assert_eq!(e["params"]["data"], json!({"from": null}), "plain shell, no text: {e}");
+    assert!(before_completion, "observation does not wait for completion");
+    assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&sent.stdout).unwrap()["wait"]["status"], "done");
 }
 
 #[test]
@@ -640,6 +645,94 @@ fn interrupt_is_ctrl_c_the_program_takes() {
     s.shows(&t, "Reply from");
     s.json(&["interrupt", &t, "--timeout", "5"]);
     wait_until("ping stopped", || s.json(&["get", &t])["state"] == "finished");
+}
+
+#[test]
+fn planned_restarts_preserve_the_environment_for_new_terminals() {
+    let s = Session::new();
+    let exe = installed(&s);
+    let started = cmd_at(&exe, &s.name, &s.root)
+        .env_remove("NO_COLOR")
+        .env_remove("HC_UPDATER_ONLY")
+        .env("HC_SESSION_VALUE", "original")
+        .args(["server", "start"])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    let probe =
+        s.file("environment.ps1", r#"Write-Output "ENV:$env:NO_COLOR|$env:HC_SESSION_VALUE|$env:HC_UPDATER_ONLY""#);
+    let new = release(&s.root.join("new"), "new-build");
+    for args in [vec!["server", "restart"], vec!["update", "--from", new.to_str().unwrap()]] {
+        let before = s.json(&["server", "status"])["pid"].clone();
+        let out = cmd_at(&exe, &s.name, &s.root)
+            .env("NO_COLOR", "1")
+            .env("HC_SESSION_VALUE", "updater")
+            .env("HC_UPDATER_ONLY", "leaked")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_ne!(s.json(&["server", "status"])["pid"], before);
+        let (code, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("ENV:|original|"), "{args:?}: {out}");
+        let (directory, prefix) = herdr_core::platform::endpoints(&s.root);
+        let stream = herdr_core::platform::connect(&directory.join(format!("{prefix}{}.sock", s.name))).unwrap();
+        let terminal = herdr_core::client::call(
+            &stream,
+            "terminal.run",
+            json!({
+                "argv": ["powershell", "-NoProfile", "-File", probe],
+                "env": {"NO_COLOR": "1", "HC_SESSION_VALUE": "override"},
+            }),
+        )
+        .unwrap();
+        s.shows(terminal["address"].as_str().unwrap(), "ENV:1|override|");
+    }
+    s.json(&["server", "stop"]);
+    let out = cmd_at(&exe, &s.name, &s.root)
+        .env("NO_COLOR", "1")
+        .env("HC_SESSION_VALUE", "fresh")
+        .args(["server", "start"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (_, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    assert!(out.contains("ENV:1|fresh|"), "a fresh start uses its caller's environment: {out}");
+    let out = cmd_at(&exe, &s.name, &s.root).env_remove("NO_COLOR").args(["server", "restart"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (_, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    assert!(out.contains("ENV:1|fresh|"), "an intentional NO_COLOR survives restart: {out}");
+}
+
+#[test]
+fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
+    let s = Session::new();
+    let machine = herdr_core::platform::machine_id().expect("Windows machine ID");
+    let state = s.root.join("state/herdr-core").join(&s.name);
+    std::fs::create_dir_all(&state).unwrap();
+    let snapshot = json!({
+        "machine_id": format!("other-{machine}"),
+        "vars": [[{"Unix": b"HC_SESSION_VALUE".to_vec()}, {"Unix": b"copied-machine".to_vec()}]],
+    });
+    std::fs::write(state.join("restart-env.json"), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let out = cmd(&s.name, &s.root).env("HC_SESSION_VALUE", "new-machine").args(["server", "start"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (code, out) = s.out(&["run", "cmd", "/d", "/c", "echo %HC_SESSION_VALUE%"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("new-machine"), "{out}");
+}
+
+#[test]
+fn a_failed_environment_handoff_leaves_the_core_running() {
+    let s = Session::new();
+    let before = s.json(&["server", "start"])["pid"].clone();
+    let blocked = s.root.join("state/herdr-core").join(&s.name).join("restart-env.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let (code, _) = s.out(&["server", "restart"]);
+    assert_ne!(code, 0);
+    assert_eq!(s.json(&["server", "status"])["pid"], before);
+    std::fs::remove_dir(blocked).unwrap();
 }
 
 #[test]

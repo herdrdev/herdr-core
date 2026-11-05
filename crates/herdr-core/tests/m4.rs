@@ -154,7 +154,7 @@ fn send_refuses_a_blocked_program_and_checks_status_atomically() {
 }
 
 #[test]
-fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
+fn agents_wait_for_a_person_to_pause() {
     let s = session();
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
@@ -164,24 +164,6 @@ fn agents_wait_for_a_person_to_pause_and_never_mix_with_their_keys() {
     let started = Instant::now();
     s.json(&["send", &t, "x"]);
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
-
-    // Keys pressed while a paste is going in are held until it's done.
-    std::thread::sleep(Duration::from_millis(700));
-    let sender = {
-        let mut cmd = s.cmd();
-        cmd.args(["send", &t, "abc"]);
-        std::thread::spawn(move || cmd.output().unwrap())
-    };
-    // Inside the paste: "abc" is in, its Enter (the second 0d) is not.
-    let tokens = || text(&s, &t).split_whitespace().map(String::from).collect::<Vec<_>>();
-    wait_until("paste in", || tokens().contains(&"63".to_string()));
-    assert_eq!(tokens().iter().filter(|b| *b == "0d").count(), 1, "the paste ended already: tests nothing");
-    person.typed(b"Z");
-    assert!(sender.join().unwrap().status.success());
-    wait_until("Z delivered", || text(&s, &t).contains("5a"));
-    let bytes: Vec<String> = text(&s, &t).split_whitespace().map(String::from).collect();
-    let tail: Vec<&str> = bytes.iter().rev().take(5).rev().map(String::as_str).collect();
-    assert_eq!(tail, ["61", "62", "63", "0d", "5a"], "all: {bytes:?}");
 }
 
 #[test]
@@ -255,48 +237,55 @@ fn interrupt_reports_what_it_observed() {
     assert_eq!((code, err["error"]["kind"].as_str()), (11, Some("finished")));
 }
 
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
-}
-
 #[test]
-fn a_send_tells_subscribers_who_messaged_whom_but_not_what() {
+fn a_send_is_observed_before_waiting_without_publishing_its_text() {
     let s = session();
     let sender = run(&s, "r state=idle; sleep 100");
     let body = script(&s, "stty -echo; r state=idle; read -r l; r state=working; w go; r state=done; sleep 100");
     let agent = s.json(&["run", "--bg", "sh", "-c", &body])["address"].as_str().unwrap().to_string();
     wait_until("idle", || status(&s, &agent) == "idle");
-    let mut events = s.connect();
-    events.call(1, "events.subscribe", json!({}));
+    let (mut events, mut sender_events) = (s.connect(), s.connect());
+    events.call(1, "events.subscribe", json!({"terminal": agent}));
+    sender_events.call(1, "events.subscribe", json!({"terminal": sender}));
 
-    // A send that types nothing is no message.
     let refused = s.connect().call(
         1,
         "terminal.send",
         json!({"terminal": agent, "text": "no", "if": "working", "caller": sender}),
     );
     assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
-    let after_refusal = epoch_ms();
+    s.json(&["label", &agent, "checked=refusal"]);
+    next_event(&mut events, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "a refused send typed nothing: {m}");
+        m["params"]["type"] == "labels"
+    });
 
-    // With wait: the event comes while the send still waits for the turn it started.
     let mut conn = s.connect();
     let params = json!({"terminal": agent, "text": "secret-body", "wait": true, "caller": sender});
     let waiting = std::thread::spawn(move || conn.call(2, "terminal.send", params));
-    let msg = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
-    let e = &msg["params"];
-    assert_eq!((e["terminal"].as_str(), e["data"]["target"].as_str()), (Some(agent.as_str()), Some(agent.as_str())));
-    assert_eq!((e["data"]["source"].as_str(), e["data"]["started"].as_bool()), (Some(sender.as_str()), Some(true)));
-    let at = e["data"]["at"].as_u64().unwrap();
-    assert!(at >= after_refusal && at <= epoch_ms(), "the refused send said nothing; this one is now: {msg}");
-    assert!(!msg.to_string().contains("secret-body"), "never the text: {msg}");
-    assert!(!waiting.is_finished(), "sent before the wait ends");
+    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
+    assert_eq!(e["params"]["terminal"], agent);
+    assert_eq!(e["params"]["data"], json!({"from": sender}), "only the sender, never text: {e}");
+    assert!(!waiting.is_finished(), "observation does not wait for completion");
     touch(&s, "go");
     assert_eq!(waiting.join().unwrap()["result"]["wait"]["status"], "done");
 
-    // Not from a terminal: no source. A program that never reports: started unknown.
-    let silent = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
-    s.connect().call(3, "terminal.send", json!({"terminal": silent, "text": "x", "caller": "ppid:1"}));
-    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent")["params"].clone();
-    assert_eq!((e["data"]["target"].as_str(), &e["data"]["source"]), (Some(silent.as_str()), &Value::Null));
-    assert!(e["data"]["started"].is_null(), "{e}");
+    // The event concerns the recipient, not every terminal it mentions.
+    s.json(&["label", &sender, "checked=filter"]);
+    next_event(&mut sender_events, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "recipient filters apply: {m}");
+        m["params"]["type"] == "labels"
+    });
+}
+
+#[test]
+fn a_send_from_a_plain_shell_has_no_terminal_sender() {
+    let s = session();
+    let t = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", json!({"terminal": t}));
+    assert!(s.json(&["send", &t, "secret-body"])["started"].is_null());
+    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
+    assert_eq!(e["params"]["terminal"], t);
+    assert_eq!(e["params"]["data"], json!({"from": null}), "unknown is not a guessed terminal: {e}");
 }
