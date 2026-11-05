@@ -58,12 +58,11 @@ fn stuck(word: Option<&str>) -> bool {
 /// cut at the chunk's end waits there for the rest instead of becoming U+FFFD.
 fn text_of(held: &mut Vec<u8>, bytes: &[u8]) -> String {
     held.extend_from_slice(bytes);
-    let tail = held.iter().rev().take(3).take_while(|b| *b & 0xc0 == 0x80).count();
-    let keep = held.len().checked_sub(tail + 1).map_or(0, |at| {
-        let len = held[at].leading_ones() as usize;
-        if (2..=4).contains(&len) && tail + 1 < len { tail + 1 } else { 0 }
-    });
-    let rest = held.split_off(held.len() - keep);
+    // Only a start that more bytes could still make valid; anything else is U+FFFD now.
+    let open =
+        |at: usize| std::str::from_utf8(&held[at..]).is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none());
+    let at = (held.len().saturating_sub(3)..held.len()).find(|at| open(*at)).unwrap_or(held.len());
+    let rest = held.split_off(at);
     let text = strip(held);
     *held = rest;
     text
@@ -229,11 +228,18 @@ mod tests {
 
     #[test]
     fn a_character_cut_between_chunks_is_matched_whole() {
-        let out = "준비 ✓ 완료 🚀\n".as_bytes();
+        let out = "é 준비 ✓ 완료 🚀\n".as_bytes();
         for cut in 0..=out.len() {
             let mut held = Vec::new();
             let text = text_of(&mut held, &out[..cut]) + &text_of(&mut held, &out[cut..]);
-            assert_eq!(text, "준비 ✓ 완료 🚀\n", "cut at byte {cut}");
+            assert_eq!(text, "é 준비 ✓ 완료 🚀\n", "cut at byte {cut}");
+            assert!(held.is_empty());
+        }
+        let mut held = Vec::new();
+        let text: String = out.iter().map(|b| text_of(&mut held, &[*b])).collect();
+        assert_eq!(text, "é 준비 ✓ 완료 🚀\n", "one byte at a time");
+        for bad in [&b"a\xc0"[..], b"a\xe0\x80", b"a\xf4\x90"] {
+            assert_eq!(text_of(&mut held, bad), String::from_utf8_lossy(bad), "{bad:?} can never become a character");
             assert!(held.is_empty());
         }
     }
