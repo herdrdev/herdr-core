@@ -532,6 +532,55 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
 }
 
 #[test]
+fn templates_use_cmd_and_preserve_arguments_and_the_first_message() {
+    let s = Session::new();
+    let agent = s.file(
+        "agent with spaces.ps1",
+        r#"$arguments = @($args)
+$e = [char]27
+[Console]::Out.Write("$e]7501;state=idle$e\")
+[Console]::Out.Flush()
+$line = [Console]::In.ReadLine()
+[Console]::Out.Write("$e]7501;state=working$e\")
+[IO.File]::WriteAllText((Join-Path $PWD 'received.json'), (ConvertTo-Json @{arguments=$arguments; message=$line}))
+[Console]::Out.WriteLine("received:$line")
+[Console]::Out.Write("$e]7501;state=done$e\")
+[Console]::Out.Flush()
+Start-Sleep 60
+"#,
+    );
+    let pwsh = Command::new("pwsh").args(["-NoProfile", "-Command", "[Environment]::ProcessPath"]).output().unwrap();
+    assert!(pwsh.status.success());
+    let pwsh = String::from_utf8(pwsh.stdout).unwrap().trim().to_string();
+    let commands = [
+        format!(r#"pwsh -NoProfile -Command "& '{agent}' 'two  words' 'a&b' 'C:\agents\codex.ps1'""#),
+        format!(r#""{pwsh}" -NoProfile -File "{agent}" "two  words" "a&b" C:\agents\codex.ps1"#),
+        format!(r#"pwsh -NoProfile -File "{agent}" "two  words" "a&b" C:\agents\codex.ps1"#),
+    ];
+    let templates = s.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&templates).unwrap();
+    for (i, command) in commands.iter().enumerate() {
+        let name = format!("agent-{i}");
+        std::fs::write(templates.join(format!("{name}.md")), format!("---\ncommand: {command}\n---\n")).unwrap();
+        let task = format!("task {i}: keep  spaces & punctuation");
+        let r = s.json(&["run", "--bg", &name, &task]);
+        assert_eq!(r["first_message"]["sent"], true, "{r}");
+        let t = r["address"].as_str().unwrap();
+        let got = s.json(&["get", t]);
+        assert_eq!(got["argv"][1], "/d", "{got}");
+        assert_eq!(got["argv"][2], "/s", "{got}");
+        assert_eq!(got["argv"][3], "/c", "{got}");
+        assert_eq!(got["argv"][4], command.as_str(), "{got}");
+        s.shows(t, &format!("received:{task}"));
+        let received: Value =
+            serde_json::from_str(&std::fs::read_to_string(s.root.join("received.json")).unwrap()).unwrap();
+        assert_eq!(received["arguments"], serde_json::json!(["two  words", "a&b", "C:\\agents\\codex.ps1"]));
+        assert_eq!(received["message"], task);
+        s.json(&["kill", t]);
+    }
+}
+
+#[test]
 fn send_types_a_line_into_a_program_waiting_for_one() {
     let s = Session::new();
     let t = s.bg(&["powershell", "-NoProfile", "-Command", "$x = Read-Host 'name'; \"got-$x\""]);
