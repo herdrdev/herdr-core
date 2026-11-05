@@ -54,6 +54,21 @@ fn stuck(word: Option<&str>) -> bool {
     matches!(word, Some("blocked" | "error"))
 }
 
+/// The text of a chunk of output after what the last one `held`: a character
+/// cut at the chunk's end waits there for the rest instead of becoming U+FFFD.
+fn text_of(held: &mut Vec<u8>, bytes: &[u8]) -> String {
+    held.extend_from_slice(bytes);
+    let tail = held.iter().rev().take(3).take_while(|b| *b & 0xc0 == 0x80).count();
+    let keep = held.len().checked_sub(tail + 1).map_or(0, |at| {
+        let len = held[at].leading_ones() as usize;
+        if (2..=4).contains(&len) && tail + 1 < len { tail + 1 } else { 0 }
+    });
+    let rest = held.split_off(held.len() - keep);
+    let text = strip(held);
+    *held = rest;
+    text
+}
+
 /// Output without escape sequences, for matching what a person would read.
 fn strip(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
@@ -141,6 +156,7 @@ impl Core {
         let deadline = tokio::time::Instant::now() + spec.timeout;
         let mut prev = start.status.map(|s| s.state);
         let mut seen = String::new();
+        let mut held = Vec::new();
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -174,7 +190,7 @@ impl Core {
                     }
                 }
                 Some(bytes) = output.recv() => {
-                    seen.push_str(&strip(&bytes));
+                    seen.push_str(&text_of(&mut held, &bytes));
                     if spec.output.as_deref().is_some_and(|needle| seen.contains(needle)) {
                         return result(true, "output", None);
                     }
@@ -209,5 +225,16 @@ mod tests {
     #[test]
     fn output_is_matched_without_escape_sequences() {
         assert_eq!(strip(b"\x1b[31mRE\x1b[0mADY\x1b]2;t\x07!\r\n"), "READY!\n");
+    }
+
+    #[test]
+    fn a_character_cut_between_chunks_is_matched_whole() {
+        let out = "준비 ✓ 완료 🚀\n".as_bytes();
+        for cut in 0..=out.len() {
+            let mut held = Vec::new();
+            let text = text_of(&mut held, &out[..cut]) + &text_of(&mut held, &out[cut..]);
+            assert_eq!(text, "준비 ✓ 완료 🚀\n", "cut at byte {cut}");
+            assert!(held.is_empty());
+        }
     }
 }
