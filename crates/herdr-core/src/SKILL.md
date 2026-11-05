@@ -65,6 +65,11 @@ hc read --lines 100 review          # screen plus history; waits return status o
 hc interrupt review                # stop its current turn, not the process
 ```
 
+`send` and automatic notes encode Enter using the program's keyboard mode.
+`started: true` observes working (including an already working program); it
+does not acknowledge that this message was processed. Check the reply or
+task-specific work before treating a message as acted on.
+
 In human-readable output, `ls` shows the `where` label or the current folder;
 `get` shows the full current folder. Both fall back to the launch folder when
 it is unknown. JSON keeps `cwd` as the launch folder; `get` also includes the

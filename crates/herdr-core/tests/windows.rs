@@ -543,6 +543,55 @@ fn send_types_a_line_into_a_program_waiting_for_one() {
 }
 
 #[test]
+fn send_submits_in_the_programs_keyboard_mode_even_when_already_working() {
+    let s = Session::new();
+    let agent = s.file(
+        "kitty-input.ps1",
+        r#"param([string]$state)
+Add-Type 'using System; using System.Runtime.InteropServices;
+public static class KittyInput {
+  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int n);
+  [DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr h, out uint m);
+  [DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr h, uint m);
+  public static void Run(string state) {
+    uint mode; var h = GetStdHandle(-10);
+    if (!GetConsoleMode(h, out mode) || !SetConsoleMode(h, (mode & ~7u) | 0x200u))
+      throw new Exception("raw input mode failed");
+    Console.Write("\x1b[>8u\x1b[?2004h\x1b]7501;state=" + state + "\x1b\\READY\r\n");
+    Console.Out.Flush();
+    var input = Console.OpenStandardInput(); var pending = ""; int submits = 0;
+    while (true) {
+      int value = input.ReadByte(); if (value < 0) return;
+      pending += (char)value;
+      if (pending.EndsWith("\x1b[13u")) {
+        Console.Write("SUBMITTED " + (++submits) + "\r\n\x1b]7501;state=working\x1b\\");
+        Console.Out.Flush(); pending = "";
+      }
+    }
+  }
+}'
+[KittyInput]::Run($state)
+"#,
+    );
+    for state in ["idle", "working"] {
+        let t = s.bg(&["powershell", "-NoProfile", "-File", &agent, state]);
+        s.shows(&t, "READY");
+        let sent = s.json(&["send", &t, "hello"]);
+        assert_eq!(sent["started"], true, "{state}: {sent}");
+        s.shows(&t, "SUBMITTED 1");
+        assert!(!s.read(&t).contains("SUBMITTED 2"));
+        let child = cmd(&s.name, &s.root)
+            .env("HC_TERMINAL_ID", &t)
+            .env_remove("HC_TERMINAL_SOCKET")
+            .args(["run", "--bg", "cmd", "/d", "/c", "exit 1"])
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
+        s.shows(&t, "SUBMITTED 2");
+    }
+}
+
+#[test]
 fn a_program_reporting_7501_has_a_status_and_send_wait_waits_for_its_turn() {
     let s = Session::new();
     let agent = s.file(

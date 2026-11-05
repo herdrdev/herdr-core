@@ -275,12 +275,13 @@ impl Core {
                 let mut text: Vec<String> =
                     kids.iter().map(|id| self.note_for(st, *id, &st.reg.terminals[id].address)).collect();
                 text.extend(afar.iter().cloned());
-                let bracketed = st.screens.get(&parent).is_some_and(|s| s.dec_mode(2004));
+                let screen = st.screens.get(&parent).expect("live terminal has a screen");
+                let submit = crate::keys::encode(screen, t.submit.as_deref().unwrap_or("enter"))?;
                 let told = kids.iter().map(|id| (*id, st.reg.terminals[id].news)).collect();
                 let steps = vec![
-                    Step::Write(paste(bracketed, &text.join("\n"))),
+                    Step::Write(paste(screen.dec_mode(2004), &text.join("\n"))),
                     Step::Pause(crate::input::PASTE_GAP),
-                    Step::Write(b"\r".to_vec()),
+                    Step::Write(submit),
                 ];
                 Ok((told, steps))
             })

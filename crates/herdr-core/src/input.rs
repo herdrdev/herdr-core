@@ -225,10 +225,7 @@ impl Core {
                 }
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
                 // A template may say how its agent submits (default: Enter after 200 ms).
-                let submit = match &t.submit {
-                    Some(key) => crate::keys::encode(screen, key)?,
-                    None => b"\r".to_vec(),
-                };
+                let submit = crate::keys::encode(screen, t.submit.as_deref().unwrap_or("enter"))?;
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
                 let bytes = paste(screen.dec_mode(2004), text);
                 let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
