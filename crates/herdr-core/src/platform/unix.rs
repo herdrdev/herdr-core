@@ -1,7 +1,7 @@
 //! Linux and macOS: Unix sockets, PTYs, process groups, termios.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -550,6 +550,66 @@ pub fn machine_id() -> Option<String> {
 /// A program on its own terminal.
 pub struct Pty {
     master: File,
+    stop: Stream,
+    _stop_sender: Stream,
+}
+
+/// Cancels blocked IO when the holder releases the terminal, even if a
+/// detached program keeps its slave open.
+pub struct PtyIo {
+    master: File,
+    stop: Stream,
+}
+
+impl PtyIo {
+    fn ready(&self, events: i16) -> io::Result<bool> {
+        let mut fds = [
+            libc::pollfd { fd: self.master.as_raw_fd(), events, revents: 0 },
+            libc::pollfd { fd: self.stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        ];
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(fds[1].revents == 0)
+    }
+}
+
+impl Read for PtyIo {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if !self.ready(libc::POLLIN)? {
+                return Ok(0);
+            }
+            match self.master.read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                result => return result,
+            }
+        }
+    }
+}
+
+impl Write for PtyIo {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if !self.ready(libc::POLLOUT)? {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            match self.master.write(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.master.flush()
+    }
 }
 
 pub type Process = Child;
@@ -573,6 +633,11 @@ pub fn spawn_pty(
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
+    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (stop, stop_sender) = Stream::pair()?;
     let mut cmd = Command::new(program);
     cmd.args(&argv[1..])
         .env_clear()
@@ -590,17 +655,17 @@ pub fn spawn_pty(
         });
     }
     let child = cmd.spawn()?;
-    Ok((Pty { master }, child))
+    Ok((Pty { master, stop, _stop_sender: stop_sender }, child))
 }
 
 impl Pty {
-    /// Its output, read until every program on it has gone.
-    pub fn reader(&self) -> io::Result<File> {
-        self.master.try_clone()
+    /// Its output, read until the slave closes or this PTY is released.
+    pub fn reader(&self) -> io::Result<PtyIo> {
+        Ok(PtyIo { master: self.master.try_clone()?, stop: self.stop.try_clone()? })
     }
 
-    pub fn writer(&self) -> io::Result<File> {
-        self.master.try_clone()
+    pub fn writer(&self) -> io::Result<PtyIo> {
+        self.reader()
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {

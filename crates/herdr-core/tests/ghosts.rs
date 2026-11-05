@@ -1,5 +1,5 @@
-//! No process outlives its terminal: not the program, not what it started,
-//! not even when it hides in its own session (as agents' tool shells do).
+//! Normal terminal ends spare detached programs; losing the holder still
+//! cleans up its abandoned programs, including those ignoring hangup.
 
 #![cfg(unix)] // Windows: tests/windows.rs
 
@@ -51,24 +51,106 @@ fn run(s: &Session, script: &str) -> String {
 }
 
 #[test]
-fn kill_ends_what_the_program_started_too() {
+fn kill_spares_programs_that_ignore_hangup() {
     let s = Session::new();
     let script = format!("{} {} sleep 300", stubborn(&s, "same", false), stubborn(&s, "detached", true));
     let t = run(&s, &script);
     let pids = started(&s, &["same", "detached"]);
+    let survivors = Survivors(pids);
     s.json(&["kill", &t]);
-    gone(&pids);
+    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
 }
 
 #[test]
-fn leftovers_end_when_the_program_exits_on_its_own() {
+fn detached_programs_survive_a_normal_exit() {
     let s = Session::new();
     let script = format!("{} {} sleep 0.3", stubborn(&s, "same", false), stubborn(&s, "detached", true));
     let t = run(&s, &script);
     let pids = started(&s, &["same", "detached"]);
+    let survivors = Survivors(pids);
     wait_until("finished", || s.json(&["get", &t])["state"] == "finished");
-    // Already gone when it says finished: a holder dying now can't leave them behind.
-    assert!(!pids.iter().any(|p| running(*p)), "finished while what it started still runs");
+    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
+}
+
+struct Survivors(Vec<i64>);
+
+impl Drop for Survivors {
+    fn drop(&mut self) {
+        for &pid in &self.0 {
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+        gone(&self.0);
+    }
+}
+
+#[test]
+fn kept_recovery_does_not_sweep_after_a_normal_stop() {
+    let s = Session::new();
+    let script = format!("{} sleep 300", stubborn(&s, "detached", true));
+    s.json(&["run", "--bg", "--keep", "sh", "-c", &script]);
+    let survivors = Survivors(started(&s, &["detached"]));
+    s.json(&["server", "stop"]);
+    assert!(survivors.0.iter().all(|p| running(*p)), "stop killed a detached program");
+    s.json(&["server", "status"]);
+    s.json(&["server", "restart"]);
+    assert!(survivors.0.iter().all(|p| running(*p)), "recovery killed a detached program");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn closing_detached_terminals_releases_the_holders_pty_masters() {
+    let s = Session::new();
+    let warm = run(&s, "true");
+    wait_until("warm terminal ended", || s.json(&["get", &warm])["state"] == "finished");
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    let masters = || {
+        std::fs::read_dir(format!("/proc/{holder}/fd"))
+            .unwrap()
+            .flatten()
+            .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+            .filter(|path| path.ends_with("ptmx"))
+            .count()
+    };
+    wait_until("warm PTY released", || masters() == 0);
+    eprintln!("holder {holder}: before closing detached terminals, {} PTY masters", masters());
+    let mut survivors = Survivors(Vec::new());
+    for i in 0..3 {
+        let file = format!("detached-{i}");
+        let t = run(&s, &format!("{} exec sleep 300", stubborn(&s, &file, true)));
+        survivors.0.extend(started(&s, &[&file]));
+        s.json(&["kill", &t]);
+    }
+    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
+    wait_until("closed terminals released every PTY master", || masters() == 0);
+    eprintln!("holder {holder}: after closing three detached terminals, {} PTY masters", masters());
+}
+
+#[test]
+fn a_replacement_whose_holder_was_lost_is_recovered_and_cleaned_up() {
+    let s = Session::new();
+    let t = s.json(&["run", "--bg", "--keep", "sleep", "300"])["address"].as_str().unwrap().to_string();
+    s.json(&["server", "stop"]);
+    // What a crash leaves: a holder had claimed the replacement program but
+    // never reported it started, and something it launched is still running.
+    let path = s.root.join("state/herdr-core/test/terminals.json");
+    let mut reg: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let token = format!("0-replacement-{}", std::process::id());
+    let rec = reg["terminals"].as_object_mut().unwrap().values_mut().next().unwrap();
+    rec["pid"] = serde_json::Value::Null;
+    rec["reason"] = "server_stop".into();
+    rec["holder"] = "a-holder-that-is-gone".into();
+    rec["scope"] = token.clone().into();
+    std::fs::write(&path, serde_json::to_vec(&reg).unwrap()).unwrap();
+    let launched = std::process::Command::new("sh")
+        .args(["-c", &format!("{} &", python(&s, "left", false, false))])
+        .env("HC_SCOPE", &token)
+        .status()
+        .unwrap();
+    assert!(launched.success());
+    let left = started(&s, &["left"]);
+    s.json(&["server", "status"]);
+    gone(&left);
+    wait_until("the kept terminal got a new shell", || get(&s, &t)["pid"].is_number());
 }
 
 #[test]
@@ -112,11 +194,9 @@ fn a_holder_dying_during_stop_still_has_its_programs_ended_before_stop_returns()
 #[test]
 fn a_terminal_that_started_another_hc_session_does_not_take_it_down() {
     let s = Session::new();
-    // An agent that runs hc for another session: that session's core is not the agent's.
-    // Its hc ignores hangup and terminate, so it lives until the KILL step.
-    let inner = format!("trap '' HUP TERM; HC_SESSION=inner {} events", s.bin.display());
-    let t = run(&s, &format!("({inner}) & {}", python(&s, "leader", false, false)));
-    started(&s, &["leader"]);
+    // Ending a terminal's own job must not take down the core that job started.
+    let inner = format!("HC_SESSION=inner {} events", s.bin.display());
+    let t = run(&s, &format!("({inner}) & exec sleep 300"));
     let mut status = s.cmd();
     status.env("HC_SESSION", "inner").args(["server", "status"]);
     wait_until("inner core", || status.output().unwrap().status.success());

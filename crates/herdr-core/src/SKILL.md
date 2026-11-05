@@ -255,6 +255,14 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - Planned restarts and updates preserve the core's launch environment for new
   terminals; per-terminal API `env` overrides still apply. A stop followed by a
   fresh start uses the new launcher's environment.
+- On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
+  processes. They hang up the terminal and end its own program and foreground
+  job; deliberately detached programs can survive (background server ports may
+  stay busy). Child terminals still end with their parent unless
+  `--outlive-parent`. Unexpected holder loss still sweeps inherited cleanup
+  tokens, including detached programs; Windows keeps job-object cleanup.
+  Terminals kept alive through an update retain their old holder's behavior
+  until recreated.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

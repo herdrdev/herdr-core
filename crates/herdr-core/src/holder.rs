@@ -30,8 +30,6 @@ struct Term {
     /// Since when its output could drain; None while its reader waits for a
     /// core that fell behind. An exit waits for its output from then on.
     drains_since: Option<Instant>,
-    /// Its `HC_SCOPE` token: what it started carries it too.
-    scope: Option<String>,
 }
 
 /// The connected core. Frames go out through its own writer thread: a core
@@ -85,8 +83,6 @@ struct Holder {
     socket: std::path::PathBuf,
     /// A newer build took over: exit once the last terminal is gone.
     draining: std::sync::atomic::AtomicBool,
-    /// Sweeps still ending what a finished program left behind.
-    sweeps: std::sync::atomic::AtomicUsize,
 }
 
 /// Runs a holder on `socket` (each holder has its own; the core picks the path).
@@ -115,7 +111,6 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         paths,
         socket,
         draining: Default::default(),
-        sweeps: Default::default(),
     });
     let supervisor = holder.clone();
     std::thread::spawn(move || supervisor.supervise());
@@ -134,27 +129,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
 impl Holder {
     fn exit(&self) -> ! {
         platform::remove_endpoint(&self.socket);
-        // Never leave with leftovers still being ended: nobody else would.
-        self.wait_for_sweeps();
         std::process::exit(0);
-    }
-
-    fn wait_for_sweeps(&self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while self.sweeps.load(std::sync::atomic::Ordering::SeqCst) > 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Ends everything carrying `scope`, in the background.
-    fn sweep(self: &Arc<Self>, scope: Option<String>) {
-        let Some(scope) = scope else { return };
-        self.sweeps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let holder = self.clone();
-        std::thread::spawn(move || {
-            crate::sweep::sweep(&[scope]);
-            holder.sweeps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        });
     }
 
     fn exit_if_drained(&self) {
@@ -309,13 +284,11 @@ impl Holder {
                         st.terms.values_mut().for_each(|t| t.tail.clear());
                     }
                     if mode == Goodbye::Shutdown {
-                        // Whatever the core's stop missed (started since, or hiding) ends
-                        // here, before the goodbye: the stop returns when all is gone.
-                        let scopes: Vec<Option<String>> = st.terms.values().map(|t| t.scope.clone()).collect();
-                        drop(st);
-                        scopes.into_iter().for_each(|scope| self.sweep(scope));
-                        self.wait_for_sweeps();
-                        let mut st = self.lock();
+                        // A spawn may have completed after the core gave up waiting.
+                        // End its program and foreground job, not detached descendants.
+                        for t in st.terms.values().filter(|t| t.exit.is_none()) {
+                            t.pty.signal(t.pid, crate::platform::signal::KILL);
+                        }
                         self.to_core(&mut st, &proto::frame(proto::BYE, 0, &[]));
                         let backlog = st.core.as_ref().map(|c| c.backlog.clone());
                         drop(st);
@@ -370,13 +343,11 @@ impl Holder {
                         exit: None,
                         reader_done: false,
                         drains_since: Some(Instant::now()),
-                        scope: spec.env.get(crate::sweep::VAR).cloned(),
                     },
                 );
                 let (holder, waiter) = (self.clone(), self.clone());
-                let scope = spec.env.get(crate::sweep::VAR).cloned();
                 std::thread::spawn(move || holder.pump(id, reader));
-                std::thread::spawn(move || waiter.reap(id, child, scope));
+                std::thread::spawn(move || waiter.reap(id, child));
                 proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid })
             }
         };
@@ -418,8 +389,7 @@ impl Holder {
     }
 
     /// The exit code comes from here, after the last output has been forwarded.
-    /// `scope` is its own copy: the terminal may be released (forgotten) first.
-    fn reap(self: &Arc<Self>, id: u32, mut child: Process, scope: Option<String>) {
+    fn reap(self: &Arc<Self>, id: u32, mut child: Process) {
         let (code, signal) = match platform::wait(&mut child) {
             Ok(ended) => ended,
             Err(e) => {
@@ -428,14 +398,6 @@ impl Holder {
             }
         };
         let exit = Exit { code, signal };
-        // The terminal lived exactly as long as its program: what it left behind
-        // goes too, before the exit is reported. If we die first, the core still
-        // sees it live and ends what carries its scope itself.
-        if let Some(scope) = scope {
-            self.sweeps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            crate::sweep::sweep(&[scope]);
-            self.sweeps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        }
         let exited = Instant::now();
         let mut st = self.lock();
         while let Some(t) = st.terms.get(&id).filter(|t| !t.reader_done) {

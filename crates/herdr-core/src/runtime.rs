@@ -313,8 +313,17 @@ impl Core {
             }
         }
         let mut st = self.lock();
-        let lost: Vec<u32> =
-            st.reg.terminals.values().filter(|t| t.is_live() && !adopted.contains(&t.id())).map(|t| t.id()).collect();
+        // Kept records already waiting for a shell retain why they stopped.
+        // A normal stop must not turn into crash cleanup on the next start.
+        // A replacement still claimed by a holder (holder set, no pid yet) is
+        // not waiting: if that holder is gone, it was lost like any other.
+        let lost: Vec<u32> = st
+            .reg
+            .terminals
+            .values()
+            .filter(|t| t.is_live() && !(t.program_lost() && t.holder.is_none()) && !adopted.contains(&t.id()))
+            .map(|t| t.id())
+            .collect();
         for id in lost {
             self.record_finish(&mut st, id, Exit { code: None, signal: None }, "stopped_by_restart");
         }
@@ -857,7 +866,7 @@ impl Core {
                         }
                     });
                     // The welcome may be unreadable (the reason relink failed).
-                    // Shutdown needs no inventory: the holder sweeps everything it owns.
+                    // Shutdown needs no inventory: the holder ends its own programs.
                     let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
                     if io::Write::write_all(&mut stream, &hello).is_ok()
                         && io::Write::write_all(&mut stream, &proto::json_frame(proto::GOODBYE, 0, &mode)).is_ok()
@@ -869,13 +878,13 @@ impl Core {
             }
         }
         for rx in byes {
-            // A holder told to shut down first ends every leftover (up to ~3 s).
+            // A holder told to shut down ends any unacknowledged programs first.
             let _ = rx.recv_timeout(Duration::from_secs(6));
         }
     }
 
-    /// Ends what lost terminals left running, in the background but counted:
-    /// stop and restart wait for it.
+    /// Crash-only cleanup after losing a holder, never a normal terminal end.
+    /// Stop and restart wait for it. Tokens avoid signaling reused session IDs.
     fn sweep_in_background(&self, scopes: Vec<String>) {
         if scopes.is_empty() {
             return;

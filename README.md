@@ -83,6 +83,13 @@ Agents started inside an hc terminal become its children.
 They can report back with `hc send` and wait for their children with `hc wait --children all`.
 The parent gets notes when a child needs attention or ends.
 Children end with their parent unless started with `--outlive-parent`.
+On Unix, ending a terminal hangs up its program and foreground job, rather than
+hunting down detached programs. Programs deliberately detached with `nohup` or
+`setsid` can keep running, including background servers (their ports stay busy).
+An unexpected holder loss still uses inherited cleanup tokens to end abandoned
+programs, including detached ones. Windows keeps its job-object cleanup.
+Terminals kept alive through an update retain their old holder's behavior until
+recreated.
 
 ## Every machine
 
