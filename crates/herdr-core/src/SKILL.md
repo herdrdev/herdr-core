@@ -171,10 +171,13 @@ remote files and commands. `hc machine ls` lists configured machines; see
 Without `--name`, SSH machines use the first host label (IPs stay whole),
 shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
 
-On Windows, `hc server status` never starts a core. If elevated SSH startup
+On Windows, `hc server status` never starts a core. If elevated startup
 would block the same user's desktop session, open Herdr on that Windows
-machine or run `hc server start` in a normal desktop terminal, then reconnect.
-Headless Windows machines can still start their core over SSH.
+machine or run `hc server start` in a normal desktop terminal, then retry.
+This applies to local admin terminals and SSH; an existing core is still used.
+Explicit `hc server start`, updates, and headless elevated startup remain allowed.
+Opening Herdr elevated also works: its local `hc connect` is an explicit start;
+`hc connect` over SSH still follows the SSH startup policy.
 New Windows terminals refresh user/system environment settings, including PATH.
 
 ```sh

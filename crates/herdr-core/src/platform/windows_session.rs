@@ -1,4 +1,4 @@
-//! Keep implicit SSH startup from reserving a desktop user's core at high integrity.
+//! Keep implicit startup from reserving a desktop user's core at high integrity.
 
 use crate::rpc::RpcError;
 use std::io;
@@ -11,22 +11,26 @@ use windows_sys::Win32::System::RemoteDesktop::*;
 use windows_sys::Win32::System::Threading::*;
 
 pub fn check_autostart() -> Result<(), RpcError> {
-    if !super::SSH_LOGIN.iter().any(|key| std::env::var_os(key).is_some()) {
-        return Ok(());
-    }
-    let message = match unsafe { elevated_desktop_user() } {
+    let ssh = super::SSH_LOGIN.iter().any(|key| std::env::var_os(key).is_some());
+    let message = match unsafe { elevated_desktop_user(!ssh) } {
         Ok(false) => return Ok(()),
-        Ok(true) => "refusing to start an elevated Windows core over SSH while this user has a desktop session: the desktop app could not access it".into(),
-        Err(e) => format!("cannot check whether an elevated SSH core would block the Windows desktop: {e}"),
+        Ok(true) if ssh => "refusing to start an elevated Windows core over SSH while this user has a desktop session: the desktop app could not access it".into(),
+        Ok(true) => "refusing to start an elevated Windows core while this user has a desktop session: the desktop app could not access it".into(),
+        Err(e) if ssh => format!("cannot check whether an elevated SSH core would block the Windows desktop: {e}"),
+        Err(e) => format!("cannot check whether an elevated core would block the Windows desktop: {e}"),
     };
     Err(RpcError::new(
         "unavailable",
         message,
-        "open Herdr on that Windows machine, or run 'hc server start' there in a normal desktop terminal; then reconnect",
+        if ssh {
+            "open Herdr on that Windows machine, or run 'hc server start' there in a normal desktop terminal; then reconnect"
+        } else {
+            "open Herdr, or run 'hc server start' in a normal desktop terminal; then retry"
+        },
     ))
 }
 
-unsafe fn elevated_desktop_user() -> io::Result<bool> {
+unsafe fn elevated_desktop_user(split_only: bool) -> io::Result<bool> {
     unsafe {
         let mut token = null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -47,6 +51,23 @@ unsafe fn elevated_desktop_user() -> io::Result<bool> {
         }
         if elevation.TokenIsElevated == 0 {
             return Ok(false);
+        }
+        // Without a split token the desktop is elevated too, so local startup cannot lock it out.
+        if split_only {
+            let mut kind = TokenElevationTypeDefault;
+            if GetTokenInformation(
+                token.as_raw_handle() as HANDLE,
+                TokenElevationType,
+                (&raw mut kind).cast(),
+                size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+                &mut n,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if kind != TokenElevationTypeFull {
+                return Ok(false);
+            }
         }
         GetTokenInformation(token.as_raw_handle() as HANDLE, TokenUser, null_mut(), 0, &mut n);
         let mut user = vec![0usize; (n as usize).div_ceil(size_of::<usize>())];

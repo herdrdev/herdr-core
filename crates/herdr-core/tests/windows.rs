@@ -423,6 +423,14 @@ fn implicit_ssh_start_reports_desktop_conflict_or_starts_headless() {
 }
 
 #[test]
+fn local_protocol_connection_is_an_explicit_start() {
+    let s = Session::new();
+    let out = cmd(&s.name, &s.root).arg("connect").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(s.json(&["server", "status"])["pid"].is_number());
+}
+
+#[test]
 fn explicit_start_is_allowed_even_from_an_ssh_client() {
     let s = Session::new();
     // SSH_CLIENT triggers startup policy without the distinct kill-on-close job guard.
