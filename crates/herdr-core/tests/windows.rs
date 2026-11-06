@@ -400,34 +400,48 @@ fn new_terminals_refresh_windows_settings_without_losing_runtime_variables() {
 }
 
 #[test]
-fn an_ssh_client_uses_an_existing_core_instead_of_starting_another() {
+fn local_and_ssh_clients_use_an_existing_core_instead_of_starting_another() {
     let s = Session::new();
     let first = s.json(&["server", "start"]);
-    let out = cmd(&s.name, &s.root).env("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22").args(["ls"]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(s.json(&["server", "status"])["pid"], first["pid"]);
-}
-
-#[test]
-fn implicit_ssh_start_reports_desktop_conflict_or_starts_headless() {
-    let s = Session::new();
-    let out = cmd(&s.name, &s.root).env("SSH_CLIENT", "10.0.0.1 50000 22").args(["ls"]).output().unwrap();
-    if out.status.success() {
-        assert!(s.json(&["server", "status"])["pid"].is_number());
-    } else {
-        let error: Value = serde_json::from_slice(&out.stderr).unwrap();
-        assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
-        assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
-        assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
+    for ssh in [false, true] {
+        let mut command = cmd(&s.name, &s.root);
+        if ssh {
+            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = command.args(["ls"]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(s.json(&["server", "status"])["pid"], first["pid"]);
     }
 }
 
 #[test]
-fn explicit_start_is_allowed_even_from_an_ssh_client() {
-    let s = Session::new();
-    // SSH_CLIENT triggers startup policy without the distinct kill-on-close job guard.
-    let out = cmd(&s.name, &s.root).env("SSH_CLIENT", "10.0.0.1 50000 22").args(["server", "start"]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+fn implicit_local_and_ssh_start_apply_the_same_desktop_policy() {
+    let mut outcomes = Vec::new();
+    for ssh in [false, true] {
+        let s = Session::new();
+        let mut command = cmd(&s.name, &s.root);
+        if ssh {
+            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = command.args(["ls"]).output().unwrap();
+        outcomes.push(out.status.success());
+        if out.status.success() {
+            assert!(s.json(&["server", "status"])["pid"].is_number());
+        } else {
+            let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
+            assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
+            assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
+        }
+        // Explicit startup must work even when implicit startup was refused.
+        let mut explicit = cmd(&s.name, &s.root);
+        if ssh {
+            explicit.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = explicit.args(["server", "start"]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    assert_eq!(outcomes[0], outcomes[1], "SSH variables must not change desktop startup policy");
 }
 
 #[test]
