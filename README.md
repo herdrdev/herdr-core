@@ -81,6 +81,8 @@ hc read review --lines 100
 
 Agents started inside an hc terminal become its children.
 They can report back with `hc send` and wait for their children with `hc wait --children all`.
+Use `hc wait --children messages` to ignore ordinary turn ends and wait for
+reports, blocked/error news, or exit instead.
 The parent gets notes when a child needs attention or ends.
 Children end with their parent unless started with `--outlive-parent`.
 On Unix, ending a terminal hangs up its program and foreground job, rather than

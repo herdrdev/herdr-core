@@ -173,7 +173,7 @@ pub(super) async fn wait_children_everywhere(
     while let Some(side) = sides.join_next().await {
         let Ok(Ok(r)) = side else { continue };
         // News or a message anywhere ends `any` (dropping the others cancels them there).
-        if r.reason == "message" || (mode == "any" && r.ended && !r.children.is_empty()) {
+        if r.reason == "message" || (mode != "all" && r.ended && !r.children.is_empty()) {
             return Ok(WaitResult { terminal: crate::terminals::address(parent), ..r });
         }
         merged = Some(match merged {
@@ -196,6 +196,7 @@ pub(super) async fn wait_children_everywhere(
 /// (for the parent itself: news it hasn't seen, even from before the wait), or
 /// a message typed into the waiting parent (it sits in its queue until this
 /// call ends); idle children are waited on too.
+/// `messages`: like `any`, but only blocked/error or exit/loss is child news.
 /// `others`: children on other machines count too, so none here is no answer.
 pub(super) async fn wait_children(
     core: &Arc<Core>,
@@ -219,7 +220,7 @@ pub(super) async fn wait_children(
         children,
         from: None,
     };
-    let any = mode == "any";
+    let any = mode != "all";
     let caller = p.caller.clone();
     let listen = caller.as_deref() == Some(address.as_str());
     let kids_of = |st: &crate::runtime::State| -> Vec<Terminal> {
@@ -244,9 +245,9 @@ pub(super) async fn wait_children(
             .collect();
         (kids.iter().map(|t| (t.id(), t.news)).collect(), watching)
     };
-    let news = |t: &Terminal| match listen {
-        true => t.news > t.seen.max(t.noted),
-        false => t.news > start.get(&t.id()).copied().unwrap_or(0),
+    let seen_news = |t: &Terminal| match listen {
+        true => t.seen.max(t.noted),
+        false => start.get(&t.id()).copied().unwrap_or(0),
     };
     // The caller has these now; a `--rm` child it was waiting for can go.
     let seen = |ids: &[u32]| ids.iter().for_each(|&id| has_seen(core, caller.as_deref(), id));
@@ -261,8 +262,18 @@ pub(super) async fn wait_children(
         };
         let ready: Option<Vec<&Terminal>> = match any {
             true => {
-                let fresh: Vec<&Terminal> =
-                    kids.iter().filter(|t| news(t) && (!busy(t) || t.first_task_turn.is_none())).collect();
+                let fresh: Vec<&Terminal> = kids
+                    .iter()
+                    .filter(|t| {
+                        t.news > seen_news(t)
+                            && (!busy(t) || t.first_task_turn.is_none())
+                            && (mode != "messages"
+                                || !t.is_live()
+                                || t.program_lost()
+                                || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "blocked" | "error"))
+                                || t.failure_news.as_ref().is_some_and(|(news, _, _)| *news > seen_news(t)))
+                    })
+                    .collect();
                 let nothing_can_happen = !others && !kids.iter().any(Terminal::is_live) && message.is_none();
                 (!fresh.is_empty() || message.is_some() || nothing_can_happen).then_some(fresh)
             }
@@ -274,7 +285,27 @@ pub(super) async fn wait_children(
         }
         if let Some(results) = ready {
             seen(&results.iter().map(|t| t.id()).collect::<Vec<_>>());
-            let mut r = done(results.iter().map(|t| as_is(t, true)).collect());
+            let mut r = done(
+                results
+                    .iter()
+                    .map(|t| {
+                        let mut r = as_is(t, true);
+                        if mode == "messages"
+                            && r.reason == "status"
+                            && let Some((news, state, signal)) = &t.failure_news
+                            && *news > seen_news(t)
+                        {
+                            r.status = state.clone();
+                            if state.is_none() {
+                                r.reason = "exit".into();
+                                r.exit_code = None;
+                                r.signal = *signal;
+                            }
+                        }
+                        r
+                    })
+                    .collect(),
+            );
             if let Some(from) = message {
                 if r.children.is_empty() {
                     r.reason = "message".into();

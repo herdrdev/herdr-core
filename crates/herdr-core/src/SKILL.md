@@ -80,7 +80,13 @@ Keep doing useful work while children work. When you need their results:
 ```sh
 hc wait --children all             # until none is working, or a message interrupts
 hc wait --children any             # next child's news or a message to you
+hc wait --children messages        # explicit reports, blocked/error, or exit
 ```
+
+`messages` ignores ordinary done/idle turn boundaries, including unseen ones.
+Use it for children with background monitors: ask them to send a report with
+`hc send` when done or stuck. It still returns for child blocked/error news,
+exit/loss, messages to you, and human interruption. Timeouts still check in.
 
 Never sleep or poll to wait for anything hc runs: `hc wait <t>` (it stops
 working or exits), `hc wait <t> --output X` (it prints X, e.g. a server is
