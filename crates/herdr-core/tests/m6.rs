@@ -434,3 +434,42 @@ fn rm_children_go_once_a_waiting_parent_has_the_exit_code() {
     assert_eq!(waiting.join().unwrap()["exit_code"], 5);
     wait_until("removed after the wait", || s.hc(&["get", &kid]).status.code() == Some(3));
 }
+
+#[test]
+fn message_mode_ignores_turn_ends_but_returns_reports_and_failures() {
+    let s = session();
+    let p = run(&s, &[], "r state=working; sleep 100");
+    let kid = run(
+        &s,
+        &["--parent", &p],
+        "r state=working; w done; r state=done; w idle; r state=idle; w blocked; r state=blocked; w error; r state=error; w exit; exit 7",
+    );
+    wait_until("working", || get(&s, &kid)["status"]["state"] == "working" && get(&s, &p)["reported"] == true);
+    let waiting = wait_children(&s, &p, "messages");
+    touch(&s, "done");
+    wait_until("done", || get(&s, &kid)["status"]["state"] == "done");
+    touch(&s, "idle");
+    wait_until("idle", || get(&s, &kid)["status"]["state"] == "idle");
+    assert!(!waiting.is_finished(), "ordinary turn ends do not wake the parent");
+    hc_in(&s, &kid, &["send", &p, "delivery complete"]);
+    let r = waiting.join().unwrap();
+    assert_eq!(r["reason"], "message", "{r}");
+    assert_eq!(r["from"], kid, "{r}");
+    // A person's input uses the same interruption path, without a sender.
+    s.json(&["send", &p, "change direction"]);
+    let r = hc_in(&s, &p, &["wait", "--children", "messages", "--timeout", "1"]);
+    assert_eq!(r["reason"], "message");
+    assert!(r["from"].is_null());
+    for state in ["blocked", "error", "exit"] {
+        let waiting = wait_children(&s, &p, "messages");
+        std::thread::sleep(Duration::from_millis(100));
+        touch(&s, state);
+        let r = waiting.join().unwrap();
+        assert_eq!(ended(&r), [kid.clone()], "{r}");
+        if state == "exit" {
+            assert_eq!(r["children"][0]["exit_code"], 7);
+        } else {
+            assert_eq!(r["children"][0]["status"], state);
+        }
+    }
+}

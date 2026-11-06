@@ -173,7 +173,7 @@ pub(super) async fn wait_children_everywhere(
     while let Some(side) = sides.join_next().await {
         let Ok(Ok(r)) = side else { continue };
         // News or a message anywhere ends `any` (dropping the others cancels them there).
-        if r.reason == "message" || (mode == "any" && r.ended && !r.children.is_empty()) {
+        if r.reason == "message" || (mode != "all" && r.ended && !r.children.is_empty()) {
             return Ok(WaitResult { terminal: crate::terminals::address(parent), ..r });
         }
         merged = Some(match merged {
@@ -196,6 +196,7 @@ pub(super) async fn wait_children_everywhere(
 /// (for the parent itself: news it hasn't seen, even from before the wait), or
 /// a message typed into the waiting parent (it sits in its queue until this
 /// call ends); idle children are waited on too.
+/// `messages`: like `any`, but only blocked/error or exit/loss is child news.
 /// `others`: children on other machines count too, so none here is no answer.
 pub(super) async fn wait_children(
     core: &Arc<Core>,
@@ -219,7 +220,7 @@ pub(super) async fn wait_children(
         children,
         from: None,
     };
-    let any = mode == "any";
+    let any = mode != "all";
     let caller = p.caller.clone();
     let listen = caller.as_deref() == Some(address.as_str());
     let kids_of = |st: &crate::runtime::State| -> Vec<Terminal> {
@@ -261,8 +262,17 @@ pub(super) async fn wait_children(
         };
         let ready: Option<Vec<&Terminal>> = match any {
             true => {
-                let fresh: Vec<&Terminal> =
-                    kids.iter().filter(|t| news(t) && (!busy(t) || t.first_task_turn.is_none())).collect();
+                let fresh: Vec<&Terminal> = kids
+                    .iter()
+                    .filter(|t| {
+                        news(t)
+                            && (!busy(t) || t.first_task_turn.is_none())
+                            && (mode != "messages"
+                                || !t.is_live()
+                                || t.program_lost()
+                                || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "blocked" | "error")))
+                    })
+                    .collect();
                 let nothing_can_happen = !others && !kids.iter().any(Terminal::is_live) && message.is_none();
                 (!fresh.is_empty() || message.is_some() || nothing_can_happen).then_some(fresh)
             }

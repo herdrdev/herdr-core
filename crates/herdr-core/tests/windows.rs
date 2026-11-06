@@ -568,6 +568,32 @@ while ($true) {
 }
 
 #[test]
+fn message_wait_ignores_done_and_still_reports_a_child_exit() {
+    let s = Session::new();
+    let p = s.bg(&["powershell", "-NoProfile", "-Command", "Start-Sleep 100"]);
+    let agent = s.file(
+        "turn.ps1",
+        r#"$e = [char]27
+[Console]::Out.Write("$e]7501;state=working$e\"); [Console]::Out.Flush()
+[Console]::Out.Write("$e]7501;state=done$e\"); [Console]::Out.Flush()
+Start-Sleep 100
+"#,
+    );
+    let kid = s.bg(&["--parent", &p, "powershell", "-NoProfile", "-File", &agent]);
+    wait_until("done", || s.json(&["get", &kid])["status"]["state"] == "done");
+    let r = s.json(&["wait", &p, "--children", "messages", "--timeout", "0.2"]);
+    assert_eq!(r["reason"], "timeout", "{r}");
+    let mut wait = cmd(&s.name, &s.root);
+    wait.args(["wait", &p, "--children", "messages", "--timeout", "5"]);
+    let waiting = std::thread::spawn(move || wait.output().unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    s.json(&["kill", &kid]);
+    let out = waiting.join().unwrap();
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(r["children"][0]["reason"], "exit", "{r}");
+}
+
+#[test]
 fn kill_ends_what_the_program_started_too() {
     let s = Session::new();
     let pid_file = s.root.join("pid.txt");

@@ -270,6 +270,8 @@ fn waiting_on_children_counts_the_ones_on_other_machines() {
     assert_eq!((&still["ended"], &still["children"][0]["terminal"]), (&json!(false), &json!(child)), "{still}");
 
     touch(&s, "go");
+    let filtered = wait("messages", "0.5");
+    assert_eq!(filtered["reason"], "timeout", "remote idle is not a report: {filtered}");
     let any = wait("any", "10");
     assert_eq!(
         (&any["ended"], &any["terminal"], &any["children"][0]["terminal"]),
@@ -278,6 +280,9 @@ fn waiting_on_children_counts_the_ones_on_other_machines() {
     );
     let all = wait("all", "10");
     assert_eq!((&all["ended"], &all["children"][0]["status"]), (&json!(true), &json!("idle")), "{all}");
+    s.json(&["kill", &child]);
+    let gone = wait("messages", "5");
+    assert_eq!((&gone["ended"], &gone["children"][0]["reason"]), (&json!(true), &json!("exit")), "{gone}");
 }
 
 #[test]
