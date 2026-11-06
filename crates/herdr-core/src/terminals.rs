@@ -89,9 +89,9 @@ pub struct Terminal {
     /// Notable events so far: turns that ended, blocks, the exit.
     #[serde(default)]
     pub news: u64,
-    /// Latest blocked/error news, retained across later ordinary status reports.
+    /// Latest failure news (word, or no word for program loss) and its signal.
     #[serde(default)]
-    pub failure_news: Option<(u64, String)>,
+    pub failure_news: Option<(u64, Option<String>, Option<i32>)>,
     /// How many of those its parent has seen (read, get, wait, send, keys, kill).
     #[serde(default)]
     pub seen: u64,

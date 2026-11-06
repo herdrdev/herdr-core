@@ -270,7 +270,8 @@ pub(super) async fn wait_children(
                             && (mode != "messages"
                                 || !t.is_live()
                                 || t.program_lost()
-                                || t.failure_news.as_ref().is_some_and(|(news, _)| *news > seen_news(t)))
+                                || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "blocked" | "error"))
+                                || t.failure_news.as_ref().is_some_and(|(news, _, _)| *news > seen_news(t)))
                     })
                     .collect();
                 let nothing_can_happen = !others && !kids.iter().any(Terminal::is_live) && message.is_none();
@@ -291,9 +292,15 @@ pub(super) async fn wait_children(
                         let mut r = as_is(t, true);
                         if mode == "messages"
                             && r.reason == "status"
-                            && let Some((_, state)) = &t.failure_news
+                            && let Some((news, state, signal)) = &t.failure_news
+                            && *news > seen_news(t)
                         {
-                            r.status = Some(state.clone());
+                            r.status = state.clone();
+                            if state.is_none() {
+                                r.reason = "exit".into();
+                                r.exit_code = None;
+                                r.signal = *signal;
+                            }
                         }
                         r
                     })
