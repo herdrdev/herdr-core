@@ -67,6 +67,22 @@ pub enum Step {
     Pause(Duration),
 }
 
+/// Validate the full submission before typing, using the program's live key modes.
+pub(crate) fn submit_steps(screen: &ghostty_vt::Terminal, t: &Terminal) -> Result<Vec<Step>, RpcError> {
+    let submit = match &t.submit {
+        Some(keys) => keys.split(' ').map(|key| crate::keys::encode(screen, key)).collect::<Result<Vec<_>, _>>()?,
+        None => vec![b"\r".to_vec()],
+    };
+    let mut steps = vec![Step::Pause(t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis))];
+    for (i, key) in submit.into_iter().enumerate() {
+        if i > 0 {
+            steps.push(Step::Pause(KEY_GAP));
+        }
+        steps.push(Step::Write(key));
+    }
+    Ok(steps)
+}
+
 fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
 }
@@ -224,15 +240,10 @@ impl Core {
                     ));
                 }
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
-                // A template may say how its agent submits (default: Enter after 200 ms).
-                let submit = match &t.submit {
-                    Some(key) => crate::keys::encode(screen, key)?,
-                    None => b"\r".to_vec(),
-                };
-                let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
                 let bytes = paste(screen.dec_mode(2004), text);
                 let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
-                let steps = vec![paste, Step::Pause(gap), Step::Write(submit)];
+                let mut steps = vec![paste];
+                steps.extend(submit_steps(screen, t)?);
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
@@ -356,6 +367,19 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_submit_rejects_the_whole_sequence() {
+        let mut registry = crate::terminals::Registry::default();
+        let id = registry
+            .create(crate::terminals::NewTerminal { argv: vec!["test".into()], ..Default::default() }, 0)
+            .unwrap();
+        let terminal = registry.terminals.get_mut(&id).unwrap();
+        terminal.submit = Some("right unknown-key enter".into());
+        let screen = ghostty_vt::Terminal::new(80, 24, 1 << 20);
+        let Err(error) = submit_steps(&screen, terminal) else { panic!("invalid submit must not produce steps") };
+        assert_eq!(error.kind, "invalid_params");
+    }
 
     #[test]
     fn automatic_replies_preserve_the_human_quiet_gate() {
