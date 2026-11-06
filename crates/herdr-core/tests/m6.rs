@@ -465,7 +465,7 @@ fn message_mode_ignores_turn_ends_but_returns_reports_and_failures() {
         std::thread::sleep(Duration::from_millis(100));
         touch(&s, state);
         let r = waiting.join().unwrap();
-        assert_eq!(ended(&r), [kid.clone()], "{r}");
+        assert_eq!(ended(&r), std::slice::from_ref(&kid), "{r}");
         if state == "exit" {
             assert_eq!(r["children"][0]["exit_code"], 7);
         } else {
