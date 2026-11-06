@@ -76,6 +76,9 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
     if older(&now, &was) && !force {
         return Err(refused(format!("{now} is older than this {was}"), "--force to go back anyway"));
     }
+    if client::connect_existing(paths).is_none() {
+        crate::platform::may_autostart(false)?;
+    }
     // Staged beside it, checked, then swapped in: never a half-written hc.
     crate::platform::swap_in(from, &dest, |staged| version_of(staged).as_deref() == Some(now.as_str())).map_err(
         |e| match (e.kind(), crate::platform::bundle_update_hint()) {
