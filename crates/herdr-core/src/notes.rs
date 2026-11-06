@@ -52,9 +52,10 @@ fn last_lines(text: &str) -> Vec<String> {
 }
 
 /// A parent can take a note: a live agent not on a dialog (typing could answer
-/// it). A working agent takes typed text as a message, like any steer.
+/// it), with a program to type into. A working agent takes typed text as a
+/// message, like any steer.
 fn can_take_note(t: &Terminal) -> bool {
-    t.is_live() && t.reported && !blocked(t)
+    t.is_live() && t.reported && !blocked(t) && t.check_program().is_ok()
 }
 
 /// `t7 reviewer`: address, then name or template.
@@ -350,5 +351,26 @@ mod tests {
             note(&r.terminals[&id], "t1", &last),
             "<hc>t1 reviewer exited (exit 3). Last lines:\na\nb[201~\tc\nRead: hc read t1</hc>"
         );
+    }
+
+    #[test]
+    fn a_kept_parent_without_a_program_takes_no_note_until_it_has_one() {
+        let mut r = Registry::default();
+        let id = r.create(NewTerminal { argv: vec!["x".into()], keep: true, ..Default::default() }, 0).unwrap();
+        let t = r.terminals.get_mut(&id).unwrap();
+        t.reported = true;
+        t.pid = Some(42);
+        assert!(can_take_note(t));
+        for reason in ["signaled", "spawn_pending"] {
+            t.pid = None;
+            t.reason = Some(reason.into());
+            assert!(!can_take_note(t), "{reason}: typing would fail, and the delivery loop would retry at once");
+        }
+        t.pid = Some(43);
+        t.reason = None;
+        t.reported = false; // a fresh shell, as recovery leaves it
+        assert!(!can_take_note(t));
+        t.reported = true;
+        assert!(can_take_note(t), "its new program reported");
     }
 }
