@@ -447,7 +447,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
 async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcError> {
     let timeout = wait_timeout(core, p.timeout)?; // checked before anything is typed
     let id = resolve(core, &p.terminal)?;
-    let text = core.tagged(p.caller.as_deref(), id, &p.text, false);
+    let text = if p.raw { p.text } else { core.tagged(p.caller.as_deref(), id, &p.text, false) };
     let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref()).await?;
     if let Some(child) = p.caller.as_deref().and_then(crate::terminals::parse_id) {
         let mut st = core.lock();

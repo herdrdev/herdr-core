@@ -2483,6 +2483,16 @@
           }
         },
         {
+          "description": "Paste text without the sender tag on messages between agents.",
+          "name": "raw",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Paste text without the sender tag on messages between agents.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "The terminal: `t7`, a name, or `machine/t7`.",
           "name": "terminal",
           "required": true,
