@@ -100,8 +100,10 @@ fn shown(payload: &[u8]) -> std::borrow::Cow<'_, [u8]> {
             out.to_mut().drain(at..at + mode.len());
         }
     }
-    if out.windows(OFF.len()).any(|w| w == OFF) {
-        out.to_mut().extend_from_slice(b"\x1b[?1004h");
+    // Turned back on where it was turned off, not at the end: a payload can
+    // end partway through a character that the next payload finishes.
+    while let Some(at) = out.windows(OFF.len()).position(|w| w == OFF) {
+        out.to_mut()[at + OFF.len() - 1] = b'h';
     }
     out
 }
@@ -395,6 +397,20 @@ mod tests {
         assert!(t.dec_mode(1004), "after first paint");
         t.write(&shown(b"hi\x1b[?1004l there"));
         assert!(t.dec_mode(1004), "after the program turned them off");
+    }
+
+    #[test]
+    fn a_character_cut_off_by_the_first_paint_joins_the_bytes_after_it() {
+        // 上 is E4 B8 8A; the program has printed only E4 when the viewer attaches.
+        let mut screen = ghostty_vt::Terminal::new(80, 24, 0);
+        screen.write(b"A \xe4");
+        let mut first = screen.paint(0);
+        first.extend(screen.continuation().unwrap());
+        let mut t = ghostty_vt::Terminal::new(80, 24, 0);
+        t.write(&shown(&first));
+        t.write(&shown(b"\xb8\x8a B"));
+        assert_eq!(t.plain_text().trim_end(), "A 上 B");
+        assert!(t.dec_mode(1004));
     }
 
     #[test]
