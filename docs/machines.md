@@ -72,8 +72,21 @@ automatic authentication on any platform, run:
 ssh -o BatchMode=yes -o ControlPath=none box exit
 ```
 
-Keys do not keep the network alive during sleep. Once the network returns, core
-can use them on its next retry; network detection and retry delays still apply.
+Keys do not keep the network alive during sleep. On macOS, core listens for the
+system's completed-wake notification and immediately checks existing connections.
+A connection that answers the check within three seconds stays open. Otherwise,
+core replaces it with a fresh SSH connection, bypassing any stale shared login;
+viewers reattach and the programs on the remote machine keep running.
+
+Wake also interrupts a pending connection attempt or retry delay. For the next
+30 seconds, connection attempts get three seconds and retry delays grow from
+250 ms to at most one second, so Wi-Fi returning a little later does not leave
+core waiting through its usual backoff. After that window, the usual timeouts
+and backoff (up to 30 seconds) apply. Automatic authentication still needs working
+keys or an agent. The OS must finish waking and the network must become reachable;
+this is not a promise of a fixed time from opening the lid.
+
+Other platforms retain their existing connection detection and retry behavior.
 
 To reach a separate core session on the same host:
 

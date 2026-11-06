@@ -178,6 +178,12 @@ a public key with `hc machine login vps --copy-id ~/.ssh/id_ed25519.pub` in a te
 login before reconnecting; it never generates keys or stores passwords. See
 `docs/machines.md` for SSH config and macOS Keychain setup.
 
+On macOS, system wake immediately probes connected machines (three seconds), or
+interrupts a stalled dial/backoff. Dead lines reconnect without reusing a stale
+SSH master; healthy ones stay open. Attempts are limited to three seconds with
+at most a one-second retry delay for 30 seconds after wake, then normal backoff
+resumes. Remote programs keep running and viewers reattach.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.

@@ -18,6 +18,22 @@ mod macos_launchd;
 mod macos_responsibility;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
+#[cfg(target_os = "macos")]
+mod macos_wake;
+
+/// One process-wide wake source; each saved machine observes it independently.
+/// Other platforms retain their existing connection and retry behavior.
+pub fn wake_events() -> tokio::sync::watch::Receiver<u64> {
+    static EVENTS: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> = std::sync::OnceLock::new();
+    EVENTS
+        .get_or_init(|| {
+            let (events, _) = tokio::sync::watch::channel(0);
+            #[cfg(target_os = "macos")]
+            macos_wake::start(events.clone());
+            events
+        })
+        .subscribe()
+}
 
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
 pub fn daemon_startup() -> bool {
