@@ -205,6 +205,11 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `hc run` without a command starts this machine's own shell. On macOS,
   this is a login shell so it loads the login environment; explicit commands
   are unchanged. Recovery shells use the same rule.
+- A direct terminal command named `hc` or `herdr-core` uses the serving core's
+  executable if the name is absent from the terminal's PATH (Windows also
+  accepts `.exe`, case-insensitively, and searches PATHEXT). Existing PATH
+  choices and explicit paths stay unchanged; shell command lines don't get
+  this fallback.
 - `shell = ["nu"]` in `~/.config/herdr-core/config.toml` (Windows:
   `%APPDATA%\herdr-core\config.toml`) overrides the shell for new terminals
   and recovery. Each list item is one argument. Changes apply on the next

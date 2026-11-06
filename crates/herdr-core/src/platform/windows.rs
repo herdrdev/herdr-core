@@ -792,12 +792,7 @@ impl Process {
 /// through cmd (npm installs agents as `.cmd` shims).
 fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
     let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
-    let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()).unwrap_or_default();
-    let exts = env
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("PATHEXT"))
-        .map_or(".COM;.EXE;.BAT;.CMD".into(), |(_, v)| v.clone());
-    let found = resolve(program, &path, &exts)
+    let found = resolve_env(program, env)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{program}: not found on PATH")))?;
     let ext = found.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if ext == "cmd" || ext == "bat" {
@@ -856,6 +851,18 @@ fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
     }
     line.push('"');
     Ok(line)
+}
+
+pub(crate) fn missing_core_command(program: &str, env: &BTreeMap<String, String>, _cwd: &str) -> bool {
+    ["hc", "herdr-core", "hc.exe", "herdr-core.exe"].iter().any(|name| program.eq_ignore_ascii_case(name))
+        && resolve_env(program, env).is_none()
+}
+
+fn resolve_env(program: &str, env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map_or("", |(_, v)| v.as_str());
+    let exts =
+        env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATHEXT")).map_or(".COM;.EXE;.BAT;.CMD", |(_, v)| v.as_str());
+    resolve(program, path, exts)
 }
 
 fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
