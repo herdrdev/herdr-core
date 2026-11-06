@@ -172,7 +172,10 @@ fn ssh(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> std::proces
     #[cfg(unix)]
     {
         let master = if extra.iter().any(|o| o.starts_with("ControlPersist")) { "auto" } else { "no" };
-        ssh.arg("-S").arg(control_path(paths, target)).args(["-o", &format!("ControlMaster={master}")]);
+        if !extra.contains(&"ControlPath=none") {
+            ssh.arg("-S").arg(control_path(paths, target));
+        }
+        ssh.args(["-o", &format!("ControlMaster={master}")]);
     }
     #[cfg(windows)]
     let _ = (paths, target); // Windows OpenSSH has no ControlMaster support.
@@ -199,6 +202,52 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
         Ok(_) => Err(RpcError::new("needs_login", format!("logging in to {target} failed"), "ssh said why, above")),
         Err(e) => Err(unreachable(to, &format!("cannot run ssh: {e}"))),
     }
+}
+
+/// Explicit public-key installation, followed by an independent authentication
+/// check: an existing password-authenticated master must not make it pass.
+pub fn copy_id(to: Reach, public_key: &Path) -> Result<(), RpcError> {
+    check_target(to)?;
+    if to.via {
+        return Err(RpcError::invalid_params("--copy-id needs an SSH target, not a --via command"));
+    }
+    if public_key.extension().is_none_or(|ext| ext != "pub") || !public_key.is_file() {
+        return Err(RpcError::invalid_params("--copy-id needs an existing public key file ending in .pub"));
+    }
+    // An absolute path cannot be mistaken for another ssh-copy-id option.
+    let public_key = std::fs::canonicalize(public_key).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+    crate::platform::copy_ssh_id(to.target, &public_key)?;
+    let status = std::process::Command::new("ssh")
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=2",
+            to.target,
+            "exit",
+        ])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|e| unreachable(to, &format!("cannot run ssh: {e}")))?;
+    if !status.success() {
+        return Err(RpcError::new(
+            "needs_login",
+            "ssh-copy-id succeeded, but a fresh automatic SSH login failed",
+            "check SSH IdentityFile and your agent, the server's authorized keys and home/.ssh permissions; ssh said why, above",
+        ));
+    }
+    Ok(())
 }
 
 /// Ends the shared login to `target`, if one is up (a forgotten machine).
@@ -230,7 +279,13 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// ~/.local/bin. On Windows, whose shell may be cmd or PowerShell, one line
 /// both read alike; the installer put hc on PATH. Never prompts: a login a
 /// person must type fails fast.
-fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
+fn pipe(
+    paths: &crate::paths::Paths,
+    to: Reach,
+    session: Option<&str>,
+    windows: bool,
+    reuse_login: bool,
+) -> tokio::process::Command {
     let remote = if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
@@ -242,7 +297,10 @@ fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: 
             "sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x \"$p\" ] || {{ echo \"{NOT_HERE}\" >&2; exit 127; }}; {session}exec \"$p\" connect'"
         )
     };
-    let options = ["BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "ServerAliveCountMax=4"];
+    let mut options = vec!["BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "ServerAliveCountMax=4"];
+    if !reuse_login {
+        options.push("ControlPath=none");
+    }
     let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote));
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
@@ -289,12 +347,26 @@ pub async fn dial(
     session: Option<&str>,
     hello: Value,
 ) -> Result<Dialed, RpcError> {
+    dial_with_login(paths, to, session, hello, true).await
+}
+
+/// A wake recovery may bypass a stale shared password login. Custom --via
+/// commands still own their transport; normal dials keep sharing the login.
+pub async fn dial_with_login(
+    paths: &crate::paths::Paths,
+    to: Reach<'_>,
+    session: Option<&str>,
+    hello: Value,
+    reuse_login: bool,
+) -> Result<Dialed, RpcError> {
     let mut probe_windows = false;
-    match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
-        Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
-            Err(_) if !is_windows(to.target) => Err(e),
-            result => result,
-        },
+    match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows, reuse_login).await {
+        Err(e) if probe_windows => {
+            match dial_once(paths, to, session, hello, true, &mut probe_windows, reuse_login).await {
+                Err(_) if !is_windows(to.target) => Err(e),
+                result => result,
+            }
+        }
         other => other,
     }
 }
@@ -306,10 +378,12 @@ async fn dial_once(
     hello: Value,
     windows: bool,
     probe_windows: &mut bool,
+    reuse_login: bool,
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
-    let mut child =
-        pipe(paths, to, session, windows).spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
+    let mut child = pipe(paths, to, session, windows, reuse_login)
+        .spawn()
+        .map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let (mut stdin, stdout, mut stderr) =
         (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let mut params = json!({"generation": crate::api::GENERATION});
@@ -608,6 +682,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn key_installation_rejects_custom_commands_and_non_public_paths_before_running_tools() {
+        for (to, key) in [
+            (Reach { target: "fly ssh console -C", via: true }, "key.pub"),
+            (Reach { target: "rohan", via: false }, "id_ed25519"),
+            (Reach { target: "rohan", via: false }, "/nonexistent/key.pub"),
+            (Reach { target: "-oProxyCommand=bad", via: false }, "key.pub"),
+        ] {
+            assert_eq!(copy_id(to, Path::new(key)).unwrap_err().kind, "invalid_params");
+        }
+    }
+
+    #[test]
+    fn a_wake_redial_bypasses_the_old_shared_login() {
+        let paths = crate::paths::Paths::from_env().unwrap();
+        let cmd = pipe(&paths, Reach { target: "box", via: false }, None, false, false);
+        let args: Vec<_> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "ControlPath=none"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-S"), "-S would override ControlPath=none: {args:?}");
+    }
+
+    #[test]
     fn a_name_comes_from_the_target_host() {
         let default_name = |target| super::default_name(target, |_| false);
         assert_eq!(default_name("rohan").as_deref(), Some("rohan"));
@@ -634,7 +729,7 @@ mod tests {
     #[test]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
         let paths = crate::paths::Paths::from_env().unwrap();
-        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
+        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true, true);
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         assert_eq!(
             line,

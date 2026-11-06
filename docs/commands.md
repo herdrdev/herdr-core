@@ -367,8 +367,9 @@ Arguments:
   <MACHINE>  The machine's name
 
 Options:
-      --json  JSON output even in a terminal
-  -h, --help  Print help
+      --copy-id <PUBLIC_KEY>  Install this public key with ssh-copy-id, then verify a fresh automatic login before reconnecting (macOS/Linux; a compatible SSH server required)
+      --json                  JSON output even in a terminal
+  -h, --help                  Print help
 ```
 
 ## hc machine ls
