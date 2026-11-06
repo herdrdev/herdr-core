@@ -193,6 +193,9 @@ file and create parent folders. Edits require the old text exactly once;
 text rewriting needed: only the edit travels.
 Remote paths start at that machine's home unless you set `--cwd`; local
 paths start at your current folder. Prefer explicit paths for remote work.
+An X display forwarded over ssh (`ssh -X`) travels with the session that
+brought it, so a program in a terminal can reach the X server on the other
+side; the machine's own desktop display does not.
 
 ## Status, recovery, and cleanup
 

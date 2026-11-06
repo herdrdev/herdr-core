@@ -216,17 +216,26 @@ fn write_environment(run: &Path, name: &str, env: &BTreeMap<String, String>) -> 
 /// service's, and only names systemd accepts (a bash function's isn't one).
 fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let ssh = super::SSH_LOGIN.iter().any(|k| env.contains_key(*k));
+    // A forwarded display is the ssh login's own X server: it and its cookie
+    // belong to that session, and the programs need them to reach it.
+    let forwarded = ssh && env.get("DISPLAY").is_some_and(|d| is_forwarded(d));
     let valid = |k: &str| {
         k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     };
     env.retain(|k, _| {
         valid(k)
-            && (!ssh || !SESSION.contains(&k.as_str()))
+            && (!ssh || !SESSION.contains(&k.as_str()) || (forwarded && (k == "DISPLAY" || k == "XAUTHORITY")))
             && !SERVICE.contains(&k.as_str())
             && !super::SSH_LOGIN.contains(&k.as_str())
     });
     env
+}
+
+/// Whether a DISPLAY is one ssh forwarded: ssh's X11 forwarding names the
+/// client's X server on localhost. The server's own displays are bare numbers.
+fn is_forwarded(display: &str) -> bool {
+    display.starts_with("localhost:")
 }
 
 /// systemd-run's arguments for one hc service, without environment values.
@@ -338,6 +347,11 @@ pub(super) fn inherited_env() -> io::Result<BTreeMap<String, String>> {
 pub fn apply_session(env: &mut BTreeMap<String, String>, manager: &BTreeMap<String, String>) {
     for &k in SESSION {
         if let Some(v) = manager.get(k) {
+            // A forwarded display is the caller's own X server; the manager's
+            // is the desktop's, and it must not displace it.
+            if k == "DISPLAY" && env.get("DISPLAY").is_some_and(|d| is_forwarded(d)) {
+                continue;
+            }
             env.insert(k.into(), v.clone());
         }
     }
@@ -476,5 +490,32 @@ mod tests {
         super::apply_session(&mut env, &map(&[("PATH", "/x"), ("SSH_AUTH_SOCK", "/run/user/1/my keys/ssh")]));
         assert_eq!(env["SSH_AUTH_SOCK"], "/run/user/1/my keys/ssh");
         assert_eq!((env["PATH"].as_str(), env["DISPLAY"].as_str()), ("/usr/bin", ":1"), "only what the manager has");
+    }
+
+    #[test]
+    fn a_forwarded_display_travels_with_the_ssh_login_that_brought_it() {
+        let forwarded = super::service_env(map(&[
+            ("SSH_CONNECTION", "100.1.1.1 1 100.2.2.2 22"),
+            ("DISPLAY", "localhost:10"),
+            ("XAUTHORITY", "/home/u/.Xauthority"),
+            ("SSH_AUTH_SOCK", "/tmp/ssh-x/agent.1"),
+        ]));
+        assert_eq!(
+            forwarded.keys().collect::<Vec<_>>(),
+            ["DISPLAY", "XAUTHORITY"],
+            "the display and its cookie, not the agent"
+        );
+
+        // The server's own display is the desktop's: it goes with the rest.
+        let own = super::service_env(map(&[("SSH_CONNECTION", "100.1.1.1 1 100.2.2.2 22"), ("DISPLAY", ":1")]));
+        assert!(own.is_empty(), "a display of the server's own is not the login's");
+    }
+
+    #[test]
+    fn the_desktops_display_does_not_displace_a_forwarded_one() {
+        let mut env = map(&[("DISPLAY", "localhost:10"), ("PATH", "/usr/bin")]);
+        super::apply_session(&mut env, &map(&[("DISPLAY", ":1"), ("XAUTHORITY", "/run/user/1/gdm/Xauthority")]));
+        assert_eq!(env["DISPLAY"], "localhost:10", "the forwarded display stays");
+        assert_eq!(env["XAUTHORITY"], "/run/user/1/gdm/Xauthority", "the cookie the manager has");
     }
 }
