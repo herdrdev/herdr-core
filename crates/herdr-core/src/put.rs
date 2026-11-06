@@ -47,8 +47,15 @@ fn clean(name: &str) -> String {
     if safe.is_empty() { "file".into() } else { safe }
 }
 
-/// Writes `bytes` as `name` (or `name-2.ext`, ... when taken) beside terminal `id`.
-pub fn stage(state: &Path, id: u32, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+/// What a put lands: bytes it carried, or a staged `file.upload`.
+pub enum Source {
+    Bytes(Vec<u8>),
+    Staged(PathBuf),
+}
+
+/// Lands `source` as `name` (or `name-2.ext`, ... when taken) beside terminal
+/// `id`; returns where and how many bytes.
+pub fn stage(state: &Path, id: u32, name: &str, source: Source) -> std::io::Result<(PathBuf, usize)> {
     let dir = dir(state, id);
     std::fs::create_dir_all(&dir)?;
     let name = clean(name);
@@ -59,7 +66,20 @@ pub fn stage(state: &Path, id: u32, name: &str, bytes: &[u8]) -> std::io::Result
     for n in 1.. {
         let path = dir.join(if n == 1 { name.clone() } else { format!("{stem}-{n}{ext}") });
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut f) => return std::io::Write::write_all(&mut f, bytes).map(|_| path),
+            Ok(mut f) => {
+                return match source {
+                    Source::Bytes(bytes) => std::io::Write::write_all(&mut f, &bytes).map(|_| (path, bytes.len())),
+                    // The name is held; the staged file replaces the empty one, same filesystem.
+                    // Closed first: Windows won't replace a file that is open.
+                    Source::Staged(staged) => {
+                        drop(f);
+                        let len = std::fs::metadata(&staged)?.len() as usize;
+                        std::fs::rename(&staged, &path).map(|_| (path.clone(), len)).inspect_err(|_| {
+                            let _ = std::fs::remove_file(&path);
+                        })
+                    }
+                };
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }

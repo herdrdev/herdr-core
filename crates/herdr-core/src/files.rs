@@ -16,19 +16,32 @@ pub fn read(p: FileReadParams, from_afar: bool) -> Result<FileReadResult, RpcErr
     lines(&text, p.offset.unwrap_or(1), p.limit.unwrap_or(usize::MAX), MAX_BYTES)
 }
 
-pub fn write(p: FileWriteParams, from_afar: bool) -> Result<FileResult, RpcError> {
+pub fn write(p: FileWriteParams, from_afar: bool, state: &Path) -> Result<FileResult, RpcError> {
+    let path = resolve(&p.at, from_afar);
+    if let Some(upload) = &p.upload {
+        if !p.data.is_empty() {
+            return Err(RpcError::invalid_params("give data or upload, not both"));
+        }
+        let staged = crate::upload::staged(state, upload)?;
+        let written = swap_in(&path, |f| std::io::copy(&mut std::fs::File::open(&staged)?, f))?;
+        let _ = std::fs::remove_file(&staged);
+        return Ok(written);
+    }
     let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
     if bytes.len() > MAX_BYTES {
-        return Err(RpcError::invalid_params(format!("at most {} MB per write", MAX_BYTES >> 20)));
+        return Err(RpcError::new(
+            "invalid_params",
+            format!("at most {} MB per write", MAX_BYTES >> 20),
+            "send it in parts with file.upload, then write it with upload",
+        ));
     }
-    let path = resolve(&p.at, from_afar);
-    swap_in(&path, &bytes)
+    swap_in(&path, |f| std::io::Write::write_all(f, &bytes).map(|()| bytes.len() as u64))
 }
 
 pub fn edit(p: FileEditParams, from_afar: bool) -> Result<FileResult, RpcError> {
     let path = resolve(&p.at, from_afar);
     let edited = apply(&text_of(&path)?, &p.edits)?;
-    swap_in(&path, edited.as_bytes())
+    swap_in(&path, |f| std::io::Write::write_all(f, edited.as_bytes()).map(|()| edited.len() as u64))
 }
 
 /// Relative paths start at `cwd`, as exec's programs do.
@@ -153,7 +166,7 @@ fn through_links(path: &Path) -> PathBuf {
 
 /// Writes beside the file and renames it in: a reader sees old or new, never
 /// half. Through a symlink to its target; an existing file keeps its mode.
-fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
+fn swap_in(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<u64>) -> Result<FileResult, RpcError> {
     let path = through_links(path);
     let dir = path.parent().ok_or_else(|| RpcError::invalid_params("a file, not a folder"))?;
     std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
@@ -169,14 +182,16 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
     }
     let written = new
         .open(&tmp)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, bytes))
-        .and_then(|()| mode.map_or(Ok(()), |m| std::fs::set_permissions(&tmp, m)))
-        .and_then(|()| std::fs::rename(&tmp, &path));
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(io(&path, e));
+        .and_then(|mut f| fill(&mut f))
+        .and_then(|n| mode.map_or(Ok(()), |m| std::fs::set_permissions(&tmp, m)).map(|()| n))
+        .and_then(|n| std::fs::rename(&tmp, &path).map(|()| n));
+    match written {
+        Ok(n) => Ok(FileResult { path: path.display().to_string(), bytes: n as usize }),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(io(&path, e))
+        }
     }
-    Ok(FileResult { path: path.display().to_string(), bytes: bytes.len() })
 }
 
 #[cfg(test)]

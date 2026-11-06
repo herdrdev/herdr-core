@@ -160,7 +160,8 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 `[hc] still running as t3` and exits 124, but the program keeps running.
 Use the returned address to wait/read it; don't launch a duplicate.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
-`hc put <t> <file>` sends a file beside a terminal and prints its destination.
+`hc put <t> <file>` sends a file beside a terminal and prints its destination;
+any size (past 8 MB it goes in parts).
 `hc label <t> key=value` adds labels.
 
 ## Other machines and files
@@ -186,8 +187,8 @@ hc file edit --on vps /srv/app/src/x.rs --old 'exact text' --new 'replacement'
 hc file write --on vps /srv/app/src/y.rs < content.txt
 ```
 
-`exec -i` feeds piped input to the command. File writes replace the whole
-file and create parent folders. Edits require the old text exactly once;
+`exec -i` feeds piped input to the command. File writes take any size,
+replace the whole file and create parent folders. Edits require the old text exactly once;
 `edit_failed` means add enough context to make it unique. Repeat `--old` and
 `--new` pairs for multiple changes; all succeed or none do. No remote shell
 text rewriting needed: only the edit travels.

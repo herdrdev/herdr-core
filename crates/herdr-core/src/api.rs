@@ -119,6 +119,9 @@ methods! { Ctx<'_>;
     "file.write" => file_write, FileWriteParams => FileResult,
         "Write a file here or on a machine (`on`), making missing folders. Swapped in whole: a reader sees old or new, never half. An existing file keeps its mode; a symlink is followed.",
         errors ["invalid_params", "io", "machine_unknown", "unavailable", "needs_update"];
+    "file.upload" => file_upload, UploadParams => UploadResult,
+        "Stage part of a file too big for one message, here or on a machine (`on`): each part at most 8 MB raw, at `offset` = bytes staged so far (a part sent twice or lost is refused). Then `terminal.put` or `file.write` with `upload` takes it whole. Untaken uploads are removed after a day.",
+        errors ["invalid_params", "not_found", "io", "machine_unknown", "unavailable", "needs_update"];
     "file.edit" => file_edit, FileEditParams => FileResult,
         "Edit a text file here or on a machine (`on`): each `old` must be found exactly once in the file as it was, edits must not overlap; all are made or none. Written like file.write.",
         errors ["invalid_params", "edit_failed", "not_found", "not_text", "io", "machine_unknown", "unavailable", "needs_update"];
@@ -503,8 +506,13 @@ async fn file_read(core: Ctx<'_>, p: FileReadParams) -> Result<FileReadResult, R
 }
 
 async fn file_write(core: Ctx<'_>, p: FileWriteParams) -> Result<FileResult, RpcError> {
-    let afar = from_afar(core);
-    blocking(move || crate::files::write(p, afar)).await
+    let (afar, state) = (from_afar(core), core.paths.state.clone());
+    blocking(move || crate::files::write(p, afar, &state)).await
+}
+
+async fn file_upload(core: Ctx<'_>, p: UploadParams) -> Result<UploadResult, RpcError> {
+    let state = core.paths.state.clone();
+    blocking(move || crate::upload::append(&state, p)).await
 }
 
 async fn file_edit(core: Ctx<'_>, p: FileEditParams) -> Result<FileResult, RpcError> {
@@ -517,12 +525,24 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, RpcError> + S
 }
 
 async fn terminal_put(core: Ctx<'_>, p: PutParams) -> Result<PutResult, RpcError> {
-    let too_big = || RpcError::invalid_params(format!("at most {} MB per put", crate::put::MAX_BYTES >> 20));
+    let too_big = || {
+        RpcError::new(
+            "invalid_params",
+            format!("at most {} MB per put", crate::put::MAX_BYTES >> 20),
+            "send it in parts with file.upload, then put it with upload",
+        )
+    };
     if p.data.len() / 4 * 3 > crate::put::MAX_BYTES + 3 {
         return Err(too_big());
     }
-    let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
-    if bytes.len() > crate::put::MAX_BYTES {
+    let source = match &p.upload {
+        Some(_) if !p.data.is_empty() => return Err(RpcError::invalid_params("give data or upload, not both")),
+        Some(upload) => crate::put::Source::Staged(crate::upload::staged(&core.paths.state, upload)?),
+        None => crate::put::Source::Bytes(
+            crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?,
+        ),
+    };
+    if matches!(&source, crate::put::Source::Bytes(b) if b.len() > crate::put::MAX_BYTES) {
         return Err(too_big());
     }
     let id = resolve(core, &p.terminal)?;
@@ -533,9 +553,9 @@ async fn terminal_put(core: Ctx<'_>, p: PutParams) -> Result<PutResult, RpcError
             "nothing there to read it",
         ));
     }
-    let path = crate::put::stage(&core.paths.state, id, &p.name, &bytes)
+    let (path, bytes) = crate::put::stage(&core.paths.state, id, &p.name, source)
         .map_err(|e| RpcError::internal(format!("cannot write the file: {e}")))?;
-    Ok(PutResult { path: path.display().to_string(), bytes: bytes.len() })
+    Ok(PutResult { path: path.display().to_string(), bytes })
 }
 
 async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcError> {
