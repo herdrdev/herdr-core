@@ -38,7 +38,8 @@ pub(super) fn up_to_date(paths: &Paths, release: &str, human: String) -> Result<
         if older(&format!("hc {}", status["version"].as_str().unwrap_or_default()), &this) {
             client::call(&stream, "server.restart", json!({}))?;
             wait_closed(&stream);
-            let status = call(paths, "server.status", json!({}))?;
+            let stream = client::connect_or_start_explicit(paths)?;
+            let status = client::call(&stream, "server.status", json!({}))?;
             out.json["restarted"] = true.into();
             out.json["pid"] = status["pid"].clone();
             out.human.push_str(&format!("; older core restarted (pid {}), terminals kept", status["pid"]));
@@ -91,7 +92,12 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         }
         None => false,
     };
-    let status = call(paths, "server.status", json!({}))?;
+    let status = if restarted {
+        let stream = client::connect_or_start_explicit(paths)?;
+        client::call(&stream, "server.status", json!({}))?
+    } else {
+        call(paths, "server.status", json!({}))?
+    };
     let human = format!(
         "{shown}: {was} -> {now}; core running again (pid {}), terminals kept{}",
         status["pid"],
