@@ -93,6 +93,12 @@ fn a_write_swaps_the_file_in_whole_and_keeps_what_it_was() {
     for name in ["fifo", "huge"] {
         assert_eq!(s.err(&["--json", "file", "read", "--cwd", &cwd, name]).1["error"]["kind"], "invalid_params");
     }
-    let big = s.hc_input(&["--json", "file", "write", "--cwd", &cwd, "big"], &vec![b'x'; (8 << 20) + 1]);
-    assert!(String::from_utf8_lossy(&big.stderr).contains("invalid_params"), "8 MB at most");
+    // Past one message: sent in parts, still swapped in whole with its mode.
+    let big: Vec<u8> = (0..(20 << 20) as u32).map(|i| (i % 251) as u8).collect();
+    let wrote = s.hc_input(&["--json", "file", "write", "--cwd", &cwd, "run.sh"], &big);
+    assert!(wrote.status.success(), "{}", String::from_utf8_lossy(&wrote.stderr));
+    assert!(std::fs::read(&script).unwrap() == big);
+    assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o750, "its mode kept");
+    let temps = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".hc"));
+    assert_eq!(temps.count(), 0, "no temp file left");
 }

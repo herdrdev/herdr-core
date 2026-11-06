@@ -1362,6 +1362,25 @@
         ],
         "type": "object"
       },
+      "UploadResult": {
+        "properties": {
+          "bytes": {
+            "description": "Bytes staged so far: the next part's offset.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload": {
+            "description": "Its id, for the next part and for `terminal.put` or `file.write`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload",
+          "bytes"
+        ],
+        "type": "object"
+      },
       "WaitResult": {
         "properties": {
           "children": {
@@ -2835,11 +2854,12 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "description": "Its bytes, base64; at most 8 MB raw.",
+          "description": "Its bytes, base64; at most 8 MB raw. Empty with `upload`.",
           "name": "data",
-          "required": true,
+          "required": false,
           "schema": {
-            "description": "Its bytes, base64; at most 8 MB raw.",
+            "default": "",
+            "description": "Its bytes, base64; at most 8 MB raw. Empty with `upload`.",
             "type": "string"
           }
         },
@@ -2859,6 +2879,18 @@
           "schema": {
             "description": "The terminal: `t7`, a name, or `machine/t7`.",
             "type": "string"
+          }
+        },
+        {
+          "description": "Take a staged `file.upload` instead of `data` (any size; it is used up).",
+          "name": "upload",
+          "required": false,
+          "schema": {
+            "description": "Take a staged `file.upload` instead of `data` (any size; it is used up).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       ],
@@ -3185,11 +3217,12 @@
           }
         },
         {
-          "description": "Its new content, base64, at most 8 MB raw (CLI: what is piped in).",
+          "description": "Its new content, base64, at most 8 MB raw (CLI: what is piped in). Empty with `upload`.",
           "name": "data",
-          "required": true,
+          "required": false,
           "schema": {
-            "description": "Its new content, base64, at most 8 MB raw (CLI: what is piped in).",
+            "default": "",
+            "description": "Its new content, base64, at most 8 MB raw (CLI: what is piped in). Empty with `upload`.",
             "type": "string"
           }
         },
@@ -3213,12 +3246,126 @@
             "description": "The file: absolute, or from `cwd`.",
             "type": "string"
           }
+        },
+        {
+          "description": "Take a staged `file.upload` instead of `data` (any size; it is used up).",
+          "name": "upload",
+          "required": false,
+          "schema": {
+            "description": "Take a staged `file.upload` instead of `data` (any size; it is used up).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       ],
       "result": {
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/FileResult"
+        }
+      }
+    },
+    {
+      "description": "Stage part of a file too big for one message, here or on a machine (`on`): each part at most 8 MB raw, at `offset` = bytes staged so far (a part sent twice or lost is refused). Then `terminal.put` or `file.write` with `upload` takes it whole. Untaken uploads are removed after a day.",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "io"
+          },
+          "message": "io"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_update"
+          },
+          "message": "needs_update"
+        }
+      ],
+      "name": "file.upload",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "This part, base64; at most 8 MB raw.",
+          "name": "data",
+          "required": true,
+          "schema": {
+            "description": "This part, base64; at most 8 MB raw.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Where this part goes: the bytes staged so far (0 to start).",
+          "name": "offset",
+          "required": false,
+          "schema": {
+            "default": 0,
+            "description": "Where this part goes: the bytes staged so far (0 to start).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "On another machine (see `hc machine ls`): the one that will take it.",
+          "name": "on",
+          "required": false,
+          "schema": {
+            "description": "On another machine (see `hc machine ls`): the one that will take it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "The upload to add to; omitted to start one.",
+          "name": "upload",
+          "required": false,
+          "schema": {
+            "description": "The upload to add to; omitted to start one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/UploadResult"
         }
       }
     },

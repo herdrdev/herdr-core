@@ -486,9 +486,14 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             Out { json: r, human }
         }
         Cmd::Put(mut p) => {
-            let bytes = std::fs::read(&p.name)
+            let file = std::fs::File::open(&p.name)
                 .map_err(|e| RpcError::new("usage", format!("cannot read {}: {e}", p.name), ""))?;
-            p.data = crate::put::encode(&bytes);
+            // Staged on the terminal's machine: `machine/t7` names it.
+            let on = p.terminal.split_once('/').map(|(machine, _)| machine.to_string());
+            match payload(file, on.as_deref(), &call)? {
+                Payload::Inline(bytes) => p.data = crate::put::encode(&bytes),
+                Payload::Upload(id) => p.upload = Some(id),
+            }
             let r = call("terminal.put", to(&p))?;
             let human = r["path"].as_str().unwrap_or_default().to_string();
             Out { json: r, human }
@@ -881,7 +886,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("machine rm", "machine.rm"),
 ];
 /// Client-only methods: handshake and opaque document storage.
-pub const API_ONLY: &[&str] = &["hello", "doc.get", "doc.set"];
+pub const API_ONLY: &[&str] = &["hello", "doc.get", "doc.set", "file.upload"];
 
 #[cfg(test)]
 mod tests {

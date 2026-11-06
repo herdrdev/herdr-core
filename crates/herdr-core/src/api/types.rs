@@ -569,9 +569,14 @@ pub struct PutParams {
     /// The file's name, kept so `.png` stays `.png` (CLI: the local file to send).
     #[arg(value_name = "FILE")]
     pub name: String,
-    /// Its bytes, base64; at most 8 MB raw.
+    /// Its bytes, base64; at most 8 MB raw. Empty with `upload`.
     #[arg(skip)]
+    #[serde(default)]
     pub data: String,
+    /// Take a staged `file.upload` instead of `data` (any size; it is used up).
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -687,9 +692,37 @@ pub struct FileWriteParams {
     #[command(flatten)]
     #[serde(flatten)]
     pub at: FileAt,
-    /// Its new content, base64, at most 8 MB raw (CLI: what is piped in).
+    /// Its new content, base64, at most 8 MB raw (CLI: what is piped in). Empty with `upload`.
     #[arg(skip)]
+    #[serde(default)]
     pub data: String,
+    /// Take a staged `file.upload` instead of `data` (any size; it is used up).
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct UploadParams {
+    /// On another machine (see `hc machine ls`): the one that will take it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+    /// The upload to add to; omitted to start one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<String>,
+    /// Where this part goes: the bytes staged so far (0 to start).
+    #[serde(default)]
+    pub offset: u64,
+    /// This part, base64; at most 8 MB raw.
+    pub data: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct UploadResult {
+    /// Its id, for the next part and for `terminal.put` or `file.write`.
+    pub upload: String,
+    /// Bytes staged so far: the next part's offset.
+    pub bytes: u64,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]

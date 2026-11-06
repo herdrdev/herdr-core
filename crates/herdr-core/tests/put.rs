@@ -32,15 +32,33 @@ fn a_file_lands_beside_the_terminal_keeps_its_name_and_goes_with_it() {
     s.json(&["rm", &here]);
     assert!(!std::path::Path::new(path).exists(), "removed with the terminal");
 
-    std::fs::write(&file, vec![0u8; 9 << 20]).unwrap();
-    assert_eq!(
-        s.err(&["--json", "put", &there, file.to_str().unwrap()]).1["error"]["kind"],
-        "invalid_params",
-        "too big"
-    );
-    // Too big even to carry to rohan: refused here, and the line lives on.
-    std::fs::write(&file, vec![0u8; 13 << 20]).unwrap();
-    assert_eq!(s.err(&["--json", "put", &there, file.to_str().unwrap()]).1["error"]["kind"], "invalid_params");
+    // Past one message (and past one frame to rohan): sent in parts, landed whole.
+    let big: Vec<u8> = (0..(21 << 20) as u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&file, &big).unwrap();
+    let landed = s.json(&["put", &there, file.to_str().unwrap()]);
+    assert_eq!(landed["bytes"].as_u64(), Some(21 << 20), "{landed}");
+    let landed = std::path::Path::new(landed["path"].as_str().unwrap());
+    assert!(std::fs::read(landed).unwrap() == big, "same bytes on rohan");
+    let state = landed.ancestors().nth(3).unwrap(); // <state>/files/<terminal>/shot.png
+    assert_eq!(std::fs::read_dir(state.join("uploads")).unwrap().count(), 0, "the upload was used up");
     std::fs::write(&file, b"small").unwrap();
     s.json(&["put", &there, file.to_str().unwrap()]);
+}
+
+#[test]
+fn an_upload_is_taken_once_and_only_whole() {
+    let s = Session::new();
+    let t = run(&s, &["sleep", "100"]);
+    let mut conn = s.connect();
+    let mut call = |method: &str, params: serde_json::Value| conn.call(1, method, params);
+    let first = call("file.upload", serde_json::json!({"offset": 0, "data": "aGVsbG8g"})); // "hello "
+    let id = first["result"]["upload"].clone();
+    let resent = call("file.upload", serde_json::json!({"upload": id, "offset": 0, "data": "d29ybGQ="}));
+    assert_eq!(resent["error"]["data"]["kind"], "invalid_params", "offset is what is staged: {resent}");
+    let second = call("file.upload", serde_json::json!({"upload": id, "offset": 6, "data": "d29ybGQ="}));
+    assert_eq!(second["result"]["bytes"], 11, "{second}");
+    let put = call("terminal.put", serde_json::json!({"terminal": t, "name": "a.txt", "upload": id}));
+    assert_eq!(std::fs::read(put["result"]["path"].as_str().unwrap()).unwrap(), b"hello world");
+    let again = call("terminal.put", serde_json::json!({"terminal": t, "name": "a.txt", "upload": id}));
+    assert_eq!(again["error"]["data"]["kind"], "not_found", "used up: {again}");
 }
