@@ -20,6 +20,21 @@ use windows_sys::Win32::System::Pipes::*;
 use windows_sys::Win32::System::Threading::*;
 use windows_sys::core::BOOL;
 
+pub fn copy_ssh_id(_target: &str, _public_key: &Path) -> Result<(), crate::rpc::RpcError> {
+    Err(crate::rpc::RpcError::new(
+        "unavailable",
+        "--copy-id is supported on macOS and Linux",
+        "install the public key using the server's normal procedure, then run hc machine login",
+    ))
+}
+
+#[test]
+fn public_key_installation_on_windows_explains_the_manual_setup() {
+    let error = copy_ssh_id("box", Path::new("key.pub")).unwrap_err();
+    assert_eq!(error.kind, "unavailable");
+    assert!(error.hint.contains("install the public key"));
+}
+
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     s.encode_wide().chain(Some(0)).collect()

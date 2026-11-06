@@ -7,6 +7,24 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+/// The person's explicit request to install a public key. Only the standard
+/// tool writes authorized_keys; SSH config and private keys remain untouched.
+pub fn copy_ssh_id(target: &str, public_key: &Path) -> Result<(), crate::rpc::RpcError> {
+    use crate::rpc::RpcError;
+    let status = Command::new("ssh-copy-id")
+        .arg("-i")
+        .arg(public_key)
+        .args(["-o", "ControlPath=none", "-o", "ControlMaster=no", target])
+        .status()
+        .map_err(|e| {
+            RpcError::new("unavailable", format!("cannot run ssh-copy-id: {e}"), "install ssh-copy-id, then try again")
+        })?;
+    if !status.success() {
+        return Err(RpcError::new("needs_login", "installing the public key failed", "ssh-copy-id said why, above"));
+    }
+    Ok(())
+}
+
 // --- Connections -----------------------------------------------------------
 
 /// A connection to a core or a holder (blocking).

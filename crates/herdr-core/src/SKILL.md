@@ -171,6 +171,13 @@ remote files and commands. `hc machine ls` lists configured machines; see
 Without `--name`, SSH machines use the first host label (IPs stay whole),
 shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
 
+For automatic reconnection after sleep or a lost password login, configure SSH
+keys/agent for the saved target. On macOS/Linux, a person can explicitly install
+a public key with `hc machine login vps --copy-id ~/.ssh/id_ed25519.pub` in a terminal
+(requires `ssh-copy-id` and a compatible server). It checks a fresh noninteractive
+login before reconnecting; it never generates keys or stores passwords. See
+`docs/machines.md` for SSH config and macOS Keychain setup.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.

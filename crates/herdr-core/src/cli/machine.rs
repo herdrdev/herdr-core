@@ -11,13 +11,23 @@ pub(super) enum MachineCmd {
     Ls,
     /// Log in again (a password or code) after the machine says it needs one.
     /// On Windows: reconnect once its SSH keys work.
-    Login(MachineParams),
+    Login(LoginParams),
     /// Copy this hc there and restart hc there (its terminals keep running).
     Update(MachineParams),
     /// Give a machine a new name here.
     Rename(MachineRenameParams),
     /// Forget a machine (its terminals keep running there).
     Rm(MachineParams),
+}
+
+#[derive(clap::Args)]
+pub(super) struct LoginParams {
+    #[command(flatten)]
+    machine: MachineParams,
+    /// Install this public key with ssh-copy-id, then verify a fresh automatic
+    /// login before reconnecting (macOS/Linux; a compatible SSH server required).
+    #[arg(long, value_name = "PUBLIC_KEY")]
+    copy_id: Option<std::path::PathBuf>,
 }
 
 /// A person who can answer ssh's questions (a password, a code, a host key).
@@ -92,18 +102,22 @@ pub(super) fn machine(
                     "a person types the password or code",
                 ));
             }
+            let name = &p.machine.machine;
             let r = call("machine.list", json!({}))?;
-            let found = r["machines"].as_array().into_iter().flatten().find(|m| m["name"] == p.machine.as_str());
+            let found = r["machines"].as_array().into_iter().flatten().find(|m| m["name"] == name.as_str());
             let Some(m) = found else {
                 return Err(RpcError::new(
                     "machine_unknown",
-                    format!("unknown machine {:?}", p.machine),
+                    format!("unknown machine {name:?}"),
                     "see `hc machine ls`",
                 ));
             };
+            if let Some(key) = &p.copy_id {
+                crate::machines::copy_id(reach_of(m), key)?;
+            }
             crate::machines::login(paths, reach_of(m))?;
-            let m = call("machine.connect", to(&p))?;
-            let human = format!("logged in to {}: {}", p.machine, line_state(&m));
+            let m = call("machine.connect", to(&p.machine))?;
+            let human = format!("logged in to {name}: {}", line_state(&m));
             Out { json: m, human }
         }
         MachineCmd::Update(p) => {

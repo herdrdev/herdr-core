@@ -22,6 +22,59 @@ When the OS and CPU match, it copies your current build. Otherwise it uses this 
 SSH passwords, codes, and host-key prompts need a person at a terminal.
 On Windows, use SSH keys or an SSH agent; hc does not share interactive password logins there.
 
+### Reconnect without typing a password
+
+A password login is shared while its SSH connection stays alive. Sleep, a network
+change, or the server closing it can end that login. To reconnect without a person,
+SSH needs a key it can use without a prompt.
+
+Create a key if you do not already have one (`ssh-keygen -t ed25519`), and configure
+SSH to select it. For example, in `~/.ssh/config`:
+
+```sshconfig
+Host box
+    HostName server.example.com
+    User alice
+    IdentityFile ~/.ssh/id_ed25519
+    AddKeysToAgent yes
+```
+
+Use that Host alias when adding the machine (`hc machine add box`). For an existing
+machine, the Host block must match its saved SSH target, not just its local hc name.
+
+Load a passphrase-protected key into your SSH agent with `ssh-add ~/.ssh/id_ed25519`.
+On macOS, Apple's `/usr/bin/ssh-add --apple-use-keychain ~/.ssh/id_ed25519` saves its
+passphrase in Keychain; add `UseKeychain yes` to that Host block for Apple's SSH.
+Keep the key's passphrase; hc never stores your SSH password or private key.
+
+For an already added machine, macOS and Linux can install its public key from a
+terminal using `ssh-copy-id` (install that tool first if it is missing):
+
+```sh
+hc machine login box --copy-id ~/.ssh/id_ed25519.pub
+```
+
+This explicitly adds the public key to the server. Enter the server password or
+code when SSH asks. The destination must support `ssh-copy-id` (normally a Unix
+SSH server); custom `--via` connections are not supported. hc then checks a fresh,
+noninteractive SSH login, without reusing the shared password login, before
+reconnecting. If that check fails, inspect your SSH `IdentityFile` and agent, the
+server's authorized keys, and its home/`.ssh` permissions. Copying a key alone does
+not prove that automatic authentication works.
+For a Unix OpenSSH server, check the home directory too: a group-writable home can
+cause the server to refuse a key even when `.ssh` is 700 and `authorized_keys` is
+600. Remove group/other write access (`chmod go-w ~`) if appropriate for that account.
+
+On Windows, install the public key using the server's normal procedure. To test
+automatic authentication on any platform, run:
+
+```sh
+ssh -o BatchMode=yes -o ControlPath=none box exit
+```
+
+Keys do not keep the network alive during sleep. Once the network returns, core
+can use them on its next retry; network detection and retry delays still apply.
+
 To reach a separate core session on the same host:
 
 ```sh

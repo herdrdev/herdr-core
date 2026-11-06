@@ -374,6 +374,49 @@ fn another_session_on_the_same_box_is_another_machine() {
 }
 
 #[test]
+fn copying_a_public_key_checks_a_fresh_noninteractive_login() {
+    use std::os::unix::fs::PermissionsExt;
+    let rohan = Session::new();
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    let bin = s.root.join("key-tools");
+    std::fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [
+        ("ssh-copy-id", "printf '%s\\n' \"$@\" > \"$HOME/copy-args\"; touch \"$HOME/copied\""),
+        ("ssh", "printf '%s\\n' \"$@\" > \"$HOME/check-args\"; [ -f \"$HOME/copied\" ] && [ ! -f \"$HOME/deny\" ]"),
+    ] {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    s.env.push(("PATH".into(), format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())));
+    s.json(&["machine", "add", "rohan"]);
+    let key = s.root.join("a key.pub");
+    std::fs::write(&key, "test public key\n").unwrap();
+    let command = format!("{BIN} machine login rohan --copy-id '{}' ; echo key-login-$?; sleep 100", key.display());
+    let t = run(&s, &["sh", "-c", &command]);
+    wait_until("key login verified", || text(&s, &t).contains("key-login-0"));
+    assert_eq!(
+        std::fs::read_to_string(s.root.join("copy-args")).unwrap(),
+        format!("-i\n{}\n-o\nControlPath=none\n-o\nControlMaster=no\nrohan\n", key.canonicalize().unwrap().display())
+    );
+    let args = std::fs::read_to_string(s.root.join("check-args")).unwrap();
+    assert!(args.contains("BatchMode=yes\n") && args.contains("ControlPath=none\n"), "{args}");
+    assert!(!args.contains("ControlMaster=auto"), "must not reuse a password-authenticated master: {args}");
+
+    touch(&s, "deny");
+    let t = run(&s, &["sh", "-c", &command]);
+    wait_until("key login failure reported", || text(&s, &t).contains("key-login-1"));
+    assert!(text(&s, &t).contains("IdentityFile"), "{}", text(&s, &t));
+    assert!(!text(&s, &t).contains("logged in to"), "a copied key alone is not success");
+
+    std::fs::remove_file(s.root.join("copied")).unwrap();
+    let (_, err) = s.err(&["machine", "login", "rohan", "--copy-id", key.to_str().unwrap()]);
+    assert_eq!(err["error"]["kind"], "usage", "requires a person in a terminal");
+    assert!(!s.root.join("copied").exists());
+}
+
+#[test]
 fn a_box_that_asks_for_a_code_is_added_from_a_terminal() {
     let rohan = Session::new();
     let mut s = Session::new();

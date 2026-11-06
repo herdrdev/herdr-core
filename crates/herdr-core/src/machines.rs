@@ -201,6 +201,52 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
     }
 }
 
+/// Explicit public-key installation, followed by an independent authentication
+/// check: an existing password-authenticated master must not make it pass.
+pub fn copy_id(to: Reach, public_key: &Path) -> Result<(), RpcError> {
+    check_target(to)?;
+    if to.via {
+        return Err(RpcError::invalid_params("--copy-id needs an SSH target, not a --via command"));
+    }
+    if public_key.extension().is_none_or(|ext| ext != "pub") || !public_key.is_file() {
+        return Err(RpcError::invalid_params("--copy-id needs an existing public key file ending in .pub"));
+    }
+    // An absolute path cannot be mistaken for another ssh-copy-id option.
+    let public_key = std::fs::canonicalize(public_key).map_err(|e| RpcError::invalid_params(e.to_string()))?;
+    crate::platform::copy_ssh_id(to.target, &public_key)?;
+    let status = std::process::Command::new("ssh")
+        .args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=2",
+            to.target,
+            "exit",
+        ])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|e| unreachable(to, &format!("cannot run ssh: {e}")))?;
+    if !status.success() {
+        return Err(RpcError::new(
+            "needs_login",
+            "ssh-copy-id succeeded, but a fresh automatic SSH login failed",
+            "check SSH IdentityFile and your agent, the server's authorized keys and home/.ssh permissions; ssh said why, above",
+        ));
+    }
+    Ok(())
+}
+
 /// Ends the shared login to `target`, if one is up (a forgotten machine).
 pub fn logout(paths: &crate::paths::Paths, to: Reach) {
     let target = to.target;
@@ -606,6 +652,18 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_installation_rejects_custom_commands_and_non_public_paths_before_running_tools() {
+        for (to, key) in [
+            (Reach { target: "fly ssh console -C", via: true }, "key.pub"),
+            (Reach { target: "rohan", via: false }, "id_ed25519"),
+            (Reach { target: "rohan", via: false }, "/nonexistent/key.pub"),
+            (Reach { target: "-oProxyCommand=bad", via: false }, "key.pub"),
+        ] {
+            assert_eq!(copy_id(to, Path::new(key)).unwrap_err().kind, "invalid_params");
+        }
+    }
 
     #[test]
     fn a_name_comes_from_the_target_host() {
