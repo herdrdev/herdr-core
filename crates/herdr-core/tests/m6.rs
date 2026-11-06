@@ -473,3 +473,22 @@ fn message_mode_ignores_turn_ends_but_returns_reports_and_failures() {
         }
     }
 }
+
+#[test]
+fn message_wait_keeps_failure_news_when_the_same_output_clears_it() {
+    let s = session();
+    let p = run(&s, &[], "sleep 100");
+    let kid = run(
+        &s,
+        &["--parent", &p],
+        r"r state=working; w go; printf '\033]7501;state=error\033\\\033]7501;state=idle\033\\'; sleep 100",
+    );
+    wait_until("working", || get(&s, &kid)["status"]["state"] == "working");
+    let waiting = wait_children(&s, &p, "messages");
+    std::thread::sleep(Duration::from_millis(200));
+    touch(&s, "go");
+    let r = waiting.join().unwrap();
+    assert_eq!(ended(&r), [kid]);
+    assert_eq!(r["reason"], "children", "{r}");
+    assert_eq!(r["children"][0]["status"], "error", "report the observed failure: {r}");
+}

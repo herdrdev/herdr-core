@@ -245,9 +245,9 @@ pub(super) async fn wait_children(
             .collect();
         (kids.iter().map(|t| (t.id(), t.news)).collect(), watching)
     };
-    let news = |t: &Terminal| match listen {
-        true => t.news > t.seen.max(t.noted),
-        false => t.news > start.get(&t.id()).copied().unwrap_or(0),
+    let seen_news = |t: &Terminal| match listen {
+        true => t.seen.max(t.noted),
+        false => start.get(&t.id()).copied().unwrap_or(0),
     };
     // The caller has these now; a `--rm` child it was waiting for can go.
     let seen = |ids: &[u32]| ids.iter().for_each(|&id| has_seen(core, caller.as_deref(), id));
@@ -265,12 +265,12 @@ pub(super) async fn wait_children(
                 let fresh: Vec<&Terminal> = kids
                     .iter()
                     .filter(|t| {
-                        news(t)
+                        t.news > seen_news(t)
                             && (!busy(t) || t.first_task_turn.is_none())
                             && (mode != "messages"
                                 || !t.is_live()
                                 || t.program_lost()
-                                || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "blocked" | "error")))
+                                || t.failure_news.as_ref().is_some_and(|(news, _)| *news > seen_news(t)))
                     })
                     .collect();
                 let nothing_can_happen = !others && !kids.iter().any(Terminal::is_live) && message.is_none();
@@ -284,7 +284,21 @@ pub(super) async fn wait_children(
         }
         if let Some(results) = ready {
             seen(&results.iter().map(|t| t.id()).collect::<Vec<_>>());
-            let mut r = done(results.iter().map(|t| as_is(t, true)).collect());
+            let mut r = done(
+                results
+                    .iter()
+                    .map(|t| {
+                        let mut r = as_is(t, true);
+                        if mode == "messages"
+                            && r.reason == "status"
+                            && let Some((_, state)) = &t.failure_news
+                        {
+                            r.status = Some(state.clone());
+                        }
+                        r
+                    })
+                    .collect(),
+            );
             if let Some(from) = message {
                 if r.children.is_empty() {
                     r.reason = "message".into();
