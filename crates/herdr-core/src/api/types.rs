@@ -462,6 +462,10 @@ pub struct SendParams {
     pub terminal: String,
     /// Pasted, then submitted with Enter.
     pub text: String,
+    /// Paste text without the sender tag on messages between agents.
+    #[arg(long)]
+    #[serde(default)]
+    pub raw: bool,
     /// Type even if the program is blocked (it may answer its dialog).
     #[arg(long)]
     #[serde(default)]

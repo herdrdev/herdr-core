@@ -204,6 +204,38 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn raw_sends_across_machines_keep_delivery_rules() {
+    let (rohan, s) = with_rohan();
+    let body = script(
+        &s,
+        "stty -echo; r state=blocked:kind=permission; while read -r l; do echo \"got:$l\"; r state=working; r state=done; done",
+    );
+    let (parent, child) = parent_with_child_on_rohan(&s, &body);
+    wait_until("blocked", || get(&s, &child)["status"]["state"] == "blocked");
+    let send = |args: &[&str]| s.cmd().env("HC_TERMINAL_ID", &parent).args(args).output().unwrap();
+    let refused = send(&["--json", "send", "--raw", &child, "should-not-arrive"]);
+    assert_eq!(refused.status.code(), Some(9));
+    let raw = "/compact A_ :\" !?@( + 日本語 café";
+    let out = send(&["--json", "send", "--raw", "--force", "--wait", &child, raw]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let sent: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(sent["started"], true);
+    assert_eq!(sent["wait"]["status"], "done", "{sent}");
+    wait_until("exact submitted remote input", || {
+        text(&s, &child).lines().any(|l| l.trim_end() == format!("got:{raw}"))
+    });
+    assert!(!text(&s, &child).contains("should-not-arrive"));
+    let mismatch = send(&["--json", "send", "--raw", "--if", "working", &child, "wrong-status"]);
+    assert_eq!(mismatch.status.code(), Some(10));
+    // The same raw option survives a child's callback to its parent.
+    let parent_there = get(&rohan, "t1")["parent"].as_str().unwrap().to_string();
+    let back = rohan.cmd().env("HC_TERMINAL_ID", "t1").args(["send", "--raw", &parent_there, raw]).output().unwrap();
+    assert!(back.status.success(), "{}", String::from_utf8_lossy(&back.stderr));
+    wait_until("raw callback", || text(&s, &parent).lines().any(|l| l.trim_end() == raw));
+    assert!(!text(&s, &parent).contains("<hc from="));
+}
+
+#[test]
 fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     let mut rohan = Session::new();
     rohan.env.extend(
