@@ -209,3 +209,68 @@ fn a_core_crash_does_not_count_old_turns_twice() {
     assert_eq!((rec["status"]["state"].as_str(), rec["turn"].as_u64()), (Some("done"), Some(1)));
     assert_eq!(rec["status_ms"], done["status_ms"], "nor move the time its status changed");
 }
+
+#[test]
+fn a_report_from_outside_the_screen_counts_like_the_programs_own_7501() {
+    let s = Session::new();
+    // What a hook does: no tty, its terminal from HC_TERMINAL_ID.
+    let hook = format!("{BIN} report state=working:id=bg </dev/null >/dev/null 2>&1");
+    let t = run(&s, &["sh", "-c", &script(&s, &format!("r state=done; w go; {hook}; sleep 100"))]);
+    wait_status(&s, &t, "done");
+    let turn = get(&s, &t)["turn"].clone();
+
+    touch(&s, "go");
+    wait_until("bg record", || get(&s, &t)["records"]["bg"]["state"] == "working");
+    let rec = get(&s, &t);
+    assert_eq!(
+        (&rec["status"]["state"], &rec["turn"]),
+        (&json!("done"), &turn),
+        "a child record leaves the root alone"
+    );
+
+    let r = s.json(&["report", "state=clear:id=bg", "--terminal", &t]);
+    assert!(r.get("records").is_none(), "{r}");
+
+    let (_, err) = s.err(&["report", "state=bogus", "--terminal", &t]);
+    assert_eq!(err["error"]["kind"], "invalid_params", "{err}");
+    let (_, err) = s.err(&["report", "state=working"]);
+    assert_eq!(err["error"]["kind"], "needs_target", "outside a terminal it must be told which: {err}");
+}
+
+#[test]
+fn an_attached_viewer_sees_a_report_from_outside_the_screen() {
+    let s = Session::new();
+    // The program stops halfway through a character (an escape sequence would be held
+    // back until whole), so the report lands mid-sequence in the viewer's stream.
+    let body = "r state=done; echo READY; printf '\\360\\237'; w a; printf '\\216\\211END\\n'; sleep 100";
+    let t = run(&s, &["sh", "-c", &script(&s, body)]);
+    wait_status(&s, &t, "done");
+    let mut v = Viewer::attach(&s, &t, 80, 24, json!({}));
+    v.shows("READY");
+    v.drain(Duration::from_millis(300));
+    v.screen.take_status_reports();
+
+    s.json(&["report", "state=working:id=bg", "--terminal", &t]);
+    v.until("the report", |v| String::from_utf8_lossy(&v.raw).contains("id=bg"));
+    touch(&s, "a");
+    v.shows("END");
+    let reports = v.screen.take_status_reports();
+    assert!(reports.iter().any(|r| r.id == "bg" && r.state == "working"), "{reports:?}");
+    assert!(v.text().contains("\u{1f389}END"), "the program's own character still completes: {:?}", v.text());
+}
+
+#[test]
+fn a_report_from_outside_the_screen_survives_a_core_crash() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", &script(&s, "r state=done; sleep 100")]);
+    wait_status(&s, &t, "done");
+    // Not in the screen's output, so a crash cannot replay it: it must be on disk.
+    s.json(&["report", "state=working:id=bg", "--terminal", &t]);
+    let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    unsafe { libc::kill(core as i32, libc::SIGKILL) };
+    wait_until("core gone", || !pid_alive(core));
+
+    let rec = get(&s, &t);
+    assert_eq!(rec["records"]["bg"]["state"], "working", "{rec}");
+    assert_eq!(rec["status"]["state"], "done");
+}

@@ -2171,6 +2171,68 @@
       }
     },
     {
+      "description": "Apply one OSC 7501 report to a live terminal as if its program had written it: for a process with no terminal to write to (an agent's hook). The body is the report as the program would send it, e.g. `state=working:id=bg`; it is parsed and stored exactly like screen output.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
+      "name": "terminal.report",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The OSC 7501 report as a program would send it: `state=working:id=bg`.",
+          "name": "body",
+          "required": true,
+          "schema": {
+            "description": "The OSC 7501 report as a program would send it: `state=working:id=bg`.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The terminal: `t7`, a name, or `machine/t7`. Default: the one you run in.",
+          "name": "terminal",
+          "required": false,
+          "schema": {
+            "default": "",
+            "description": "The terminal: `t7`, a name, or `machine/t7`. Default: the one you run in.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Terminal"
+        }
+      }
+    },
+    {
       "description": "The screen plus `lines` of history as text, live or finished.",
       "errors": [
         {
