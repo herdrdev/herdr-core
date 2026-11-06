@@ -54,6 +54,43 @@ fn display_changes_do_not_report_without_a_subscription() {
 }
 
 #[test]
+fn a_repaint_carries_the_colors_a_program_set() {
+    let mut screen = Terminal::new(40, 10, 0);
+    screen.set_display(Some([1, 2, 3]), Some([4, 5, 6]), None, None);
+    let untouched = String::from_utf8_lossy(&screen.paint(0)).into_owned();
+    for osc in ["\x1b]4;", "\x1b]10;", "\x1b]11;", "\x1b]12;"] {
+        assert!(!untouched.contains(osc), "the viewer's theme stays its own");
+    }
+
+    screen.write(b"\x1b]11;#fdf6e3\x07\x1b]10;#586e75\x07\x1b]12;#00ff00\x07\x1b]4;1;#ff00ff\x07\x1b[31mred\x1b[0m");
+    let mut viewer = Terminal::new(40, 10, 0);
+    viewer.set_display(Some([7, 8, 9]), Some([10, 11, 12]), None, None);
+    viewer.write(&screen.paint(0));
+    assert_eq!(viewer.color(ffi::DATA_COLOR_BACKGROUND), Some([0xfd, 0xf6, 0xe3]));
+    assert_eq!(viewer.color(ffi::DATA_COLOR_FOREGROUND), Some([0x58, 0x6e, 0x75]));
+    assert_eq!(viewer.color(ffi::DATA_COLOR_CURSOR), Some([0, 0xff, 0]));
+    let palette = viewer.palette(ffi::DATA_COLOR_PALETTE);
+    let default = viewer.palette(ffi::DATA_COLOR_PALETTE_DEFAULT);
+    assert_eq!(palette[1], [0xff, 0, 0xff]);
+    assert_eq!(palette[2..], default[2..], "only the color the program set");
+    assert!(viewer.plain_text().starts_with("red"));
+}
+
+#[test]
+fn a_repaint_on_the_alternate_screen_carries_the_colors_a_program_set() {
+    let mut screen = Terminal::new(40, 10, 0);
+    screen.set_display(Some([1, 2, 3]), Some([4, 5, 6]), None, None);
+    screen.write(b"\x1b]11;#fdf6e3\x07\x1b]4;1;#ff00ff\x07\x1b[?1049h\x1b[31mtui\x1b[0m");
+    let mut viewer = Terminal::new(40, 10, 0);
+    viewer.set_display(Some([7, 8, 9]), Some([10, 11, 12]), None, None);
+    viewer.write(&screen.paint(100));
+    assert!(viewer.alt_screen());
+    assert_eq!(viewer.color(ffi::DATA_COLOR_BACKGROUND), Some([0xfd, 0xf6, 0xe3]));
+    assert_eq!(viewer.palette(ffi::DATA_COLOR_PALETTE)[1], [0xff, 0, 0xff]);
+    assert!(viewer.plain_text().starts_with("tui"));
+}
+
+#[test]
 fn a_repaint_into_a_dirty_viewer_turns_off_modes_the_screen_no_longer_has() {
     let mut viewer = Terminal::new(40, 10, 0);
     viewer.write(b"\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?1004h");
