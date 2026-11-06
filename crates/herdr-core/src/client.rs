@@ -19,10 +19,6 @@ pub fn remember_exe() {
     build_id();
 }
 
-pub(crate) fn executable() -> std::io::Result<std::path::PathBuf> {
-    EXE.get().cloned().map_or_else(std::env::current_exe, Ok)
-}
-
 /// The package manager this hc came from, or "system package manager" as a
 /// compatibility marker when its folder isn't writable. None for a replaceable install.
 pub fn installed_by() -> Option<&'static str> {
@@ -181,7 +177,7 @@ pub fn spawn_core(paths: &Paths) -> Result<(), RpcError> {
 pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Result<()> {
     paths.create_dirs()?;
     let log = paths.state.join(log);
-    let exe = executable()?;
+    let exe = EXE.get().cloned().map_or_else(std::env::current_exe, Ok)?;
     let exe = if args.first() == Some(&"serve") { platform::core_executable(&exe) } else { exe };
     let mut cmd = Command::new(exe);
     if args == ["serve"] {

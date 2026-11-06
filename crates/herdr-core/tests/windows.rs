@@ -95,38 +95,6 @@ impl Session {
     }
 }
 
-#[test]
-fn bare_core_commands_fall_back_after_windows_path_and_pathext() {
-    let s = Session::new();
-    s.json(&["server", "start"]);
-    let (directory, prefix) = herdr_core::platform::endpoints(&s.root);
-    let stream = herdr_core::platform::connect(&directory.join(format!("{prefix}{}.sock", s.name))).unwrap();
-    let run = |program: &str, cwd: &Path| {
-        herdr_core::client::call(
-            &stream,
-            "terminal.run",
-            json!({
-                "argv": [program, "--version"], "cwd": cwd, "wait": true,
-                "env": {"pAtH": s.root, "pAtHeXt": ".CMD;.EXE"}
-            }),
-        )
-    };
-    for program in ["hc", "HeRdR-CoRe", "HC.EXE", "herdr-core.exe"] {
-        let result = run(program, &s.root).unwrap();
-        assert_eq!(result["wait"]["exit_code"], 0, "{result}");
-        assert_eq!(result["output"].as_str().unwrap().trim(), format!("hc {}", env!("CARGO_PKG_VERSION")));
-    }
-    s.file("hc.cmd", "@echo chosen-on-path\r\n");
-    let result = run("HC", &s.root).unwrap();
-    assert_eq!(result["output"].as_str().unwrap().trim(), "chosen-on-path", "{result}");
-    for program in [".\\hc.exe", "no-such-program"] {
-        assert_eq!(run(program, &s.root).unwrap_err().kind, "spawn_failed");
-    }
-    assert_eq!(run("herdr-core", &s.root.join("missing")).unwrap_err().kind, "spawn_failed");
-    s.file("hc.exe", "not an executable");
-    assert_eq!(run("hc.exe", &s.root).unwrap_err().kind, "spawn_failed");
-}
-
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = cmd(&self.name, &self.root).args(["server", "stop"]).output();

@@ -614,34 +614,6 @@ impl Write for PtyIo {
 
 pub type Process = Child;
 
-pub(crate) fn missing_core_command(program: &str, env: &std::collections::BTreeMap<String, String>, cwd: &str) -> bool {
-    use std::os::unix::ffi::OsStringExt;
-
-    if !matches!(program, "hc" | "herdr-core") {
-        return false;
-    }
-    let path = match env.get("PATH") {
-        Some(path) => std::ffi::OsString::from(path),
-        None => {
-            let len = unsafe { libc::confstr(libc::_CS_PATH, std::ptr::null_mut(), 0) };
-            if len == 0 {
-                return false;
-            }
-            let mut path = vec![0; len];
-            unsafe { libc::confstr(libc::_CS_PATH, path.as_mut_ptr().cast(), len) };
-            path.pop();
-            std::ffi::OsString::from_vec(path)
-        }
-    };
-    std::env::split_paths(&path).all(|dir| {
-        // Keep existing entries, even broken scripts/links, and permission errors.
-        matches!(
-            std::fs::symlink_metadata(Path::new(cwd).join(dir).join(program)),
-            Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
-        )
-    })
-}
-
 /// Starts `argv` on a new terminal of `cols`x`rows`.
 pub fn spawn_pty(
     argv: &[String],
