@@ -17,7 +17,7 @@ hc run --on box --cwd /srv/app cargo test
 
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
-When the OS and CPU match, it copies your current build. Otherwise it uses this version's released build for that target.
+When the OS and CPU match, it copies your current build, or uses this version's released build if that copy does not start there. Otherwise it uses the released build for that target.
 
 SSH passwords, codes, and host-key prompts need a person at a terminal.
 On Windows, use SSH keys or an SSH agent; hc does not share interactive password logins there.
