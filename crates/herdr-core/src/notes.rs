@@ -147,8 +147,8 @@ impl Core {
         let st = self.lock();
         let sender = from.and_then(parse_id).filter(|f| *f != to).and_then(|f| st.reg.terminals.get(&f));
         let target = st.reg.terminals.get(&to);
-        // A child on another machine calling back (`rohan/t7`).
-        if let Some(afar) = from.filter(|f| f.contains('/'))
+        // A child on another machine calling back (`rohan/t7`), not a shell there (`rohan/ppid:12`).
+        if let Some(afar) = from.filter(|f| f.rsplit_once('/').is_some_and(|(_, local)| parse_id(local).is_some()))
             && target.is_some_and(|t| t.reported)
         {
             return format!("<hc from=\"{afar}\">{text}</hc>");
