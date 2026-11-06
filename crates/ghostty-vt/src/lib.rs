@@ -53,9 +53,14 @@ mod ffi {
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
     pub const DATA_SCROLLBAR: i32 = 9;
     pub const DATA_TITLE: i32 = 12;
+    pub const DATA_COLOR_FOREGROUND: i32 = 18;
+    pub const DATA_COLOR_BACKGROUND: i32 = 19;
+    pub const DATA_COLOR_CURSOR: i32 = 20;
+    pub const DATA_COLOR_PALETTE: i32 = 21;
     pub const DATA_COLOR_FOREGROUND_DEFAULT: i32 = 22;
     pub const DATA_COLOR_BACKGROUND_DEFAULT: i32 = 23;
     pub const DATA_COLOR_CURSOR_DEFAULT: i32 = 24;
+    pub const DATA_COLOR_PALETTE_DEFAULT: i32 = 25;
     pub const DATA_MODE: i32 = 37;
     pub const FORMAT_PLAIN: i32 = 0;
     pub const FORMAT_VT: i32 = 1;
@@ -711,6 +716,8 @@ impl Terminal {
 \x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J"
             .to_vec();
+        // Colors a program set (OSC 4/10/11/12) belong to the screen, not the viewer's theme.
+        out.extend(self.program_colors());
         let available = self.history_rows();
         if history > 0 && available > 0 && !self.alt_screen() {
             let from = available.saturating_sub(history as u32);
@@ -736,6 +743,43 @@ impl Terminal {
             out.extend(format!("\x1b]2;{title}\x1b\\").as_bytes());
         }
         out
+    }
+
+    /// OSC 4/10/11/12 for each color a program changed from its default.
+    fn program_colors(&self) -> Vec<u8> {
+        let hex = |[r, g, b]: Rgb| format!("rgb:{r:02x}/{g:02x}/{b:02x}");
+        let mut out = String::new();
+        let (now, default) = (self.palette(ffi::DATA_COLOR_PALETTE), self.palette(ffi::DATA_COLOR_PALETTE_DEFAULT));
+        for (i, (c, d)) in now.iter().zip(&default).enumerate() {
+            if c != d {
+                out += &format!("\x1b]4;{i};{}\x1b\\", hex(*c));
+            }
+        }
+        for (osc, now, default) in [
+            (10, ffi::DATA_COLOR_FOREGROUND, ffi::DATA_COLOR_FOREGROUND_DEFAULT),
+            (11, ffi::DATA_COLOR_BACKGROUND, ffi::DATA_COLOR_BACKGROUND_DEFAULT),
+            (12, ffi::DATA_COLOR_CURSOR, ffi::DATA_COLOR_CURSOR_DEFAULT),
+        ] {
+            if let Some(c) = self.color(now)
+                && self.color(default) != Some(c)
+            {
+                out += &format!("\x1b]{osc};{}\x1b\\", hex(c));
+            }
+        }
+        out.into_bytes()
+    }
+
+    /// A color, or None when none is configured.
+    fn color(&self, data: i32) -> Option<Rgb> {
+        let mut c: Rgb = [0; 3];
+        let rc = unsafe { ffi::ghostty_terminal_get(self.raw, data, c.as_mut_ptr().cast()) };
+        (rc == ffi::SUCCESS).then_some(c)
+    }
+
+    fn palette(&self, data: i32) -> [Rgb; 256] {
+        let mut p: [Rgb; 256] = [[0; 3]; 256];
+        unsafe { ffi::ghostty_terminal_get(self.raw, data, p.as_mut_ptr().cast()) };
+        p
     }
 
     /// Complete binary snapshot, including any half-received escape sequence.
