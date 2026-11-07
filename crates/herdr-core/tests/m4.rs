@@ -107,9 +107,9 @@ fn send_pastes_submits_and_reports_whether_work_started() {
             assert_eq!(err.contains(&format!("hc read {t} --lines 0")), started == false, "{err}");
         }
         // A real TTY selects the human path; stderr remains a separate pipe.
-        use std::io::Read;
+        use std::io::BufRead;
         use std::os::fd::FromRawFd;
-        let (mut master, slave) = unsafe {
+        let (master, slave) = unsafe {
             let (mut master, mut slave) = (-1, -1);
             assert_eq!(
                 libc::openpty(
@@ -131,12 +131,18 @@ fn send_pastes_submits_and_reports_whether_work_started() {
         if started == false {
             cmd.arg("--wait");
         }
-        let out = cmd.spawn().unwrap().wait_with_output().unwrap();
+        let child = cmd.spawn().unwrap();
+        // Keep our slave open and drain output before closing it: macOS can
+        // discard unread PTY output when the last slave closes.
+        let mut reader = std::io::BufReader::new(master);
+        let mut human = String::new();
+        reader.read_line(&mut human).unwrap();
+        if started == false {
+            reader.read_line(&mut human).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
         drop(cmd);
         assert!(out.status.success());
-        let mut human = String::new();
-        // Unix PTY masters may end with EIO after the slave closes.
-        let _ = master.read_to_string(&mut human);
         assert!(human.contains(observation), "{human}");
         if started == false {
             assert!(human.contains(&format!("{t}: no working state or later turn observed")), "{human}");
