@@ -11,6 +11,20 @@ use windows_sys::Win32::System::Environment::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+pub fn validate_env(env: &BTreeMap<String, String>) -> Result<(), crate::rpc::RpcError> {
+    for (key, value) in env.iter() {
+        // A leading '=' belongs to Windows' hidden variables, such as '=C:'.
+        if key.is_empty()
+            || key.contains('\0')
+            || key.strip_prefix('=').unwrap_or(key).contains('=')
+            || value.contains('\0')
+        {
+            return Err(crate::rpc::RpcError::invalid_params(format!("invalid Windows environment entry {key:?}")));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn refresh(env: &mut BTreeMap<String, String>) -> io::Result<()> {
     unsafe {
         let mut token = null_mut();
