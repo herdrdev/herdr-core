@@ -23,6 +23,16 @@ Builds are available for Linux and macOS on x86_64 and aarch64, and Windows on x
 Linux builds are static. On Windows, templates and quoted shell commands need `sh` on PATH, such as Git for Windows provides.
 
 Run `hc update` to update. Running terminals keep running.
+Updates and `hc server restart` keep the environment the core started with;
+stopping and starting takes a fresh one. The first update from 0.1.18 to 0.1.19
+uses the updater's environment once, because 0.1.18 cannot save it for the next core.
+
+If saving fails, the restart still goes ahead with the launcher's environment.
+Saved settings expire after three minutes and cannot carry over to another boot
+on Linux or macOS. On Windows, a restart cut short by a fast reboot can reuse them
+once. A plain SIGTERM keeps terminals and screens, but does not save settings.
+The new launcher still chooses the session's location and, on macOS, whether it
+starts from SSH or launchd.
 See [security](docs/security.md) for the trust and signing details.
 
 ## Run it and come back
@@ -139,6 +149,7 @@ just check
 ```
 
 `just install` installs this checkout and restarts your core. Running terminals keep running.
+
 `just docs` refreshes the command reference. `just docs-check` checks it and the examples; CI runs the same tests.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup and checks.

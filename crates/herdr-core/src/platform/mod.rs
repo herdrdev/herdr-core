@@ -170,33 +170,50 @@ pub fn utf8_vars() -> impl Iterator<Item = (String, String)> {
     std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
 }
 
-/// Capture values and explicit absences before the retiring core stops.
-pub fn restart_env() -> std::io::Result<Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>> {
-    #[allow(unused_mut)]
+/// Application settings survive a restart; session paths and lifecycle marks do not move.
+pub(crate) fn restored_environment(
+    saved: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    current: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> {
+    use std::ffi::OsStr;
+    let named = |key: &OsStr, name: &str| {
+        if cfg!(windows) { key.eq_ignore_ascii_case(OsStr::new(name)) } else { key == name }
+    };
+    let local = |key: &OsStr| {
+        let paths = [
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_RUNTIME_DIR",
+            "HC_SESSION",
+            "HC_SOCKET",
+        ];
+        #[allow(unused_mut)]
+        let mut keep = paths.iter().any(|name| named(key, name));
+        #[cfg(target_os = "linux")]
+        {
+            keep |= systemd::SERVICE.iter().any(|name| named(key, name));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            keep |= named(key, "XPC_SERVICE_NAME");
+        }
+        keep
+    };
+    let discarded = |key: &OsStr| {
+        [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
+            .iter()
+            .any(|name| named(key, name))
+    };
     let mut env: std::collections::BTreeMap<_, _> =
-        std::env::vars_os().map(|(key, value)| (key, Some(value))).collect();
-    #[cfg(target_os = "linux")]
-    for key in systemd::inherited_env()?.into_keys() {
-        env.entry(key.into()).or_insert(None);
-    }
-    Ok(env.into_iter().collect())
-}
-
-/// Replace inherited values with the saved values and absences.
-pub fn replace_env(
-    cmd: &mut std::process::Command,
-    env: impl IntoIterator<Item = (std::ffi::OsString, Option<std::ffi::OsString>)>,
-) {
-    // Detached launchers rebuild from get_envs(), which does not expose env_clear().
-    for (key, _) in std::env::vars_os() {
-        cmd.env_remove(key);
-    }
-    for (key, value) in env {
-        match value {
-            Some(value) => cmd.env(key, value),
-            None => cmd.env_remove(key),
-        };
-    }
+        saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();
+    env.extend(current.into_iter().filter(|(key, _)| local(key) && !discarded(key)));
+    env.insert(crate::sweep::RUNTIME.into(), "1".into());
+    env
 }
 
 /// The core's environment as programs get it: never an ssh login's marks,
