@@ -35,3 +35,28 @@ fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
     assert_eq!(canonical(event["cwd"].as_str().unwrap()), canonical(sub.to_str().unwrap()));
     assert_eq!(get(&s, &t)["foreground"], event, "the record says the same");
 }
+
+#[test]
+fn child_status_resets_when_foreground_returns_to_shell() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));
+    let t = run(&s, &["sh", "-m"]);
+    wait_until("shell is foreground", || {
+        get(&s, &t)["foreground"]["name"].as_str().is_some_and(|n| n == "sh" || n == "bash")
+    });
+
+    let shell_pid = get(&s, &t)["foreground"]["pid"].as_i64().unwrap();
+
+    let script_path = s.root.join("agent.sh");
+    std::fs::write(&script_path, format!("#!/bin/sh\n{}", script(&s, "r state=idle; w done; exit 0"))).unwrap();
+    std::fs::set_permissions(&script_path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.json(&["send", &t, script_path.to_str().unwrap()]);
+
+    wait_until("child status is reported", || get(&s, &t)["status"]["state"] == "idle");
+    wait_until("child is foreground", || get(&s, &t)["foreground"]["pid"].as_i64() != Some(shell_pid));
+
+    touch(&s, "done");
+
+    wait_until("status resets to null", || get(&s, &t)["status"].is_null());
+    assert!(get(&s, &t)["status"].is_null());
+}
