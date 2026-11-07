@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- A window in the background no longer resizes the programs it isn't showing. A viewer's size counts when the person types in it; a viewer that reports it isn't focused keeps its size to itself, so a second window opening, resizing, or changing tabs no longer re-wraps an agent you are watching. A window that reconnects and has not been typed in yields to the window that was watching first, so an app coming back in the background leaves programs as they were.
+
 ## [0.1.18] - 2026-11-04
 
 ### New
