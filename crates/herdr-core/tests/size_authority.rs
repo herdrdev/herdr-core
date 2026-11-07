@@ -90,6 +90,34 @@ fn focus_flapping_between_two_windows_never_resizes_the_program() {
 }
 
 #[test]
+fn an_idle_window_that_never_reports_focus_never_resizes_the_program() {
+    let s = Session::new();
+    let t = run(&s, &["sleep", "100"]);
+    // The person works in their window; a second window opens on the same
+    // program and sits idle — the app never says that window was focused.
+    let mut work = Viewer::attach(&s, &t, 200, 60, json!({}));
+    focus(&mut work, true);
+    work.typed(b"x");
+    let mut idle = Viewer::attach(&s, &t, 132, 54, json!({}));
+    focus(&mut idle, false);
+    assert_eq!(size(&s, &t), (200, 60));
+
+    // The idle window is laid out by its window manager — resizes, tab
+    // switches, animations. It reports its grid, and it never said it was
+    // focused, so its layouts must not re-wrap the program being watched.
+    resize(&mut idle, 90, 40);
+    resize(&mut idle, 240, 66);
+    assert_eq!(size(&s, &t), (200, 60), "a viewer that never reports focus must not re-wrap the program");
+
+    // The person moves there for real: focus, then a keystroke — the size
+    // follows the keystroke.
+    focus(&mut idle, true);
+    assert_eq!(size(&s, &t), (200, 60), "focus alone never resizes");
+    idle.typed(b"y");
+    assert_eq!(size(&s, &t), (240, 66), "the window typed in sizes the program");
+}
+
+#[test]
 fn a_viewer_that_never_reports_focus_keeps_its_authority() {
     let s = Session::new();
     let t = run(&s, &["sleep", "100"]);

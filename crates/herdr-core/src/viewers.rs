@@ -289,9 +289,13 @@ impl Core {
     }
 
     /// The viewer's window was laid out, so record its grid. Only a viewer
-    /// the person can be typing in takes the program's size from the last
-    /// one: a viewer that reported it isn't focused keeps its size to itself,
-    /// so a background window never re-wraps the program being watched.
+    /// that has said it is the one the person is in takes the program's
+    /// size from the last one. A viewer that never reports focus — an idle
+    /// second window, a watcher — keeps its grid to itself, so a background
+    /// window's layout, tab switches, and window-manager animations never
+    /// re-wrap the program being watched; a viewer that is first in line
+    /// still sizes the program through its attach, and `hc attach` in a
+    /// bare terminal is the only viewer and needs no introduction.
     pub fn viewer_resize(&self, conn: &Arc<Conn>, channel: u32, cols: u16, rows: u16) {
         let mut st = self.lock();
         let Some((id, _)) = Self::viewer(&mut st, conn, channel) else { return };
@@ -300,7 +304,7 @@ impl Core {
         if v.observe {
             return;
         }
-        if v.focused != Some(false) {
+        if v.focused == Some(true) {
             v.active_at = Some(Instant::now());
         }
         self.apply_size(&mut st, id);
