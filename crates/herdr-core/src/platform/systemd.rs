@@ -430,14 +430,6 @@ fn decode_busctl_escape(remaining_reply: &mut Peekable<Bytes<'_>>) -> Option<u8>
     Some(decoded_byte)
 }
 
-/// A replacement must exclude manager-only values as well as its caller's.
-pub(super) fn inherited_env() -> io::Result<BTreeMap<String, String>> {
-    if manager().is_err() {
-        return Ok(BTreeMap::new());
-    }
-    manager_env().ok_or_else(|| io::Error::other("cannot read the user manager's environment for restart"))
-}
-
 /// Puts the login session's variables the manager has into `env`.
 pub fn apply_session(env: &mut BTreeMap<String, String>, manager: &BTreeMap<String, String>) {
     for &k in SESSION {

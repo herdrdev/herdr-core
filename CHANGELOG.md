@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Updates and `hc server restart` keep the environment the core started with; stopping and starting takes a fresh one. (#21)
+
 ## [0.1.18] - 2026-11-04
 
 ### New

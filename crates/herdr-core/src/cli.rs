@@ -776,6 +776,7 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
 /// Stops the core and returns once it has exited (its connection closes).
 fn stop(paths: &Paths) -> Result<Out, RpcError> {
     let Some(stream) = client::connect_existing(paths) else {
+        crate::restart::discard_if_stopped(paths);
         return Ok(Out { json: json!({"stopped": false}), human: "no core running".into() });
     };
     let r = client::call(&stream, "server.stop", json!({}))?;
