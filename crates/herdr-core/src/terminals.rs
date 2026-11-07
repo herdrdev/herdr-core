@@ -98,6 +98,13 @@ pub struct Terminal {
     /// It messaged its parent during this turn: the turn's end tells nothing new.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub told_parent: bool,
+    /// Its parent asked for a turn (the launch task or a send) that hasn't ended
+    /// yet, and it hasn't reported since: the turn it was typed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<u64>,
+    /// The news that was a turn its parent asked for ending without a report.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreported: u64,
     /// Lines it printed, at least: more than its history holds means some
     /// were dropped, so a read reaching back that far is not complete.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -293,6 +300,8 @@ impl Registry {
                 seen: 0,
                 noted: 0,
                 told_parent: false,
+                asked: None,
+                unreported: 0,
                 scope: None,
                 printed: 0,
                 full_screen: false,
@@ -410,6 +419,8 @@ const PRIVATE: &[&str] = &[
     "noted",
     "seen_ms",
     "told_parent",
+    "asked",
+    "unreported",
     "scope",
     "holder",
     "printed",

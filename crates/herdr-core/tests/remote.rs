@@ -184,9 +184,13 @@ fn parent_with_child_on_rohan(s: &Session, child: &str) -> (String, String) {
 #[test]
 fn a_child_on_another_machine_reports_back_to_its_parent() {
     let (rohan, s) = with_rohan_env(&[("HC_QUIET_MS", "0")]);
-    let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; exit 3"));
+    let child_script = "stty -echo; r state=idle; read -r l; r state=working; w said; r state=done; w go; exit 3";
+    let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, child_script));
     let parent_there = get(&rohan, "t1")["parent"].as_str().unwrap().to_string();
     assert!(parent_there.ends_with(&format!("/{parent}")), "{parent_there}");
+    wait_until("the child is idle", || get(&s, &child)["status"]["state"] == "idle");
+    let asked = s.cmd().env("HC_TERMINAL_ID", &parent).args(["send", &child, "task"]).output().unwrap();
+    assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 
     let said = rohan.cmd().env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "hi-parent"]).output().unwrap();
     assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stderr));
@@ -197,10 +201,13 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
     let (_, refused) = rohan.err(&["--json", "send", &format!("{prefix}/{other}"), "x"]);
     assert_eq!(refused["error"]["kind"], "denied", "only its parents: {refused}");
 
+    touch(&s, "said");
+    wait_until("its turn ended", || get(&s, &child)["status"]["state"] == "done");
     touch(&s, "go");
     wait_until("the exit note", || {
         text(&s, &parent).contains(&format!("<hc>{child} exited (exit 3). Read: hc read {child}</hc>"))
     });
+    assert!(!text(&s, &parent).contains("without reporting"), "it reported: {}", text(&s, &parent));
 }
 
 #[test]

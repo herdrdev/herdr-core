@@ -449,18 +449,12 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
     let timeout = wait_timeout(core, p.timeout)?; // checked before anything is typed
     let id = resolve(core, &p.terminal)?;
     let text = core.tagged(p.caller.as_deref(), id, &p.text, false);
-    let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref()).await?;
-    if let Some(child) = p.caller.as_deref().and_then(crate::terminals::parse_id) {
-        let mut st = core.lock();
-        if let Some(c) = st
-            .reg
-            .terminals
-            .get_mut(&child)
-            .filter(|c| c.parent.as_deref() == Some(crate::terminals::address(id).as_str()))
-        {
-            c.told_parent = true;
-        }
-    }
+    // From its parent, a message asks for a turn. Its news so far is seen; the
+    // end of the turn it asks for is still to come.
+    let asked = p.caller.is_some() && core.lock().reg.terminals.get(&id).is_some_and(|t| t.parent == p.caller);
+    core.saw(p.caller.as_deref(), id);
+    let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref(), asked).await?;
+    core.reported(p.caller.as_deref(), &crate::terminals::address(id));
     if sent.status.as_deref() == Some("working") {
         let mut st = core.lock();
         let from = p
@@ -474,7 +468,6 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
         drop(st);
         core.changed.notify_waiters();
     }
-    core.saw(p.caller.as_deref(), id);
     if let Some(caller) = &p.caller {
         core.lock().last_send.insert((caller.clone(), id), sent.turn);
     }

@@ -427,7 +427,14 @@ async fn handle(
                 "send hello with framed: true first, or use `hc attach`",
             )),
         },
-        Ok(Some((to, params))) => crate::remote::forward_to(core, &to, method, params).await,
+        Ok(Some((to, routed))) => {
+            let result = crate::remote::forward_to(core, &to, method, routed).await;
+            if result.is_ok() && method == "terminal.send" {
+                // A child here reporting to its parent on another machine.
+                core.reported(params["caller"].as_str(), params["terminal"].as_str().unwrap_or_default());
+            }
+            result
+        }
         Ok(None) => api::dispatch(&call, method, params).await,
         Err(e) => Err(e),
     };

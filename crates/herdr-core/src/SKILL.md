@@ -116,7 +116,8 @@ Ask children to write long answers to a file and send its path. If you receive:
 
 Report with `hc send t3 "<result or blocker>"` when done or stuck, not just to
 acknowledge. hc itself notifies you when a child cannot report (blocked,
-error, exited); inspect its screen.
+error, exited), or ends a turn you started (its launch task or your send)
+without reporting; inspect its screen.
 
 ## Run programs
 

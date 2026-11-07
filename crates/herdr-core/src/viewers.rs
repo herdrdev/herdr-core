@@ -215,6 +215,13 @@ impl Core {
         if first_task_finished {
             t.first_task_turn = None;
         }
+        // A turn its parent asked for ended done or idle with no report (blocked
+        // or errored, it can still go on with the task: that is news of its own).
+        let settled = t.is_live() && t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "idle"));
+        let unreported = settled && t.asked.is_some_and(|turn| t.turn > turn || first_task_finished);
+        if unreported {
+            t.asked = None;
+        }
         let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
         if change.status {
             self.emit(
@@ -228,8 +235,12 @@ impl Core {
             let state = status.map(|s| s.state);
             self.emit(st, "turn", id, serde_json::json!({"turn": turn, "state": state}));
         }
-        if (change.turn_ended || change.stuck || first_task_finished) && st.reg.terminals[&id].is_live() {
+        if (change.turn_ended || change.stuck || first_task_finished || unreported) && st.reg.terminals[&id].is_live() {
             self.news(st, id);
+            if unreported {
+                let t = st.reg.terminals.get_mut(&id).expect("live terminal");
+                t.unreported = t.news;
+            }
         }
     }
 

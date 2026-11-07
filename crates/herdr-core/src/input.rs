@@ -62,7 +62,8 @@ impl Gate {
 }
 
 pub enum Step {
-    FirstTask(Vec<u8>),
+    /// A paste that asks for a turn: the launch task (`first`) or a parent's send.
+    Task(Vec<u8>, bool),
     Write(Vec<u8>),
     Pause(Duration),
 }
@@ -143,11 +144,14 @@ impl Core {
         };
         for step in steps {
             match step {
-                Step::FirstTask(bytes) => {
+                Step::Task(bytes, first) => {
                     let mut st = self.lock();
                     if st.link(id).is_some() {
                         if let Some(t) = st.reg.terminals.get_mut(&id) {
-                            t.first_task_turn = Some(t.turn);
+                            t.asked = Some(t.turn);
+                            if first {
+                                t.first_task_turn = Some(t.turn);
+                            }
                         }
                         st.link(id).expect("delivery link").input(id, &bytes);
                         self.save(&st);
@@ -172,13 +176,21 @@ impl Core {
     }
 
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
-    /// program (typing would answer its dialog) unless `force`.
-    pub async fn send(&self, id: u32, text: &str, force: bool, only_if: Option<&str>) -> Result<Sent, RpcError> {
-        self.send_message(id, text, force, only_if, false).await
+    /// program (typing would answer its dialog) unless `force`. `asked`: its
+    /// parent is asking for a turn.
+    pub async fn send(
+        &self,
+        id: u32,
+        text: &str,
+        force: bool,
+        only_if: Option<&str>,
+        asked: bool,
+    ) -> Result<Sent, RpcError> {
+        self.send_message(id, text, force, only_if, asked.then_some(false)).await
     }
 
     pub(crate) async fn send_first_task(&self, id: u32, text: &str) -> Result<Sent, RpcError> {
-        self.send_message(id, text, false, None, true).await
+        self.send_message(id, text, false, None, Some(true)).await
     }
 
     async fn send_message(
@@ -187,7 +199,7 @@ impl Core {
         text: &str,
         force: bool,
         only_if: Option<&str>,
-        first_task: bool,
+        task: Option<bool>, // asks for a turn: Some(whether it is the launch task)
     ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
             t.check_program()?;
@@ -231,7 +243,10 @@ impl Core {
                 };
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
                 let bytes = paste(screen.dec_mode(2004), text);
-                let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
+                let paste = match task {
+                    Some(first) => Step::Task(bytes, first),
+                    None => Step::Write(bytes),
+                };
                 let steps = vec![paste, Step::Pause(gap), Step::Write(submit)];
                 Ok(((word, t.turn, t.reported), steps))
             })
