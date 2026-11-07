@@ -122,10 +122,16 @@ fn cmd_at(exe: &Path, session: &str, root: &Path) -> Command {
     cmd
 }
 
+/// `secs`, plus a minute where Windows PowerShell starts slowly under hc
+/// (GitHub's Arm64 runner takes ~20 s; ci.yml sets HC_TEST_SLOW_POWERSHELL there).
+fn ps(secs: u64) -> u64 {
+    secs + if std::env::var_os("HC_TEST_SLOW_POWERSHELL").is_some_and(|v| !v.is_empty()) { 60 } else { 0 }
+}
+
 fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ok() {
-        assert!(start.elapsed() < Duration::from_secs(20), "timed out waiting: {what}");
+        assert!(start.elapsed() < Duration::from_secs(ps(20)), "timed out waiting: {what}");
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -219,7 +225,7 @@ if ($request.method -ne 'hello') { exit 2 }
 /// with `mark` at its end (a PE runs with bytes appended).
 fn release(dir: &Path, mark: &str) -> PathBuf {
     let built = Path::new(BIN).parent().unwrap();
-    for rel in [r"conpty\conpty.dll", r"conpty\x64\OpenConsole.exe"] {
+    for rel in [r"conpty\conpty.dll", r"conpty\x64\OpenConsole.exe", r"conpty\arm64\OpenConsole.exe"] {
         std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
         std::fs::copy(built.join(rel), dir.join(rel)).expect("run scripts\\fetch-conpty.ps1 first");
     }
@@ -275,7 +281,7 @@ fn an_update_that_cannot_finish_puts_everything_back() {
     let new = release(&s.root.join("new"), "new-build");
     // Something holds the last file without letting it move (a scanner).
     let held = std::os::windows::fs::OpenOptionsExt::share_mode(std::fs::OpenOptions::new().read(true), 0)
-        .open(s.root.join(r"inst\conpty\x64\OpenConsole.exe"))
+        .open(s.root.join(r"inst\conpty\arm64\OpenConsole.exe"))
         .unwrap();
     let out = hc_at(&s, &exe, &["update", "--from", new.to_str().unwrap()]);
     drop(held);
@@ -300,7 +306,11 @@ fn attach_types_non_ascii_text_unchanged() {
     let outer = s.bg(&[BIN, "attach", &inner]);
     s.shows(&outer, "ready");
     s.json(&["send", &outer, "é"]);
-    assert_eq!(s.json(&["wait", &inner, "--timeout", "15"])["exit_code"], 0, "the line was read and written");
+    assert_eq!(
+        s.json(&["wait", &inner, "--timeout", &ps(15).to_string()])["exit_code"],
+        0,
+        "the line was read and written"
+    );
     assert_eq!(std::fs::read_to_string(&got).unwrap(), "233");
 }
 
@@ -493,7 +503,8 @@ fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
     let pid_file = s.root.join("exec-pid.txt");
     let child =
         s.file("exec.ps1", &format!("$PID | Out-File -Encoding ascii '{}'; Start-Sleep 60", pid_file.display()));
-    let (code, _) = s.out(&["exec", "--timeout", "5", "cmd", "/c", &format!("powershell -NoProfile -File {child}")]);
+    let (code, _) =
+        s.out(&["exec", "--timeout", &ps(5).to_string(), "cmd", "/c", &format!("powershell -NoProfile -File {child}")]);
     assert_eq!(code, 124);
     let pid: u64 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
     wait_until("grandchild gone", || !alive(pid));
@@ -537,7 +548,7 @@ fn send_types_a_line_into_a_program_waiting_for_one() {
     let t = s.bg(&["powershell", "-NoProfile", "-Command", "$x = Read-Host 'name'; \"got-$x\""]);
     s.shows(&t, "name");
     s.json(&["send", &t, "bob"]);
-    let end = s.json(&["wait", &t, "--timeout", "15"]);
+    let end = s.json(&["wait", &t, "--timeout", &ps(15).to_string()]);
     assert_eq!(end["reason"], "exit", "{end}");
     assert!(s.read(&t).contains("got-bob"));
 }
@@ -561,7 +572,7 @@ while ($true) {
     );
     let t = s.bg(&["powershell", "-NoProfile", "-File", &agent]);
     wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
-    let sent = s.json(&["send", &t, "hi", "--wait", "--timeout", "15"]);
+    let sent = s.json(&["send", &t, "hi", "--wait", "--timeout", &ps(15).to_string()]);
     assert_eq!(sent["wait"]["status"], "done", "{sent}");
     assert_eq!(sent["wait"]["turn"], 1, "{sent}");
     assert!(s.read(&t).contains("answer to: hi"));
@@ -618,7 +629,8 @@ fn planned_restarts_preserve_the_environment_for_new_terminals() {
             .unwrap();
         assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
         assert_ne!(s.json(&["server", "status"])["pid"], before);
-        let (code, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+        let (code, out) =
+            s.out(&["run", "--timeout", &ps(15).to_string(), "powershell", "-NoProfile", "-File", &probe]);
         assert_eq!(code, 0, "{out}");
         assert!(out.contains("ENV:|original|"), "{args:?}: {out}");
         let (directory, prefix) = herdr_core::platform::endpoints(&s.root);
@@ -642,11 +654,11 @@ fn planned_restarts_preserve_the_environment_for_new_terminals() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let (_, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    let (_, out) = s.out(&["run", "--timeout", &ps(15).to_string(), "powershell", "-NoProfile", "-File", &probe]);
     assert!(out.contains("ENV:1|fresh|"), "a fresh start uses its caller's environment: {out}");
     let out = cmd_at(&exe, &s.name, &s.root).env_remove("NO_COLOR").args(["server", "restart"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let (_, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    let (_, out) = s.out(&["run", "--timeout", &ps(15).to_string(), "powershell", "-NoProfile", "-File", &probe]);
     assert!(out.contains("ENV:1|fresh|"), "an intentional NO_COLOR survives restart: {out}");
 }
 
@@ -752,7 +764,7 @@ while ([Console]::KeyAvailable) { $got += [Console]::ReadKey($true).KeyChar }
 [Console]::Out.WriteLine("GOT:" + ($got -replace "$e", "ESC"))
 "#,
     );
-    let (_, out) = s.out(&["run", "--timeout", "20", "powershell", "-NoProfile", "-File", &query]);
+    let (_, out) = s.out(&["run", "--timeout", &ps(20).to_string(), "powershell", "-NoProfile", "-File", &query]);
     assert!(out.contains("GOT:ESC]7501;?:states="), "{out}");
 }
 

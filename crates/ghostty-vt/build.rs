@@ -32,7 +32,7 @@ fn main() {
     // Baseline CPU, never this machine's: hc is copied to other machines
     // (releases, `hc machine add`), whose CPUs may lack this one's features.
     build.current_dir(&src).args(["build", "-Demit-lib-vt", "-Doptimize=ReleaseFast", "-Dcpu=baseline"]);
-    if let Some(path) = clean_path {
+    if let Some(path) = &clean_path {
         build.env("PATH", path);
     }
     // Building for another target than this machine (the static musl Linux
@@ -55,6 +55,20 @@ fn main() {
     std::fs::create_dir_all(&lib).unwrap();
     let name = if windows { "ghostty-vt-static.lib" } else { "libghostty-vt.a" };
     std::fs::copy(out.join("zig-out/lib").join(name), lib.join(name)).unwrap();
+    // Arm64 MSVC: Zig's bundled compiler runtime and Rust's compiler_builtins
+    // both define helpers like __udivti3 as weak externals with different
+    // defaults, which link.exe refuses (LNK1227). Rust's provide the same
+    // routines, so Zig's copy leaves the archive.
+    if target == "aarch64-pc-windows-msvc" {
+        let archive = lib.join(name);
+        let mut ar = Command::new(&zig);
+        ar.args(["ar", "d"]).arg(&archive).arg("compiler_rt.obj");
+        if let Some(path) = &clean_path {
+            ar.env("PATH", path);
+        }
+        let status = ar.status().unwrap_or_else(|e| panic!("cannot run {zig:?} ar: {e}"));
+        assert!(status.success(), "removing compiler_rt.obj from {} failed: {status}", archive.display());
+    }
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=static={}", if windows { "ghostty-vt-static" } else { "ghostty-vt" });
 }

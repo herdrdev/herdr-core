@@ -570,7 +570,18 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
             "install hc there yourself",
         )
     })?;
-    let zip = crate::releases::fetch(&m, "windows-x86_64", &scratch.0)?;
+    // The machine's own CPU from its settings (a shell there may be an x64
+    // program emulated on Arm, which says AMD64 for itself); x64 when it
+    // won't say, or this version has no Arm build (x64 runs emulated on Arm).
+    let to = Reach { target, via: false };
+    let cpu =
+        run_raw(paths, to, r#"reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment""#, b"")?;
+    let arm = cpu.status.success()
+        && String::from_utf8_lossy(&cpu.stdout)
+            .lines()
+            .any(|l| l.trim_start().starts_with("PROCESSOR_ARCHITECTURE") && l.trim_end().ends_with("ARM64"));
+    let build = if arm && m.targets.contains_key("windows-aarch64") { "windows-aarch64" } else { "windows-x86_64" };
+    let zip = crate::releases::fetch(&m, build, &scratch.0)?;
     let script = scratch.0.join("hc-install.ps1");
     std::fs::write(&script, include_str!("../../../distribution/install.ps1"))
         .map_err(|e| RpcError::internal(e.to_string()))?;
@@ -583,7 +594,6 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
         .args(["-o", "ControlMaster=no"]);
     scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     scp.arg(scratch.0.join("hc-install.zip")).arg(&script).arg(format!("{target}:"));
-    let to = Reach { target, via: false };
     let out = scp.output().map_err(|e| unreachable(to, &format!("cannot run scp: {e}")))?;
     if !out.status.success() {
         return Err(RpcError::new(

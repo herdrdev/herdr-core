@@ -142,7 +142,11 @@ impl Drop for Scratch {
     }
 }
 
-/// This machine as release targets name it: `linux-x86_64`, `macos-aarch64`.
-pub fn this_target() -> String {
-    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+/// This machine's build in `m`, as release targets name it: `linux-x86_64`,
+/// `windows-aarch64`. The OS's own CPU first, so an x64 hc on an Arm PC
+/// moves to the Arm build; else this hc's own (x64 runs emulated there).
+pub fn this_target(m: &Manifest) -> String {
+    let os = std::env::consts::OS;
+    let native = format!("{os}-{}", crate::platform::native_arch());
+    if m.targets.contains_key(&native) { native } else { format!("{os}-{}", std::env::consts::ARCH) }
 }
