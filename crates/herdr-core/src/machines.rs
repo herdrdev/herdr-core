@@ -88,7 +88,7 @@ impl Reach<'_> {
                 #[cfg(not(windows))]
                 let target = format!("'{}'", self.target.replace('\'', r"'\''"));
                 format!("hc machine add --via {target} --name <name>")
-            },
+            }
             false => format!("hc machine add {}", self.target),
         }
     }
@@ -687,10 +687,7 @@ mod tests {
     #[test]
     fn via_command_line_is_split_with_windows_quoting_and_keeps_remote_line_one_arg() {
         let paths = crate::paths::Paths::from_env().unwrap();
-        let reach = Reach {
-            target: r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu -e bash -lc"#,
-            via: true,
-        };
+        let reach = Reach { target: r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu -e bash -lc"#, via: true };
         let line = "printf '%s\\n' \"remote line with spaces\"";
         let cmd = reach.command(&paths, &[], line);
         let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
