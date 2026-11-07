@@ -823,3 +823,87 @@ pub mod console {
         (n > 0).then(|| buf[..n as usize].to_vec())
     }
 }
+
+
+// --- Machine connections ----------------------------------------------------
+
+pub(crate) fn machine_command(
+    paths: &crate::paths::Paths,
+    target: &str,
+    via: bool,
+    extra: &[&str],
+    line: &str,
+) -> io::Result<Command> {
+    if via {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("{target} \"$1\"")).arg("sh").arg(line);
+        return Ok(cmd);
+    }
+    let mut cmd = ssh_command(paths, target, extra);
+    if std::env::var_os("HC_SSH").is_none() {
+        cmd.arg("-T");
+    }
+    cmd.arg(target).arg(line);
+    Ok(cmd)
+}
+
+pub(crate) fn machine_add_hint(target: &str, via: bool) -> String {
+    if via {
+        format!("hc machine add --via '{}' --name <name>", target.replace('\'', r"'\''"))
+    } else {
+        format!("hc machine add {target}")
+    }
+}
+
+pub(crate) fn validate_via_target(target: &str) -> io::Result<()> {
+    if target.trim().is_empty() || target.chars().any(char::is_control) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "one line, no control characters"));
+    }
+    Ok(())
+}
+
+fn control_path(paths: &crate::paths::Paths, target: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    target.hash(&mut h);
+    paths.socket.parent().expect("socket has a dir").join(format!("ssh-{:012x}", h.finish() & 0xffff_ffff_ffff))
+}
+
+fn ssh_command(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> Command {
+    if let Some(fake) = std::env::var_os("HC_SSH") {
+        return Command::new(fake);
+    }
+    let mut ssh = Command::new("ssh");
+    let master = if extra.iter().any(|o| o.starts_with("ControlPersist")) { "auto" } else { "no" };
+    ssh.arg("-S").arg(control_path(paths, target)).args(["-o", &format!("ControlMaster={master}")]);
+    for option in extra {
+        ssh.args(["-o", option]);
+    }
+    ssh
+}
+
+pub(crate) fn ssh_login_command(paths: &crate::paths::Paths, target: &str) -> io::Result<Option<Command>> {
+    paths.create_dirs()?;
+    let mut cmd = ssh_command(paths, target, &["BatchMode=no", "ControlPersist=600"]);
+    cmd.env_remove("SSH_ASKPASS").env("SSH_ASKPASS_REQUIRE", "never").arg(target).arg("exit");
+    Ok(Some(cmd))
+}
+
+pub(crate) fn ssh_logout(paths: &crate::paths::Paths, target: &str) {
+    if std::env::var_os("HC_SSH").is_none() {
+        let mut cmd = ssh_command(paths, target, &[]);
+        cmd.args(["-O", "exit", target])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = cmd.status();
+    }
+}
+
+pub(crate) fn ssh_control_path(paths: &crate::paths::Paths, target: &str) -> Option<PathBuf> {
+    Some(control_path(paths, target))
+}
+
+pub(crate) fn is_windows_host() -> bool {
+    false
+}
