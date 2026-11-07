@@ -909,7 +909,7 @@
       "SendResult": {
         "properties": {
           "started": {
-            "description": "Whether it went `working` within a few seconds; null when it doesn't\nreport status, so nobody can tell.",
+            "description": "Whether `working` or a later turn was observed after sending, within a few\nseconds. Includes an already-working program; not acknowledgment of the\nmessage or a new task. False: neither observed; null: status was unreported.",
             "type": [
               "boolean",
               "null"
@@ -2514,12 +2514,12 @@
           }
         },
         {
-          "description": "Then wait for the turn this send started.",
+          "description": "Then wait for completion after this send's turn.",
           "name": "wait",
           "required": false,
           "schema": {
             "default": false,
-            "description": "Then wait for the turn this send started.",
+            "description": "Then wait for completion after this send's turn.",
             "type": "boolean"
           }
         }
