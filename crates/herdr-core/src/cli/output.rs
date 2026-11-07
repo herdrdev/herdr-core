@@ -181,7 +181,9 @@ pub(super) fn describe_wait(r: &Value) -> String {
         Some("exit") => format!("{t} exited (exit {}, turn {})", r["exit_code"], r["turn"]),
         Some("timeout") => format!("{t} still running: {word}, turn {} (wait again to keep waiting)", r["turn"]),
         Some("output") => format!("{t} printed it ({word}, turn {})", r["turn"]),
-        Some("not_started") => format!("{t} hasn't started on it ({word}): hc read {t}, then hc wait {t}"),
+        Some("not_started") => {
+            format!("{t}: no working state or later turn observed ({word}): hc read {t}, then hc wait {t}")
+        }
         Some("running") => format!("{t} still running: {word}, turn {}", r["turn"]),
         _ => format!("{t} {word}, turn {}. Read: hc read {t}", r["turn"]),
     }

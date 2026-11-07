@@ -119,6 +119,9 @@ fn send_pastes_submits_and_reports_whether_work_started() {
         };
         let mut cmd = s.cmd();
         cmd.args(["send", t, "x"]).stdout(slave).stderr(std::process::Stdio::piped());
+        if started == false {
+            cmd.arg("--wait");
+        }
         let out = cmd.spawn().unwrap().wait_with_output().unwrap();
         drop(cmd);
         assert!(out.status.success());
@@ -126,10 +129,26 @@ fn send_pastes_submits_and_reports_whether_work_started() {
         // Unix PTY masters may end with EIO after the slave closes.
         let _ = master.read_to_string(&mut human);
         assert!(human.contains(observation), "{human}");
-        assert!(!human.contains("it started working"), "{human}");
+        if started == false {
+            assert!(human.contains(&format!("{t}: no working state or later turn observed")), "{human}");
+        }
         let err = String::from_utf8(out.stderr).unwrap();
         assert_eq!(err.contains(&format!("hc read {t} --lines 0")), started == false, "{err}");
     }
+    // An advisory write failure must not discard the result of a delivered send.
+    let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let out = s
+        .cmd()
+        .args(["--json", "send", &lazy, "x"])
+        .stderr(std::process::Stdio::from(std::os::fd::OwnedFd::from(writer)))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+        json!({"status": "idle", "turn": 0, "started": false})
+    );
     shows(&s, &busy, "got:x");
     shows(&s, &lazy, "got:x");
 }

@@ -1390,7 +1390,7 @@
             ]
           },
           "reason": {
-            "description": "status, exit (including program loss in a kept terminal), output, timeout,\nor not_started (after a send: it did not start working; a plain wait\nstill follows that send's turn); with\n`children`: children; message (someone messaged the waiter, any\nwait); for each child in `children`: status, exit, or running (still\nworking).",
+            "description": "status, exit (including program loss in a kept terminal), output, timeout,\nor not_started (after a send: no working state or later turn was observed; a plain wait\nstill follows that send's turn); with\n`children`: children; message (someone messaged the waiter, any\nwait); for each child in `children`: status, exit, or running (still\nworking).",
             "type": "string"
           },
           "signal": {

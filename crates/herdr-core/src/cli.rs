@@ -10,7 +10,7 @@ use crate::picker;
 use crate::rpc::RpcError;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 
 mod file;
 mod machine;
@@ -366,7 +366,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             p.caller = Some(caller());
             let r = call("terminal.send", to(&p))?;
             if r["started"] == false {
-                eprintln!("inspect the current screen before resending: hc read {} --lines 0", p.terminal);
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "inspect the current screen before resending: hc read {} --lines 0",
+                    p.terminal
+                );
             }
             let started = match r["started"].as_bool() {
                 Some(true) => "working or a later turn observed",
