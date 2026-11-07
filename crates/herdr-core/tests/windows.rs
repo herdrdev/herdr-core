@@ -658,7 +658,9 @@ fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
     std::fs::create_dir_all(&state).unwrap();
     let snapshot = json!({
         "machine_id": format!("other-{machine}"),
-        "vars": [[{"Unix": b"HC_SESSION_VALUE".to_vec()}, {"Unix": b"copied-machine".to_vec()}]],
+        "boot_id": null,
+        "written_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+        "vars": [(std::ffi::OsString::from("HC_SESSION_VALUE"), std::ffi::OsString::from("copied-machine"))],
     });
     std::fs::write(state.join("restart-env.json"), serde_json::to_vec(&snapshot).unwrap()).unwrap();
     let out = cmd(&s.name, &s.root).env("HC_SESSION_VALUE", "new-machine").args(["server", "start"]).output().unwrap();
@@ -669,14 +671,41 @@ fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
 }
 
 #[test]
-fn a_failed_environment_handoff_leaves_the_core_running() {
+fn a_core_started_from_cmd_keeps_its_environment_across_restart() {
+    use std::os::windows::process::CommandExt;
+    let s = Session::new();
+    let mut launcher = Command::new("cmd");
+    launcher.current_dir(&s.root);
+    for (key, value) in cmd(&s.name, &s.root).get_envs() {
+        match value {
+            Some(value) => {
+                launcher.env(key, value);
+            }
+            None => {
+                launcher.env_remove(key);
+            }
+        }
+    }
+    // cd records cmd.exe's hidden =C: working-directory entry for the drive.
+    let script = format!("cd /d \"{}\" && \"{BIN}\" server start", s.root.display());
+    let out = launcher.env("HC_SESSION_VALUE", "saved-from-cmd").args(["/d", "/c"]).raw_arg(script).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = cmd(&s.name, &s.root).env("HC_SESSION_VALUE", "caller").args(["server", "restart"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (code, out) = s.out(&["run", "cmd", "/d", "/c", "echo %HC_SESSION_VALUE%"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("saved-from-cmd"), "{out}");
+}
+
+#[test]
+fn a_failed_environment_handoff_still_restarts_the_core() {
     let s = Session::new();
     let before = s.json(&["server", "start"])["pid"].clone();
     let blocked = s.root.join("state/herdr-core").join(&s.name).join("restart-env.json");
     std::fs::create_dir(&blocked).unwrap();
     let (code, _) = s.out(&["server", "restart"]);
-    assert_ne!(code, 0);
-    assert_eq!(s.json(&["server", "status"])["pid"], before);
+    assert_eq!(code, 0);
+    assert_ne!(s.json(&["server", "status"])["pid"], before);
     std::fs::remove_dir(blocked).unwrap();
 }
 

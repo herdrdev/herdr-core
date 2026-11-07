@@ -694,6 +694,11 @@ pub fn machine_id() -> Option<String> {
     line.split_whitespace().last().map(String::from)
 }
 
+/// Windows has no SIGTERM handoff; a requested restart is bounded by its expiry.
+pub fn boot_id() -> io::Result<Option<String>> {
+    Ok(None)
+}
+
 // --- Terminals: ConPTY ----------------------------------------------------
 
 type CreatePc = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> i32;

@@ -545,6 +545,41 @@ pub fn machine_id() -> Option<String> {
         .filter(|s| !s.is_empty() && s != "uninitialized")
 }
 
+/// Identity of this boot, not just the machine that owns the disk.
+pub fn boot_id() -> io::Result<Option<String>> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut bytes = [0u8; 128];
+        let mut size = bytes.len();
+        if unsafe {
+            libc::sysctlbyname(
+                c"kern.bootsessionuuid".as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let value = std::str::from_utf8(&bytes[..size]).map_err(io::Error::other)?.trim_end_matches('\0').trim();
+        if value.is_empty() {
+            return Err(io::Error::other("boot identity is empty"));
+        }
+        Ok(Some(value.into()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(io::Error::other("boot identity is empty"));
+        }
+        Ok(Some(value.into()))
+    }
+}
+
 // --- Terminals -------------------------------------------------------------
 
 /// A program on its own terminal.

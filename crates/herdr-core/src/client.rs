@@ -180,9 +180,6 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
     let exe = EXE.get().cloned().map_or_else(std::env::current_exe, Ok)?;
     let exe = if args.first() == Some(&"serve") { platform::core_executable(&exe) } else { exe };
     let mut cmd = Command::new(exe);
-    if args == ["serve"] {
-        crate::restart::apply(paths, &mut cmd)?;
-    }
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.
     cmd.args(args).env_remove(crate::sweep::VAR).env(crate::sweep::RUNTIME, "1");

@@ -219,6 +219,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
     }
+    crate::restart::discard(&core.paths);
     if let Err(e) = core.shutdown().await {
         eprintln!("core: shutdown registry flush failed: {}", e.message);
     }
@@ -226,7 +227,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
 }
 
 async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    crate::restart::prepare(core).await.map_err(|e| RpcError::internal(e.to_string()))?;
+    crate::restart::prepare(core).map_err(|e| RpcError::internal(e.to_string()))?;
     Ok(StopResult { stopped: true })
 }
 
