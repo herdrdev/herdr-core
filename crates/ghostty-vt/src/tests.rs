@@ -101,9 +101,9 @@ fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
     t.write(b"\x1b]2;my title\x07\x1b[?2026h\x1b[?1004hprompt> ");
     let mut fresh = Terminal::new(30, 4, 1 << 20);
     fresh.write(&t.paint(3));
-    let screen = |t: &Terminal| t.plain_text().lines().rev().take(4).map(String::from).collect::<Vec<_>>();
-    assert_eq!(screen(&fresh), screen(&t));
-    assert!(fresh.plain_text().contains("line 2"), "{:?}", fresh.plain_text());
+    // The 3 history lines, then the screen, with no blank line between them.
+    let shown = |t: &Terminal| t.plain_text().lines().rev().take(7).map(String::from).collect::<Vec<_>>();
+    assert_eq!(shown(&fresh), shown(&t));
     assert!(!fresh.plain_text().contains("line 1\n"), "history beyond 3 lines");
     assert_eq!(fresh.title(), "my title");
     assert!(fresh.dec_mode(1004));
