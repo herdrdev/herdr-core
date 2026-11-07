@@ -704,6 +704,19 @@ fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
 }
 
 #[test]
+fn what_a_shell_runs_is_in_front_until_it_ends() {
+    let s = Session::new();
+    let t = s.bg(&["cmd.exe"]);
+    let front = || s.json(&["get", &t])["foreground"]["name"].as_str().unwrap_or_default().to_lowercase();
+    wait_until("the shell in front", || front() == "cmd.exe");
+    s.out(&["send", &t, "ping -n 60 127.0.0.1"]);
+    wait_until("ping in front", || front() == "ping.exe");
+    let stop = s.json(&["interrupt", &t, "--timeout", "10"]);
+    assert_eq!(stop["outcome"], "stopped", "the shell got the terminal back: {stop}");
+    wait_until("the shell in front again", || front() == "cmd.exe");
+}
+
+#[test]
 fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     let s = Session::new();
     let dir = s.root.join("moved here");
