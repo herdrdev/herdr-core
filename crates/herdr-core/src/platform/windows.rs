@@ -1199,3 +1199,207 @@ pub mod console {
         }
     }
 }
+
+
+// --- Machine connections ----------------------------------------------------
+
+fn parse_windows_command_line(target: &str) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+    // Leading whitespace otherwise produces an empty argv[0].
+    let target = target.trim_start_matches(|ch| ch == ' ' || ch == '\t');
+    if target.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty --via command"));
+    }
+    if has_unterminated_quote(target) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "unterminated quote in --via command"));
+    }
+
+    let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+    let mut argc = 0;
+    let argv = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut argc) };
+    if argv.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    if argc <= 0 {
+        unsafe { LocalFree(argv.cast()); }
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty --via command"));
+    }
+
+    let parsed = unsafe {
+        let args = std::slice::from_raw_parts(argv, argc as usize);
+        let parsed = args
+            .iter()
+            .map(|arg| {
+                let mut len = 0;
+                while *(*arg).add(len) != 0 {
+                    len += 1;
+                }
+                std::ffi::OsString::from_wide(std::slice::from_raw_parts(*arg, len))
+            })
+            .collect::<Vec<_>>();
+        LocalFree(argv.cast());
+        parsed
+    };
+    if parsed.first().is_none_or(|program| program.is_empty()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty executable in --via command"));
+    }
+    Ok(parsed)
+}
+
+fn has_unterminated_quote(command_line: &str) -> bool {
+    let (mut quoted, mut backslashes) = (false, 0usize);
+    for ch in command_line.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        if ch == '"' && backslashes % 2 == 0 {
+            quoted = !quoted;
+        }
+        backslashes = 0;
+    }
+    quoted
+}
+
+pub(crate) fn validate_via_target(target: &str) -> io::Result<()> {
+    // Leading spaces/tabs are accepted, but control characters elsewhere remain invalid.
+    let normalized = target.trim_start_matches(|ch| ch == ' ' || ch == '\t');
+    if normalized.is_empty() || normalized.chars().any(char::is_control) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "one line, no control characters"));
+    }
+    parse_windows_command_line(normalized).map(|_| ())
+}
+
+pub(crate) fn machine_command(
+    _paths: &crate::paths::Paths,
+    target: &str,
+    via: bool,
+    extra: &[&str],
+    line: &str,
+) -> io::Result<Command> {
+    let mut cmd = if via {
+        let mut parsed = parse_windows_command_line(target)?.into_iter();
+        let program = parsed.next().expect("parser rejects an empty executable");
+        let mut cmd = Command::new(program);
+        cmd.args(parsed).arg(line);
+        cmd
+    } else {
+        let mut cmd = ssh_command(extra);
+        if std::env::var_os("HC_SSH").is_none() {
+            cmd.arg("-T");
+        }
+        cmd.arg(target).arg(line);
+        cmd
+    };
+    apply_background_flags(&mut cmd);
+    Ok(cmd)
+}
+
+fn ssh_command(extra: &[&str]) -> Command {
+    if let Some(fake) = std::env::var_os("HC_SSH") {
+        return Command::new(fake);
+    }
+    let mut ssh = Command::new("ssh");
+    for option in extra {
+        ssh.args(["-o", option]);
+    }
+    ssh
+}
+
+fn apply_background_flags(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(background_creation_flags());
+}
+
+fn background_creation_flags() -> u32 {
+    CREATE_NO_WINDOW
+}
+
+pub(crate) fn machine_add_hint(target: &str, via: bool) -> String {
+    if via {
+        format!("hc machine add --via '{}' --name <name>", target.replace('\'', "''"))
+    } else {
+        format!("hc machine add {target}")
+    }
+}
+
+pub(crate) fn ssh_login_command(_: &crate::paths::Paths, _: &str) -> io::Result<Option<Command>> {
+    Ok(None)
+}
+
+pub(crate) fn ssh_logout(_: &crate::paths::Paths, _: &str) {}
+
+pub(crate) fn ssh_control_path(_: &crate::paths::Paths, _: &str) -> Option<PathBuf> {
+    None
+}
+
+pub(crate) fn is_windows_host() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod machine_connection_tests {
+    use super::*;
+
+    #[test]
+    fn via_parser_trims_leading_spaces_and_tabs() {
+        for target in ["   cmd.exe /c echo hi", "\t\tcmd.exe /c echo hi"] {
+            let parsed = parse_windows_command_line(target).unwrap();
+            assert_eq!(parsed[0], "cmd.exe");
+            assert_eq!(parsed[1], "/c");
+            assert_eq!(parsed[2], "echo");
+            assert_eq!(parsed[3], "hi");
+        }
+        assert!(validate_via_target(" \t cmd.exe /c echo hi").is_ok());
+    }
+
+    #[test]
+    fn via_parser_rejects_empty_or_unterminated_executables() {
+        assert!(parse_windows_command_line("   ").is_err());
+        assert!(parse_windows_command_line("\"\" arg").is_err());
+        assert!(parse_windows_command_line("\"unterminated").is_err());
+        assert!(validate_via_target("cmd.exe\narg").is_err());
+    }
+
+    #[test]
+    fn via_add_hint_uses_literal_powershell_single_quoting() {
+        assert_eq!(
+            machine_add_hint(r##"C:\tools\$cache\it's\a`b\bridge\"quoted".exe"##, true),
+            r##"hc machine add --via 'C:\tools\$cache\it''s\a`b\bridge\"quoted".exe' --name <name>"##
+        );
+        assert_eq!(
+            machine_add_hint(r#"wsl.exe -d "Ubuntu Test""#, true),
+            r#"hc machine add --via 'wsl.exe -d "Ubuntu Test"' --name <name>"#
+        );
+    }
+
+    #[test]
+    fn via_command_line_is_split_with_windows_quoting_and_keeps_remote_line_one_arg() {
+        let paths = crate::paths::Paths::from_env().unwrap();
+        let target = r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu -e bash -lc"#;
+        let line = "printf '%s\\n' \"remote line with spaces\"";
+        let cmd = machine_command(&paths, target, true, &[], line).unwrap();
+        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(cmd.get_program().to_string_lossy(), r"C:\Program Files\WSL\wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "bash", "-lc", line]);
+
+        let trailing_slash = r"C:\tools\bin\";
+        let cmd = machine_command(&paths, trailing_slash, true, &[], line).unwrap();
+        assert_eq!(cmd.get_program().to_string_lossy(), trailing_slash);
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), [std::ffi::OsStr::new(line)]);
+    }
+
+    #[test]
+    fn windows_parser_handles_backslashes_before_closing_quotes() {
+        let parsed = parse_windows_command_line(r#""C:\folder\\" -flag"#).unwrap();
+        assert_eq!(parsed[0].to_string_lossy(), r"C:\folder\\");
+        assert_eq!(parsed[1].to_string_lossy(), "-flag");
+    }
+
+    #[test]
+    fn background_flags_include_create_no_window() {
+        assert_eq!(background_creation_flags(), CREATE_NO_WINDOW);
+    }
+}
