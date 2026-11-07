@@ -161,15 +161,28 @@ impl Core {
                 let pgid = self.foreground(id).await;
                 let now = (pgid > 0).then(|| about(pgid)).flatten();
                 let mut st = self.lock();
-                let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
-                    continue;
+                let (status_change, foreground_value) = {
+                    let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
+                        continue;
+                    };
+                    let was_child = t.foreground.as_ref().is_some_and(|w| Some(w.pid as u32) != t.pid);
+                    let returned_to_root = now.as_ref().is_some_and(|n| Some(n.pid as u32) == t.pid);
+                    let change =
+                        (was_child && returned_to_root && (t.status.is_some() || !t.records.is_empty())).then(|| {
+                            t.first_task_turn = None;
+                            crate::status::reset(t)
+                        });
+                    if let Some(f) = &now {
+                        t.last_cwd = Some(f.cwd.clone());
+                    }
+                    t.foreground = now.clone();
+                    (change, serde_json::to_value(&now).unwrap_or_default())
                 };
-                if let Some(f) = &now {
-                    t.last_cwd = Some(f.cwd.clone());
+                if let Some(change) = status_change {
+                    self.status_changed(&mut st, id, change);
                 }
-                t.foreground = now.clone();
                 self.save_soon();
-                self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
+                self.emit(&mut st, "foreground", id, foreground_value);
             }
         }
     }
