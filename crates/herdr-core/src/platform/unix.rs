@@ -824,7 +824,6 @@ pub mod console {
     }
 }
 
-
 // --- Machine connections ----------------------------------------------------
 
 pub(crate) fn machine_command(
@@ -892,10 +891,7 @@ pub(crate) fn ssh_login_command(paths: &crate::paths::Paths, target: &str) -> io
 pub(crate) fn ssh_logout(paths: &crate::paths::Paths, target: &str) {
     if std::env::var_os("HC_SSH").is_none() {
         let mut cmd = ssh_command(paths, target, &[]);
-        cmd.args(["-O", "exit", target])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        cmd.args(["-O", "exit", target]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         let _ = cmd.status();
     }
 }
