@@ -236,3 +236,76 @@ fn interrupt_reports_what_it_observed() {
     let (code, err) = s.err(&["send", &quits, "x"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (11, Some("finished")));
 }
+
+#[test]
+fn a_send_is_observed_before_start_detection_and_completion() {
+    let s = session();
+    let sender = run(&s, "r state=idle; sleep 100");
+    let body =
+        script(&s, "stty -echo; r state=idle; read -r l; w start; r state=working; w done; r state=done; sleep 100");
+    let agent = s.json(&["run", "--bg", "sh", "-c", &body])["address"].as_str().unwrap().to_string();
+    wait_until("idle", || status(&s, &agent) == "idle");
+    s.json(&["label", &agent, "team=red"]);
+    let (mut events, mut sender_events, mut labels) = (s.connect(), s.connect(), s.connect());
+    events.call(1, "events.subscribe", json!({"terminal": agent}));
+    sender_events.call(1, "events.subscribe", json!({"terminal": sender}));
+    labels.call(1, "events.subscribe", json!({"labels": {"team": "red"}}));
+
+    let refused = s.connect().call(1, "terminal.send", json!({"terminal": agent, "text": "no", "if": "working"}));
+    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+    s.json(&["label", &agent, "checked=refusal"]);
+    next_event(&mut events, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "refusal produced an event: {m}");
+        m["params"]["type"] == "labels"
+    });
+
+    let mut conn = s.connect();
+    let params = json!({"terminal": agent, "text": "secret-body", "wait": true, "caller": sender});
+    let waiting = std::thread::spawn(move || conn.call(2, "terminal.send", params));
+    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
+    assert_eq!(e["params"]["terminal"], agent);
+    assert_eq!(e["params"]["data"], json!({"from": sender}), "sender only, never text: {e}");
+    assert_eq!(status(&s, &agent), "idle", "input observation precedes start detection");
+    assert!(!waiting.is_finished(), "the send still waits for a start");
+    let by_label = next_event(&mut labels, |m| m["params"]["type"] == "message_sent");
+    assert_eq!(by_label, e, "recipient labels use the same ordered event");
+    touch(&s, "start");
+    wait_until("working", || status(&s, &agent) == "working");
+    assert!(!waiting.is_finished(), "completion is separate too");
+    touch(&s, "done");
+    assert_eq!(waiting.join().unwrap()["result"]["wait"]["status"], "done");
+
+    s.json(&["label", &sender, "checked=filter"]);
+    next_event(&mut sender_events, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "filters concern the recipient: {m}");
+        m["params"]["type"] == "labels"
+    });
+    // A later barrier also catches accidental duplicate emission after start/wait.
+    s.json(&["label", &agent, "checked=once"]);
+    next_event(&mut events, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "one event per explicit send: {m}");
+        m["params"]["type"] == "labels"
+    });
+}
+
+#[test]
+fn plain_shell_sends_have_no_terminal_sender_and_are_not_replayed() {
+    let s = session();
+    let t = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", json!({"terminal": t}));
+    assert!(s.json(&["send", &t, "secret-body"])["started"].is_null());
+    let e = next_event(&mut events, |m| m["params"]["type"] == "message_sent");
+    assert_eq!(e["params"]["terminal"], t);
+    assert_eq!(e["params"]["data"], json!({"from": null}));
+    drop(events);
+    let mut late = s.connect();
+    let snapshot = late.call(1, "events.subscribe", json!({"terminal": t}));
+    assert!(snapshot["result"]["seq"].as_u64().unwrap() >= e["params"]["seq"].as_u64().unwrap());
+    s.json(&["keys", &t, "x"]);
+    s.json(&["label", &t, "checked=live-only"]);
+    next_event(&mut late, |m| {
+        assert_ne!(m["params"]["type"], "message_sent", "neither replay nor keys: {m}");
+        m["params"]["type"] == "labels"
+    });
+}

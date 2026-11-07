@@ -138,6 +138,18 @@ Each event's `data`, and how to apply it to a snapshot:
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
+| `message_sent` | `{from}`: an explicit `terminal.send` input sequence returned; `from` is the terminal caller's address or null | nothing to apply |
+
+`message_sent` observes the input attempt before start detection (up to five
+seconds) and an optional completion wait. It contains no text. It does not
+prove byte delivery, reading, work starting or completion: the existing input
+writer can skip remaining input if its holder link disappears. Caller metadata
+is not authentication. The envelope's `terminal` is the recipient; filters match
+that recipient and `from` uses the existing address rules. Refused sends, keys,
+launch tasks and automatic parent notes produce no event. A recipient removed
+before observation is not reported. This is live observation, not history:
+snapshots, missed notifications and reconnections do not replay sends. Older
+emitting cores produce none; absence does not prove no send occurred.
 
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,
