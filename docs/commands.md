@@ -458,6 +458,7 @@ Arguments:
 Options:
       --json           JSON output even in a terminal
       --lines <LINES>  Lines of history above the screen [default: 0]
+      --ansi           The screen with its colors and styles as SGR sequences, for a viewer that draws them. Only the screen: `lines` is ignored (read history without it). A finished terminal reads as plain text
   -h, --help           Print help
 ```
 
