@@ -37,6 +37,16 @@ pub struct Viewer {
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
     active_at: Option<Instant>,
+    /// Whether the person's input is in this viewer: its window has the OS
+    /// focus and this is the pane typed in. None: it never said, so it counts
+    /// as the person's own viewer (the CLI, an agent, a first attach).
+    focused: Option<bool>,
+    /// The person has typed in this viewer since it attached (or since the
+    /// line dropped and came back). A viewer that only arrived keeps its
+    /// provisional leadership until it says it is in the background; a viewer
+    /// the person has typed in keeps leadership through unfocus, so moving
+    /// the OS focus between two windows does not move the program's size.
+    spoke: bool,
     display: Display,
     /// An unfinished sequence exceeded continuation tracking; skip its tail.
     pub(crate) recovering: bool,
@@ -64,6 +74,14 @@ pub struct AttachRequest {
     pub resumed: bool,
 }
 
+/// The viewer whose size and colors count: the most recently active one. A
+/// viewer that has not claimed activity since it reconnected ties with the
+/// rest, and the one watching longest keeps the program, so a window that
+/// arrives later cannot take over by being last in line.
+fn leader(viewers: &[Viewer]) -> Option<&Viewer> {
+    viewers.iter().filter(|v| !v.observe).rev().max_by_key(|v| v.active_at)
+}
+
 impl Core {
     /// Adds a viewer: queues the first paint, then every live byte follows in order.
     pub fn attach(&self, conn: &Arc<Conn>, id: u32, req: AttachRequest) -> Result<u32, RpcError> {
@@ -88,6 +106,8 @@ impl Core {
             repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
+            focused: None,
+            spoke: false,
             display: req.display,
             recovering,
         });
@@ -239,7 +259,9 @@ impl Core {
         })
     }
 
-    /// Typing, resizing or focusing makes a viewer the one whose size and colors count.
+    /// Typing, and the size a viewer may ask for, makes it the one whose
+    /// size and colors count; see `viewer_resize` and `viewer_focus` for who
+    /// may ask, and when focus alone must not.
     fn touch(&self, st: &mut State, conn: &Arc<Conn>, channel: u32, f: impl FnOnce(&mut Viewer)) -> Option<u32> {
         let (id, v) = Self::viewer(st, conn, channel)?;
         f(v);
@@ -256,7 +278,7 @@ impl Core {
         let id = if automatic {
             Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
         } else {
-            self.touch(&mut st, conn, channel, |_| {})
+            self.touch(&mut st, conn, channel, |v| v.spoke = true)
         };
         if let Some(id) = id {
             let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
@@ -266,9 +288,26 @@ impl Core {
         }
     }
 
+    /// The viewer's window was laid out, so record its grid. Only a viewer
+    /// that has said it is the one the person is in takes the program's
+    /// size from the last one. A viewer that never reports focus — an idle
+    /// second window, a watcher — keeps its grid to itself, so a background
+    /// window's layout, tab switches, and window-manager animations never
+    /// re-wrap the program being watched; a viewer that is first in line
+    /// still sizes the program through its attach, and `hc attach` in a
+    /// bare terminal is the only viewer and needs no introduction.
     pub fn viewer_resize(&self, conn: &Arc<Conn>, channel: u32, cols: u16, rows: u16) {
         let mut st = self.lock();
-        self.touch(&mut st, conn, channel, |v| v.size = (cols, rows));
+        let Some((id, _)) = Self::viewer(&mut st, conn, channel) else { return };
+        let (_, v) = Self::viewer(&mut st, conn, channel).expect("the viewer is there");
+        v.size = (cols, rows);
+        if v.observe {
+            return;
+        }
+        if v.focused == Some(true) {
+            v.active_at = Some(Instant::now());
+        }
+        self.apply_size(&mut st, id);
     }
 
     pub fn viewer_facts(&self, conn: &Arc<Conn>, channel: u32, display: Display) {
@@ -278,10 +317,7 @@ impl Core {
         v.display.bg = display.bg.or(v.display.bg.take());
         v.display.cursor = display.cursor.or(v.display.cursor.take());
         v.display.cell = display.cell.or(v.display.cell);
-        let display = st.viewers[&id]
-            .iter()
-            .filter(|v| !v.observe)
-            .max_by_key(|v| v.active_at)
+        let display = leader(&st.viewers[&id])
             .filter(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
             .map(|v| v.display.clone());
         if let Some(display) = display {
@@ -289,16 +325,31 @@ impl Core {
         }
     }
 
-    /// Focus changes count as activity, and reach programs that asked for them.
+    /// Focus reaches programs that asked for it, and tells the program who
+    /// the person is in. Gaining focus does not claim the program's size:
+    /// two windows on one machine showing the same program rebuilt it at
+    /// every alt-tab while the size ping-ponged between their grids. Typing
+    /// is what claims it. A viewer that only arrived — laid out, never typed
+    /// in — hands its provisional leadership back when it reports the
+    /// background, so a window opening in the background cannot re-wrap the
+    /// program; a viewer the person typed in keeps leadership through
+    /// unfocus, so leaving a window for one you type in moves the size
+    /// exactly once, at the keystroke.
     pub fn viewer_focus(&self, conn: &Arc<Conn>, channel: u32, focused: bool) {
         let mut st = self.lock();
-        let id = if focused {
-            self.touch(&mut st, conn, channel, |_| {})
-        } else {
-            Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
-        };
-        if let Some(id) = id
-            && st.screens.get(&id).is_some_and(|s| s.dec_mode(1004))
+        let Some((id, _)) = Self::viewer(&mut st, conn, channel) else { return };
+        let leads = leader(&st.viewers[&id]).is_some_and(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel);
+        let left = st.viewers[&id].iter().filter(|v| !v.observe).count() > 1;
+        let (_, v) = Self::viewer(&mut st, conn, channel).expect("the viewer is there");
+        if v.observe {
+            return;
+        }
+        v.focused = Some(focused);
+        if !focused && !v.spoke && leads && left {
+            v.active_at = None;
+        }
+        self.apply_size(&mut st, id);
+        if st.screens.get(&id).is_some_and(|s| s.dec_mode(1004))
             && let Some(link) = st.link(id)
         {
             link.input(id, if focused { b"\x1b[I" } else { b"\x1b[O" });
@@ -326,7 +377,7 @@ impl Core {
     /// The most recently active typing viewer sets size and display facts;
     /// with none, the terminal runs headless.
     fn apply_size(&self, st: &mut State, id: u32) {
-        let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
+        let leader = st.viewers.get(&id).and_then(|vs| leader(vs));
         let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
         let display = leader.map(|v| v.display.clone());
         if !st.screens.contains_key(&id) {

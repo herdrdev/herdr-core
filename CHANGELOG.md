@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- A window in the background no longer resizes the programs it isn't showing. A viewer's size counts when the person types in it; a viewer that has not said it is the window the person is in — it reported no focus, or an idle second window that never said a word about focus — keeps its grid to itself, so a second window opening, resizing, changing tabs, or animating no longer re-wraps an agent you are watching. A window that reconnects and has not been typed in yields to the window that was watching first, so an app coming back in the background leaves programs as they were.
+- Focus no longer moves a program's size. Two windows on one machine showing the same program rebuilt it at every alt-tab while the size ping-ponged between their grids; the size now moves at the keystroke — the window you type in wins — and stays put while you move the OS focus between windows.
+
 ## [0.1.18] - 2026-11-04
 
 ### New
