@@ -145,8 +145,8 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
     if to.via {
         return Ok(());
     }
-    let Some(mut cmd) = crate::platform::ssh_login_command(paths, target)
-        .map_err(|e| RpcError::internal(e.to_string()))?
+    let Some(mut cmd) =
+        crate::platform::ssh_login_command(paths, target).map_err(|e| RpcError::internal(e.to_string()))?
     else {
         return Ok(());
     };
@@ -533,9 +533,7 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
     let mut scp = std::process::Command::new("scp");
     scp.arg("-q");
     if let Some(path) = crate::platform::ssh_control_path(paths, target) {
-        scp.arg("-o")
-            .arg(format!("ControlPath={}", path.display()))
-            .args(["-o", "ControlMaster=no"]);
+        scp.arg("-o").arg(format!("ControlPath={}", path.display())).args(["-o", "ControlMaster=no"]);
     }
     scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     scp.arg(scratch.0.join("hc-install.zip")).arg(&script).arg(format!("{target}:"));
