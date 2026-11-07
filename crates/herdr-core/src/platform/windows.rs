@@ -1200,7 +1200,6 @@ pub mod console {
     }
 }
 
-
 // --- Machine connections ----------------------------------------------------
 
 fn parse_windows_command_line(target: &str) -> io::Result<Vec<std::ffi::OsString>> {
@@ -1223,7 +1222,9 @@ fn parse_windows_command_line(target: &str) -> io::Result<Vec<std::ffi::OsString
         return Err(io::Error::last_os_error());
     }
     if argc <= 0 {
-        unsafe { LocalFree(argv.cast()); }
+        unsafe {
+            LocalFree(argv.cast());
+        }
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty --via command"));
     }
 
