@@ -46,85 +46,21 @@ pub struct Reach<'a> {
     pub via: bool,
 }
 
-#[cfg(windows)]
-fn parse_windows_command_line(target: &str) -> Option<Vec<std::ffi::OsString>> {
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
-
-    // CommandLineToArgvW applies the quoting rules used by Windows command lines.
-    let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
-    let mut argc = 0;
-    let argv = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut argc) };
-    if argv.is_null() || argc <= 0 {
-        return None;
-    }
-
-    let parsed = unsafe {
-        let args = std::slice::from_raw_parts(argv, argc as usize);
-        let parsed = args
-            .iter()
-            .map(|arg| {
-                let mut len = 0;
-                while *(*arg).add(len) != 0 {
-                    len += 1;
-                }
-                std::ffi::OsString::from_wide(std::slice::from_raw_parts(*arg, len))
-            })
-            .collect();
-        windows_sys::Win32::Foundation::LocalFree(argv.cast());
-        parsed
-    };
-    Some(parsed)
-}
-
 impl Reach<'_> {
     /// Says how to add it again, for hints.
     fn add(&self) -> String {
-        match self.via {
-            true => {
-                // This hint is intended for PowerShell: doubled quotes escape embedded quotes.
-                #[cfg(windows)]
-                let target = format!("\"{}\"", self.target.replace('"', "\"\""));
-                #[cfg(not(windows))]
-                let target = format!("'{}'", self.target.replace('\'', r"'\''"));
-                format!("hc machine add --via {target} --name <name>")
-            }
-            false => format!("hc machine add {}", self.target),
-        }
+        crate::platform::machine_add_hint(self.target, self.via)
     }
 
     /// The command that runs `line` there.
-    fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
-        if self.via {
-            #[cfg(windows)]
-            {
-                let mut parsed = parse_windows_command_line(self.target)
-                    .unwrap_or_else(|| vec!["herdr-core: invalid --via command line".into()])
-                    .into_iter();
-                let program = parsed.next().expect("sentinel command line is never empty");
-                let mut cmd = std::process::Command::new(program);
-                cmd.args(parsed).arg(line);
-                return cmd;
-            }
-            #[cfg(not(windows))]
-            {
-                let mut cmd = std::process::Command::new("sh");
-                cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
-                return cmd;
-            }
-        }
-        let mut cmd = ssh(paths, self.target, extra);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // A pipe from the detached core must not open a console of its own.
-            cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-        }
-        if std::env::var_os("HC_SSH").is_none() {
-            cmd.arg("-T");
-        }
-        cmd.arg(self.target).arg(line);
-        cmd
+    fn command(
+        &self,
+        paths: &crate::paths::Paths,
+        extra: &[&str],
+        line: &str,
+    ) -> Result<std::process::Command, RpcError> {
+        crate::platform::machine_command(paths, self.target, self.via, extra, line)
+            .map_err(|error| RpcError::invalid_params(format!("bad command {:?}: {error}", self.target)))
     }
 }
 
@@ -185,14 +121,13 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
 }
 
 /// An ssh target goes to ssh as one argument: never an option, never two
-/// words. A command (`via`) is a one-line shell command on Unix, or a
-/// Windows command line parsed with CommandLineToArgvW on Windows.
+/// words. A command (`via`) is interpreted by the native platform command
+/// implementation, with the remote line appended as its final argument.
 pub fn check_target(to: Reach) -> Result<(), RpcError> {
     let target = to.target;
     if to.via {
-        if target.trim().is_empty() || target.chars().any(char::is_control) {
-            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, no control characters")));
-        }
+        crate::platform::validate_via_target(target)
+            .map_err(|error| RpcError::invalid_params(format!("bad command {target:?}: {error}")))?;
         return Ok(());
     }
     if target.is_empty() || target.starts_with('-') || target.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -201,51 +136,20 @@ pub fn check_target(to: Reach) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// One login per target, shared: a person logs in once in a terminal (codes,
-/// passwords), and the core's connections ride that login. Short, private path.
-#[cfg(unix)]
-fn control_path(paths: &crate::paths::Paths, target: &str) -> std::path::PathBuf {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    target.hash(&mut h);
-    paths.socket.parent().expect("socket has a dir").join(format!("ssh-{:012x}", h.finish() & 0xffff_ffff_ffff))
-}
-
-/// `ssh` riding the shared login when there is one, with `extra` options; or
-/// `$HC_SSH` in its place (tests), which takes only the target and the remote
-/// command. Only `login` creates the shared login: one made by the line (or
-/// an install) would end with it, and take every connection riding it along
-/// (an update restarting hc there ended its own upload that way).
-fn ssh(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> std::process::Command {
-    if let Some(fake) = std::env::var_os("HC_SSH") {
-        return std::process::Command::new(fake);
-    }
-    let mut ssh = std::process::Command::new("ssh");
-    #[cfg(unix)]
-    {
-        let master = if extra.iter().any(|o| o.starts_with("ControlPersist")) { "auto" } else { "no" };
-        ssh.arg("-S").arg(control_path(paths, target)).args(["-o", &format!("ControlMaster={master}")]);
-    }
-    #[cfg(windows)]
-    let _ = (paths, target); // Windows OpenSSH has no ControlMaster support.
-    for option in extra {
-        ssh.args(["-o", option]);
-    }
-    ssh
-}
-
 /// Logs in from this terminal, so ssh can ask for a password or a code. The
 /// login stays up for the core's connections (10 minutes once unused). A
 /// command (`via`) logs in its own way: nothing to do.
 pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
     check_target(to)?;
     let target = to.target;
-    if to.via || cfg!(windows) {
+    if to.via {
         return Ok(());
     }
-    paths.create_dirs().map_err(|e| RpcError::internal(e.to_string()))?;
-    let mut cmd = ssh(paths, target, &["BatchMode=no", "ControlPersist=600"]);
-    cmd.env_remove("SSH_ASKPASS").env("SSH_ASKPASS_REQUIRE", "never").arg(target).arg("exit");
+    let Some(mut cmd) = crate::platform::ssh_login_command(paths, target)
+        .map_err(|e| RpcError::internal(e.to_string()))?
+    else {
+        return Ok(());
+    };
     match cmd.status() {
         Ok(s) if s.success() => Ok(()),
         Ok(_) => Err(RpcError::new("needs_login", format!("logging in to {target} failed"), "ssh said why, above")),
@@ -255,14 +159,8 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
 
 /// Ends the shared login to `target`, if one is up (a forgotten machine).
 pub fn logout(paths: &crate::paths::Paths, to: Reach) {
-    let target = to.target;
-    if cfg!(unix) && std::env::var_os("HC_SSH").is_none() && !to.via {
-        let mut cmd = ssh(paths, target, &[]);
-        cmd.args(["-O", "exit", target])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let _ = cmd.status();
+    if !to.via {
+        crate::platform::ssh_logout(paths, to.target);
     }
 }
 
@@ -282,7 +180,12 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// ~/.local/bin. On Windows, whose shell may be cmd or PowerShell, one line
 /// both read alike; the installer put hc on PATH. Never prompts: a login a
 /// person must type fails fast.
-fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
+fn pipe(
+    paths: &crate::paths::Paths,
+    to: Reach,
+    session: Option<&str>,
+    windows: bool,
+) -> Result<tokio::process::Command, RpcError> {
     let remote = if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
@@ -295,10 +198,10 @@ fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: 
         )
     };
     let options = ["BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "ServerAliveCountMax=4"];
-    let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote));
+    let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote)?);
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 /// What the pipe's line says when there is no hc there.
@@ -361,7 +264,7 @@ async fn dial_once(
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
     let mut child =
-        pipe(paths, to, session, windows).spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
+        pipe(paths, to, session, windows)?.spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let (mut stdin, stdout, mut stderr) =
         (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let mut params = json!({"generation": crate::api::GENERATION});
@@ -416,7 +319,7 @@ async fn dial_once(
                 ));
             }
             if wants_login(&err) {
-                if cfg!(windows) && !to.via {
+                if crate::platform::is_windows_host() && !to.via {
                     return Err(RpcError::new(
                         "needs_login",
                         format!("SSH authentication to {target} failed"),
@@ -489,7 +392,7 @@ fn run_raw(
     input: &[u8],
 ) -> Result<std::process::Output, RpcError> {
     use std::io::Write;
-    let mut cmd = to.command(paths, &["BatchMode=yes", "ConnectTimeout=10"], command);
+    let mut cmd = to.command(paths, &["BatchMode=yes", "ConnectTimeout=10"], command)?;
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let mut stdin = child.stdin.take().expect("piped");
@@ -629,10 +532,11 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
     std::fs::copy(&zip, scratch.0.join("hc-install.zip")).map_err(|e| RpcError::internal(e.to_string()))?;
     let mut scp = std::process::Command::new("scp");
     scp.arg("-q");
-    #[cfg(unix)]
-    scp.arg("-o")
-        .arg(format!("ControlPath={}", control_path(paths, target).display()))
-        .args(["-o", "ControlMaster=no"]);
+    if let Some(path) = crate::platform::ssh_control_path(paths, target) {
+        scp.arg("-o")
+            .arg(format!("ControlPath={}", path.display()))
+            .args(["-o", "ControlMaster=no"]);
+    }
     scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
     scp.arg(scratch.0.join("hc-install.zip")).arg(&script).arg(format!("{target}:"));
     let to = Reach { target, via: false };
@@ -676,46 +580,11 @@ mod tests {
         assert_eq!(super::default_name("rohan", |name| name == "rohan"), Some("rohan-2".into()));
         let ssh = |target| Reach { target, via: false };
         assert!(check_target(ssh("-oProxyCommand=x")).is_err() && check_target(ssh("a b")).is_err());
-        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok() || cfg!(windows));
+        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok());
         assert_eq!(platform("Darwin arm64"), "macos aarch64");
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
         assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn via_command_line_is_split_with_windows_quoting_and_keeps_remote_line_one_arg() {
-        let paths = crate::paths::Paths::from_env().unwrap();
-        let reach = Reach { target: r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu -e bash -lc"#, via: true };
-        let line = "printf '%s\\n' \"remote line with spaces\"";
-        let cmd = reach.command(&paths, &[], line);
-        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
-        assert_eq!(cmd.get_program().to_string_lossy(), r"C:\Program Files\WSL\wsl.exe");
-        assert_eq!(args, ["-d", "Ubuntu", "-e", "bash", "-lc", line]);
-
-        let trailing_slash = Reach { target: r#"C:\tools\bin\"#, via: true };
-        let cmd = trailing_slash.command(&paths, &[], line);
-        assert_eq!(cmd.get_program().to_string_lossy(), r"C:\tools\bin\");
-        assert_eq!(cmd.get_args().collect::<Vec<_>>(), [std::ffi::OsStr::new(line)]);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_command_line_parser_handles_backslashes_before_closing_quotes() {
-        let parsed = parse_windows_command_line(r#""C:\folder\\" -flag"#).unwrap();
-        assert_eq!(parsed[0].to_string_lossy(), r"C:\folder\\");
-        assert_eq!(parsed[1].to_string_lossy(), "-flag");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn via_add_hint_uses_powershell_quoting() {
-        let target = r#"wsl.exe -d "Ubuntu Test""#;
-        assert_eq!(
-            Reach { target, via: true }.add(),
-            r##"hc machine add --via "wsl.exe -d ""Ubuntu Test""" --name <name>"##
-        );
     }
 
     #[test]
@@ -728,7 +597,7 @@ mod tests {
     #[test]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
         let paths = crate::paths::Paths::from_env().unwrap();
-        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
+        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true).unwrap();
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         assert_eq!(
             line,
