@@ -24,8 +24,8 @@ Linux builds are static. On Windows, templates and quoted shell commands need `s
 
 Run `hc update` to update. Running terminals keep running.
 Updates and `hc server restart` keep the environment the core started with;
-stopping and starting takes a fresh one. The first update from 0.1.18 to 0.1.19
-uses the updater's environment once, because 0.1.18 cannot save it for the next core.
+stopping and starting takes a fresh one. The update from an older core to 0.1.19
+uses the updater's environment once, because older cores can't save it for the next core.
 
 If saving fails, the restart still goes ahead with the launcher's environment.
 Saved settings expire after three minutes and cannot carry over to another boot
@@ -33,6 +33,7 @@ on Linux or macOS. On Windows, a restart cut short by a fast reboot can reuse th
 once. A plain SIGTERM keeps terminals and screens, but does not save settings.
 The new launcher still chooses the session's location and, on macOS, whether it
 starts from SSH or launchd.
+
 See [security](docs/security.md) for the trust and signing details.
 
 ## Run it and come back

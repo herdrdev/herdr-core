@@ -2,8 +2,17 @@
 
 ## Unreleased
 
+## [0.1.19] - 2026-11-07
+
+### New
+- **On Linux and macOS, programs you deliberately detach keep running when their terminal closes, like in tmux.** A dev server or job started with `nohup`, `setsid` or as a daemon survives closing its pane, so its port may stay busy until you stop it. Windows still ends everything a terminal started. Terminals opened before this update keep the old behavior until they're reopened. (#136)
+- **Updates and `hc server restart` keep the environment the core started with.** Running an update from a shell with, say, `NO_COLOR=1` no longer turns colors off in every new terminal. Stopping and starting the core takes a fresh environment. The update to 0.1.19 itself still takes the updater's environment once. (#20, #21, thanks @JJLiebig)
+
 ### Fixed
-- Updates and `hc server restart` keep the environment the core started with; stopping and starting takes a fresh one. (#21)
+- On older Linux like RHEL or Rocky 8 (systemd 239), the core starts and restarts as a service. (#135, thanks @FredKhayat)
+- On Windows, programs installed under a system PATH entry like `%ProgramFiles%\...` (PowerShell 7, Git, starship) are found in terminals, as in Windows Terminal. (herdr-app#631)
+- `hc attach` no longer garbles a character that was half printed when you attached. (#144, thanks @sundarshahi)
+- A core that's slow to start, right after an update for example, gets 15 seconds before hc reports that it didn't start.
 
 ## [0.1.18] - 2026-11-04
 

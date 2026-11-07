@@ -261,8 +261,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   a requested restart interrupted by a fast reboot can reuse it once. Session
   paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
   new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
-  not by the saved environment. The first update from 0.1.18 to 0.1.19 takes the
-  updater's environment once: 0.1.18 cannot write the note for its successor.
+  not by the saved environment. The update from an older core to 0.1.19 takes the
+  updater's environment once: older cores can't write the note for their successor.
 - On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
   processes. They hang up the terminal and end its own program and foreground
   job; deliberately detached programs can survive (background server ports may
