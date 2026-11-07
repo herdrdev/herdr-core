@@ -41,6 +41,12 @@ pub struct Viewer {
     /// focus and this is the pane typed in. None: it never said, so it counts
     /// as the person's own viewer (the CLI, an agent, a first attach).
     focused: Option<bool>,
+    /// The person has typed in this viewer since it attached (or since the
+    /// line dropped and came back). A viewer that only arrived keeps its
+    /// provisional leadership until it says it is in the background; a viewer
+    /// the person has typed in keeps leadership through unfocus, so moving
+    /// the OS focus between two windows does not move the program's size.
+    spoke: bool,
     display: Display,
     /// An unfinished sequence exceeded continuation tracking; skip its tail.
     pub(crate) recovering: bool,
@@ -101,6 +107,7 @@ impl Core {
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
             focused: None,
+            spoke: false,
             display: req.display,
             recovering,
         });
@@ -252,8 +259,9 @@ impl Core {
         })
     }
 
-    /// Typing, focusing, and the size a viewer may ask for makes it the one
-    /// whose size and colors count; see `viewer_resize` for who may ask.
+    /// Typing, and the size a viewer may ask for, makes it the one whose
+    /// size and colors count; see `viewer_resize` and `viewer_focus` for who
+    /// may ask, and when focus alone must not.
     fn touch(&self, st: &mut State, conn: &Arc<Conn>, channel: u32, f: impl FnOnce(&mut Viewer)) -> Option<u32> {
         let (id, v) = Self::viewer(st, conn, channel)?;
         f(v);
@@ -270,7 +278,7 @@ impl Core {
         let id = if automatic {
             Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
         } else {
-            self.touch(&mut st, conn, channel, |_| {})
+            self.touch(&mut st, conn, channel, |v| v.spoke = true)
         };
         if let Some(id) = id {
             let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
@@ -313,9 +321,16 @@ impl Core {
         }
     }
 
-    /// Focus changes count as activity, reach programs that asked for them,
-    /// and move the program's size: the viewer the person is in sizes it, and
-    /// the one they left hands it to whoever is left.
+    /// Focus reaches programs that asked for it, and tells the program who
+    /// the person is in. Gaining focus does not claim the program's size:
+    /// two windows on one machine showing the same program rebuilt it at
+    /// every alt-tab while the size ping-ponged between their grids. Typing
+    /// is what claims it. A viewer that only arrived — laid out, never typed
+    /// in — hands its provisional leadership back when it reports the
+    /// background, so a window opening in the background cannot re-wrap the
+    /// program; a viewer the person typed in keeps leadership through
+    /// unfocus, so leaving a window for one you type in moves the size
+    /// exactly once, at the keystroke.
     pub fn viewer_focus(&self, conn: &Arc<Conn>, channel: u32, focused: bool) {
         let mut st = self.lock();
         let Some((id, _)) = Self::viewer(&mut st, conn, channel) else { return };
@@ -326,9 +341,7 @@ impl Core {
             return;
         }
         v.focused = Some(focused);
-        if focused {
-            v.active_at = Some(Instant::now());
-        } else if leads && left {
+        if !focused && !v.spoke && leads && left {
             v.active_at = None;
         }
         self.apply_size(&mut st, id);

@@ -38,14 +38,55 @@ fn a_viewer_the_person_isnt_in_never_resizes_the_program() {
     resize(&mut background, 100, 30);
     assert_eq!(size(&s, &t), (80, 24), "a viewer the person isn't in must not resize the program");
 
-    // Focusing it is what moves the size, and it moves to the size it asked for.
+    // Focusing it does not move the size: two windows on one machine
+    // showing the same program must not rebuild it at every alt-tab while
+    // the OS focus ping-pongs. The size moves at the keystroke.
     focus(&mut background, true);
-    assert_eq!(size(&s, &t), (100, 30), "the focused viewer's size is the program's");
+    assert_eq!(size(&s, &t), (80, 24), "focus alone must not resize the program");
 
-    // Typing in the other window is the person speaking: it takes authority
-    // back, with the size that window holds.
+    // Typing in it is the person speaking: it takes authority, with the
+    // size that window holds.
+    background.typed(b"x");
+    assert_eq!(size(&s, &t), (100, 30), "typing takes the size of the window typed in");
+
+    // The other window's keystroke takes it back; the background window
+    // losing focus afterwards changes nothing.
     in_window.typed(b"");
     assert_eq!(size(&s, &t), (80, 24), "typing keeps the size of the window typed in");
+    focus(&mut background, false);
+    assert_eq!(size(&s, &t), (80, 24), "unfocusing a viewer that never had the size changes nothing");
+}
+
+#[test]
+fn focus_flapping_between_two_windows_never_resizes_the_program() {
+    let s = Session::new();
+    let t = run(&s, &["sleep", "100"]);
+    // The person works in the monitor window; the laptop window sits on the
+    // same program, in the background.
+    let mut monitor = Viewer::attach(&s, &t, 200, 60, json!({}));
+    focus(&mut monitor, true);
+    monitor.typed(b"x");
+    let mut laptop = Viewer::attach(&s, &t, 132, 54, json!({}));
+    focus(&mut laptop, false);
+    assert_eq!(size(&s, &t), (200, 60));
+
+    // Alt-tabbing between the two windows — in either direction, at any
+    // rate — must not re-wrap the program. It rebuilt at every flip when
+    // focus moved the size.
+    for _ in 0..6 {
+        focus(&mut laptop, true);
+        focus(&mut monitor, false);
+        focus(&mut monitor, true);
+        focus(&mut laptop, false);
+        assert_eq!(size(&s, &t), (200, 60), "alt-tabbing must not re-wrap the program");
+    }
+
+    // Typing in the laptop window moves the size exactly once, at the
+    // keystroke — the window the person speaks from wins.
+    laptop.typed(b"y");
+    assert_eq!(size(&s, &t), (132, 54), "the window typed in sizes the program");
+    focus(&mut monitor, true);
+    assert_eq!(size(&s, &t), (132, 54), "focus alone takes it back never");
 }
 
 #[test]
