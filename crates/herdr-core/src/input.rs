@@ -149,6 +149,7 @@ impl Core {
                     if st.link(id).is_some() {
                         if let Some(t) = st.reg.terminals.get_mut(&id) {
                             t.asked = Some(t.turn);
+                            t.told_parent = false; // what it reported before answers an earlier ask
                             if first {
                                 t.first_task_turn = Some(t.turn);
                             }
