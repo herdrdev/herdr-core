@@ -43,6 +43,9 @@ pub struct Spawn {
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
+    /// Start it as a login shell: it reads the profile files too.
+    #[serde(default)]
+    pub login: bool,
 }
 
 #[derive(Serialize, Deserialize)]

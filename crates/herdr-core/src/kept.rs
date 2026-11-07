@@ -52,8 +52,24 @@ impl Core {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
         }
-        let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
+        let settings = match crate::config::load(&self.paths.config) {
+            Ok(settings) => settings,
+            Err(e) => {
+                eprintln!("core: kept terminals waiting for a shell: {}", e.message);
+                return;
+            }
+        };
+        let shell = match settings.shell() {
             Ok(shell) => shell,
+            Err(e) => {
+                eprintln!("core: kept terminals waiting for a shell: {}", e.message);
+                return;
+            }
+        };
+        // The replacement shell is the machine's own shell: it starts the way
+        // the setting says.
+        let login = match settings.login_by_setting() {
+            Ok(login) => login,
             Err(e) => {
                 eprintln!("core: kept terminals waiting for a shell: {}", e.message);
                 return;
@@ -104,7 +120,7 @@ impl Core {
             t.submit = None;
             t.stop = None;
             t.paste_gap_ms = None;
-            let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
+            let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows, login };
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);

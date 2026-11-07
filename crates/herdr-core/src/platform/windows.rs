@@ -789,8 +789,10 @@ impl Process {
 }
 
 /// `program` as Windows starts it: found on PATH with PATHEXT, batch files
-/// through cmd (npm installs agents as `.cmd` shims).
-fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
+/// through cmd (npm installs agents as `.cmd` shims). A login shell is one
+/// that takes `-l` (git bash and friends); PowerShell reads its profile
+/// anyway.
+fn command_line(argv: &[String], env: &BTreeMap<String, String>, login: bool) -> io::Result<Vec<u16>> {
     let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
     let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()).unwrap_or_default();
     let exts = env
@@ -806,9 +808,20 @@ fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<V
     if super::is_shell_line(argv) {
         return Ok(wide(format!("{} /d /s /c \"{}\"", quote(&found.display().to_string()), argv[4]).as_ref()));
     }
+    let mut args: Vec<String> = argv[1..].to_vec();
+    if login && is_login_shell(&found) {
+        args.insert(0, "-l".into());
+    }
     let line: Vec<String> =
-        std::iter::once(found.display().to_string()).chain(argv[1..].iter().cloned()).map(|a| quote(&a)).collect();
+        std::iter::once(found.display().to_string()).chain(args.iter().cloned()).map(|a| quote(&a)).collect();
     Ok(wide(line.join(" ").as_ref()))
+}
+
+/// The shells that take `-l` for a login shell on Windows (git bash and
+/// friends). PowerShell reads its profile without being asked.
+fn is_login_shell(program: &Path) -> bool {
+    let name = program.file_stem().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(name.as_str(), "sh" | "bash" | "zsh" | "ksh" | "dash" | "ash" | "mksh" | "fish" | "csh" | "tcsh")
 }
 
 /// A .cmd/.bat (how npm installs agents) runs through cmd, which reads
@@ -918,8 +931,9 @@ pub fn spawn_pty(
     cwd: &str,
     cols: u16,
     rows: u16,
+    login: bool,
 ) -> io::Result<(Pty, Process)> {
-    let mut cmd = command_line(argv, env)?;
+    let mut cmd = command_line(argv, env, login)?;
     let mut block = env_block(env);
     let cwd = wide(cwd.as_ref());
     unsafe {
