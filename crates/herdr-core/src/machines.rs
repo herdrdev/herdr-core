@@ -46,11 +46,49 @@ pub struct Reach<'a> {
     pub via: bool,
 }
 
+#[cfg(windows)]
+fn parse_windows_command_line(target: &str) -> Option<Vec<std::ffi::OsString>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+    // CommandLineToArgvW applies the quoting rules used by Windows command lines.
+    let wide: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
+    let mut argc = 0;
+    let argv = unsafe { CommandLineToArgvW(wide.as_ptr(), &mut argc) };
+    if argv.is_null() || argc <= 0 {
+        return None;
+    }
+
+    let parsed = unsafe {
+        let args = std::slice::from_raw_parts(argv, argc as usize);
+        let parsed = args
+            .iter()
+            .map(|arg| {
+                let mut len = 0;
+                while *(*arg).add(len) != 0 {
+                    len += 1;
+                }
+                std::ffi::OsString::from_wide(std::slice::from_raw_parts(*arg, len))
+            })
+            .collect();
+        windows_sys::Win32::Foundation::LocalFree(argv.cast());
+        parsed
+    };
+    Some(parsed)
+}
+
 impl Reach<'_> {
     /// Says how to add it again, for hints.
     fn add(&self) -> String {
         match self.via {
-            true => format!("hc machine add --via '{}' --name <name>", self.target.replace('\'', r"'\''")),
+            true => {
+                // This hint is intended for PowerShell: doubled quotes escape embedded quotes.
+                #[cfg(windows)]
+                let target = format!("\"{}\"", self.target.replace('"', "\"\""));
+                #[cfg(not(windows))]
+                let target = format!("'{}'", self.target.replace('\'', r"'\''"));
+                format!("hc machine add --via {target} --name <name>")
+            },
             false => format!("hc machine add {}", self.target),
         }
     }
@@ -58,9 +96,22 @@ impl Reach<'_> {
     /// The command that runs `line` there.
     fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
         if self.via {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
-            return cmd;
+            #[cfg(windows)]
+            {
+                let mut parsed = parse_windows_command_line(self.target)
+                    .unwrap_or_else(|| vec!["herdr-core: invalid --via command line".into()])
+                    .into_iter();
+                let program = parsed.next().expect("sentinel command line is never empty");
+                let mut cmd = std::process::Command::new(program);
+                cmd.args(parsed).arg(line);
+                return cmd;
+            }
+            #[cfg(not(windows))]
+            {
+                let mut cmd = std::process::Command::new("sh");
+                cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
+                return cmd;
+            }
         }
         let mut cmd = ssh(paths, self.target, extra);
         #[cfg(windows)]
@@ -134,12 +185,13 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
 }
 
 /// An ssh target goes to ssh as one argument: never an option, never two
-/// words. A command (`via`) is a shell line here, on one line.
+/// words. A command (`via`) is a one-line shell command on Unix, or a
+/// Windows command line parsed with CommandLineToArgvW on Windows.
 pub fn check_target(to: Reach) -> Result<(), RpcError> {
     let target = to.target;
     if to.via {
-        if cfg!(windows) || target.trim().is_empty() || target.chars().any(char::is_control) {
-            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, run by sh here")));
+        if target.trim().is_empty() || target.chars().any(char::is_control) {
+            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, no control characters")));
         }
         return Ok(());
     }
@@ -629,6 +681,51 @@ mod tests {
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
         assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn via_command_line_is_split_with_windows_quoting_and_keeps_remote_line_one_arg() {
+        let paths = crate::paths::Paths::from_env().unwrap();
+        let reach = Reach {
+            target: r#""C:\Program Files\WSL\wsl.exe" -d Ubuntu -e bash -lc"#,
+            via: true,
+        };
+        let line = "printf '%s\\n' \"remote line with spaces\"";
+        let cmd = reach.command(&paths, &[], line);
+        let args: Vec<String> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(cmd.get_program().to_string_lossy(), r"C:\Program Files\WSL\wsl.exe");
+        assert_eq!(args, ["-d", "Ubuntu", "-e", "bash", "-lc", line]);
+
+        let trailing_slash = Reach { target: r#"C:\tools\bin\"#, via: true };
+        let cmd = trailing_slash.command(&paths, &[], line);
+        assert_eq!(cmd.get_program().to_string_lossy(), r"C:\tools\bin\");
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), [std::ffi::OsStr::new(line)]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_command_line_parser_handles_backslashes_before_closing_quotes() {
+        let parsed = parse_windows_command_line(r#""C:\folder\\" -flag"#).unwrap();
+        assert_eq!(parsed[0].to_string_lossy(), r"C:\folder\\");
+        assert_eq!(parsed[1].to_string_lossy(), "-flag");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn via_add_hint_uses_powershell_quoting() {
+        let target = r#"wsl.exe -d "Ubuntu Test""#;
+        assert_eq!(
+            Reach { target, via: true }.add(),
+            r##"hc machine add --via "wsl.exe -d ""Ubuntu Test""" --name <name>"##
+        );
+    }
+
+    #[test]
+    fn via_validator_accepts_command_lines_but_rejects_empty_or_multiline() {
+        assert!(check_target(Reach { target: r#"wsl.exe -d Ubuntu -e bash -lc"#, via: true }).is_ok());
+        assert!(check_target(Reach { target: "  ", via: true }).is_err());
+        assert!(check_target(Reach { target: "wsl.exe\n-p", via: true }).is_err());
     }
 
     #[test]
