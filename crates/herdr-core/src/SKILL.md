@@ -175,7 +175,9 @@ On Windows, `hc server status` never starts a core. If elevated startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then retry.
 This applies to local admin terminals and SSH; an existing core is still used.
-Explicit `hc server start`, updates, and headless elevated startup remain allowed.
+Explicit `hc server start`, updates of an existing core, and headless elevated
+startup remain allowed. A cold update follows the implicit startup policy and
+checks it before replacing files.
 Opening Herdr elevated also works: its local `hc connect` is an explicit start;
 `hc connect` over SSH still follows the SSH startup policy.
 New Windows terminals refresh user/system environment settings, including PATH.

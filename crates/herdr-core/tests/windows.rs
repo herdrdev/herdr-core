@@ -269,6 +269,33 @@ fn update_swaps_the_whole_release_while_its_terminals_run() {
 }
 
 #[test]
+fn a_cold_update_obeys_ssh_startup_policy_before_replacing_files() {
+    let s = Session::new();
+    let probe = cmd(&s.name, &s.root).env("SSH_CLIENT", "10.0.0.1 50000 22").arg("ls").output().unwrap();
+    if probe.status.success() {
+        s.json(&["server", "stop"]);
+    }
+    let exe = installed(&s);
+    let new = release(&s.root.join("new"), "new-build");
+    let out = cmd_at(&exe, &s.name, &s.root)
+        .env("SSH_CLIENT", "10.0.0.1 50000 22")
+        .args(["update", "--from", new.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.success(), probe.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    if probe.status.success() {
+        assert!(marked(&exe, "new-build"));
+        assert!(s.json(&["server", "status"])["pid"].is_number());
+    } else {
+        let expected: Value = serde_json::from_slice(&probe.stderr).unwrap();
+        let actual: Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert_eq!(actual, expected);
+        assert!(marked(&exe, "old-build"), "refused update replaced the installed core");
+        assert_ne!(s.out(&["server", "status"]).0, 0, "refused update left a core");
+    }
+}
+
+#[test]
 fn an_update_that_cannot_finish_puts_everything_back() {
     let s = Session::new();
     let exe = installed(&s);
