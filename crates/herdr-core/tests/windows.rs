@@ -582,6 +582,69 @@ fn kill_ends_what_the_program_started_too() {
 }
 
 #[test]
+fn send_observation_precedes_start_detection_on_conpty() {
+    use std::io::BufRead;
+    let s = Session::new();
+    let agent = s.file(
+        "observe-send.ps1",
+        r#"$e = [char]27
+function report($s) { [Console]::Out.Write("$e]7501;$s$e\"); [Console]::Out.Flush() }
+report "state=idle"
+$line = [Console]::In.ReadLine()
+while (!(Test-Path -LiteralPath $args[0])) { Start-Sleep -Milliseconds 20 }
+report "state=working"
+while (!(Test-Path -LiteralPath $args[1])) { Start-Sleep -Milliseconds 20 }
+report "state=done"
+Start-Sleep 60
+"#,
+    );
+    let start = s.root.join("start");
+    let done = s.root.join("done");
+    let t = s.bg(&["powershell", "-NoProfile", "-File", &agent, start.to_str().unwrap(), done.to_str().unwrap()]);
+    wait_until("idle", || s.json(&["get", &t])["status"]["state"] == "idle");
+    let mut events =
+        cmd(&s.name, &s.root).args(["events", "--json"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = events.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let snapshot = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(serde_json::from_str::<Value>(&snapshot).unwrap()["terminals"].is_array());
+    let mut send = cmd(&s.name, &s.root);
+    send.args(["send", "--json", &t, "secret-body", "--wait", "--timeout", "15"]);
+    let waiting = std::thread::spawn(move || send.output().unwrap());
+    let observed = loop {
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(line) => {
+                let e: Value = serde_json::from_str(&line).unwrap();
+                if e["params"]["type"] == "message_sent" {
+                    break Ok(e);
+                }
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    let before_start = !waiting.is_finished() && s.json(&["get", &t])["status"]["state"] == "idle";
+    std::fs::write(&start, "").unwrap();
+    std::fs::write(&done, "").unwrap();
+    let sent = waiting.join().unwrap();
+    let _ = events.kill();
+    let _ = events.wait();
+    reader.join().unwrap();
+    let e = observed.expect("an explicit send observation");
+    assert_eq!(e["params"]["terminal"], t);
+    assert_eq!(e["params"]["data"], json!({"from": null}));
+    assert!(before_start, "the event does not wait for a start or completion");
+    assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+    assert_eq!(serde_json::from_slice::<Value>(&sent.stdout).unwrap()["wait"]["status"], "done");
+}
+
+#[test]
 fn interrupt_is_ctrl_c_the_program_takes() {
     // Started from a context that ignores Ctrl+C (an ssh session, a detached
     // parent), a program must still get it.

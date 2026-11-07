@@ -173,12 +173,19 @@ impl Core {
 
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
     /// program (typing would answer its dialog) unless `force`.
-    pub async fn send(&self, id: u32, text: &str, force: bool, only_if: Option<&str>) -> Result<Sent, RpcError> {
-        self.send_message(id, text, force, only_if, false).await
+    pub async fn send(
+        &self,
+        id: u32,
+        text: &str,
+        force: bool,
+        only_if: Option<&str>,
+        caller: Option<&str>,
+    ) -> Result<Sent, RpcError> {
+        self.send_message(id, text, force, only_if, false, caller).await
     }
 
     pub(crate) async fn send_first_task(&self, id: u32, text: &str) -> Result<Sent, RpcError> {
-        self.send_message(id, text, false, None, true).await
+        self.send_message(id, text, false, None, true, None).await
     }
 
     async fn send_message(
@@ -188,6 +195,7 @@ impl Core {
         force: bool,
         only_if: Option<&str>,
         first_task: bool,
+        caller: Option<&str>,
     ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
             t.check_program()?;
@@ -236,6 +244,20 @@ impl Core {
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
+        if !first_task {
+            let mut st = self.lock();
+            let from = caller.and_then(|c| {
+                if c.contains('/') {
+                    // Remote plain shells have a prefix too; a ppid is not a terminal.
+                    c.rsplit('/').next().and_then(crate::terminals::parse_id).map(|_| c.to_owned())
+                } else {
+                    crate::terminals::parse_id(c).and_then(|id| st.reg.terminals.get(&id)).map(|t| t.address.clone())
+                }
+            });
+            // Input attempt observed, not holder/program delivery. type_in can
+            // skip writes after losing its link. Do not wait for a start here.
+            self.emit(&mut st, "message_sent", id, serde_json::json!({"from": from}));
+        }
         let started = if reported {
             let went =
                 |st: &State| st.reg.terminals.get(&id).is_none_or(|t| t.turn > turn || working(t) || !t.is_live());

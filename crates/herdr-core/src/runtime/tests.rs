@@ -37,7 +37,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
     // Ignore attach's resize frames. From here the fake holder sees only input.
     while frames.try_recv().is_ok() {}
     {
-        let sending = core.send(id, "abc", false, None);
+        let sending = core.send(id, "abc", false, None, None);
         tokio::pin!(sending);
         poll_fn(|cx| {
             assert!(sending.as_mut().poll(cx).is_pending(), "the paste must pause before submit");
@@ -117,6 +117,77 @@ fn test_core() -> (Arc<Core>, PathBuf) {
     paths.create_dirs().unwrap();
     let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
     (core, root)
+}
+
+#[tokio::test(start_paused = true)]
+async fn send_observation_excludes_first_tasks_and_does_not_claim_delivery() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    // The input writer has no application ACK. In particular type_in skips
+    // writes after a lost link; its successful return is only an observation
+    // of the input attempt, and a removed recipient cannot have an event.
+    for (remove_recipient, first_task) in [(false, false), (true, false), (false, true)] {
+        let (core, root) = test_core();
+        let (writer, frames) = mpsc::channel();
+        let (bye, _) = mpsc::channel();
+        let (events, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut st = core.lock();
+            let id = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0)
+                .unwrap();
+            st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
+            st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+            st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+            core.subscribe(&mut st, crate::events::Filter::default(), crate::events::Sink::Waiter(events));
+            id
+        };
+        {
+            let sending = async {
+                if first_task {
+                    core.send_first_task(id, "partial").await
+                } else {
+                    core.send(id, "partial", false, None, None).await
+                }
+            };
+            tokio::pin!(sending);
+            poll_fn(|cx| {
+                assert!(sending.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"partial"));
+            assert!(observed.try_recv().is_err(), "not before the input sequence returns");
+            {
+                let mut st = core.lock();
+                if !first_task {
+                    st.holders.clear();
+                }
+                if remove_recipient {
+                    st.reg.terminals.remove(&id);
+                }
+            }
+            tokio::time::advance(crate::input::PASTE_GAP).await;
+            assert!(sending.await.is_ok(), "preserve existing send behavior on a lost link");
+            if first_task {
+                assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\r"));
+            } else {
+                assert!(frames.try_recv().is_err(), "submit was skipped after holder loss");
+            }
+            if remove_recipient || first_task {
+                assert!(observed.try_recv().is_err(), "neither removed recipients nor first tasks are reported");
+            } else {
+                let e = observed.try_recv().expect("input attempt observed, without asserting delivery");
+                assert_eq!(e["type"], "message_sent");
+                assert_eq!(e["data"], json!({"from": null}));
+                assert!(observed.try_recv().is_err(), "one attempt, one event");
+            }
+        }
+        drop(core);
+        remove_root(&root);
+    }
 }
 
 #[tokio::test]
