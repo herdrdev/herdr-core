@@ -15,6 +15,27 @@ hc machine ls
 hc run --on box --cwd /srv/app cargo test
 ```
 
+The target can be any of these:
+
+| You write | ssh connects to |
+| --- | --- |
+| `vps` | the Host `vps` from `~/.ssh/config` (its user, port and key) |
+| `user@10.0.0.7` | `10.0.0.7` as `user`, on port 22 |
+| `user@10.0.0.7:2222` | `10.0.0.7` as `user`, on port 2222 |
+| `ssh://user@10.0.0.7:2222` | the same, in ssh's own URL form |
+
+A port goes after a colon, as in `user@host:2222`; hc passes it to ssh as `ssh://user@host:2222`.
+For a machine you use often, a Host entry keeps the details in one place:
+
+```text
+Host box
+  HostName 10.0.0.7
+  Port 2222
+  User user
+```
+
+Then `hc machine add box` is enough. The same targets work in Herdr's add-machine dialog, which also lists the Hosts from your SSH config.
+
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
 When the OS and CPU match, it copies your current build. Otherwise it uses this version's released build for that target.
@@ -36,7 +57,7 @@ A custom connection command receives a shell line as its last argument.
 It must carry stdin and stdout unchanged and ask no questions:
 
 ```sh
-hc machine add --name box --via 'ssh -p 2222 -i /home/me/.ssh/key user@host'
+hc machine add --name box --via 'ssh -i /home/me/.ssh/key -o ProxyJump=bastion user@host'
 hc machine add --name sandbox --temp --via 'fly ssh console -a my-app --pty=false -C'
 ```
 
