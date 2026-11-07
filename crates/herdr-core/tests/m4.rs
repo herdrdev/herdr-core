@@ -112,9 +112,18 @@ fn send_pastes_submits_and_reports_whether_work_started() {
         let (mut master, slave) = unsafe {
             let (mut master, mut slave) = (-1, -1);
             assert_eq!(
-                libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()),
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
                 0
             );
+            for fd in [master, slave] {
+                assert_eq!(libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC), 0);
+            }
             (std::fs::File::from_raw_fd(master), std::fs::File::from_raw_fd(slave))
         };
         let mut cmd = s.cmd();
