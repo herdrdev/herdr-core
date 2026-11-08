@@ -606,7 +606,7 @@ pub fn boot_id() -> io::Result<Option<String>> {
 pub struct Pty {
     master: File,
     /// The slave's path, reopened only to wake IO on release.
-    slave: PathBuf,
+    slave: Option<PathBuf>,
     released: Arc<AtomicBool>,
 }
 
@@ -656,23 +656,36 @@ impl Write for PtyIo {
 impl Drop for Pty {
     /// Wakes IO blocked on this terminal: a reader with one byte of output, a
     /// writer by discarding the input queued for a program that is being let go.
+    /// A woken writer may already have queued part of its last write, and a ^S
+    /// in that part can, rarely, stop output again before the byte. If the
+    /// slave cannot be opened (`TIOCEXCL`, no free fds), IO stays blocked until
+    /// the program closes the terminal, and the failure is logged.
     fn drop(&mut self) {
         use std::os::unix::fs::OpenOptionsExt;
         self.released.store(true, Ordering::Release);
-        // O_NOCTTY: the holder must never adopt the terminal. O_NONBLOCK: a full
-        // output queue means the reader isn't blocked, so a lost byte is fine.
+        let Some(path) = &self.slave else {
+            return eprintln!("holder: cannot wake IO on a terminal without a name");
+        };
+        // O_NOCTTY: the holder must never adopt the terminal. O_NONBLOCK: with
+        // output running, a full output queue means the reader isn't blocked.
         let slave = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-            .open(&self.slave);
-        match slave {
-            Ok(slave) => {
-                unsafe { libc::tcflush(slave.as_raw_fd(), libc::TCIFLUSH) };
-                let _ = (&slave).write(&[0]);
-            }
-            Err(e) => eprintln!("holder: cannot wake IO on {}: {e}", self.slave.display()),
+            .open(path);
+        let slave = match slave {
+            Ok(slave) => slave,
+            Err(e) => return eprintln!("holder: cannot wake IO on {}: {e}", path.display()),
+        };
+        let fd = slave.as_raw_fd();
+        unsafe {
+            libc::tcflush(fd, libc::TCIFLUSH);
+            // Output stopped by ^S or tcflow would hold the byte back: restart
+            // it. Linux's TCOON only undoes a TCOOFF, so stop it that way first.
+            libc::tcflow(fd, libc::TCOOFF);
+            libc::tcflow(fd, libc::TCOON);
         }
+        let _ = (&slave).write(&[0]);
     }
 }
 
@@ -743,8 +756,28 @@ mod pty_io_tests {
         let ended = drain(pty.reader().unwrap());
         std::thread::sleep(Duration::from_millis(200));
         drop(pty);
-        let (_, last) = ended.recv_timeout(PROMPT).expect("release seen");
+        let (out, last) = ended.recv_timeout(PROMPT).expect("release seen");
+        assert_eq!(out, b"", "the wake byte reached the reader");
         assert!(matches!(last, Ok(0)), "ended with {last:?}");
+    }
+
+    #[test]
+    fn a_release_ends_a_reader_while_output_is_stopped() {
+        let tcooff = "exec python3 -c 'import termios, time; termios.tcflow(0, termios.TCOOFF); time.sleep(30)'";
+        for script in ["exec sleep 30", tcooff] {
+            let (_child, pty) = start(script);
+            let ended = drain(pty.reader().unwrap());
+            if script == tcooff {
+                std::thread::sleep(Duration::from_millis(500));
+            } else {
+                pty.writer().unwrap().write_all(b"\x13").unwrap(); // ^S stops the output
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            drop(pty);
+            let (out, last) = ended.recv_timeout(PROMPT).unwrap_or_else(|_| panic!("{script}: release not seen"));
+            assert_eq!(out, b"", "{script}: the wake byte reached the reader");
+            assert!(matches!(last, Ok(0)), "{script}: ended with {last:?}");
+        }
     }
 
     #[test]
@@ -761,17 +794,6 @@ mod pty_io_tests {
     }
 
     #[test]
-    fn the_wake_byte_never_reaches_the_reader() {
-        let (_child, pty) = start("exec sleep 30");
-        let ended = drain(pty.reader().unwrap());
-        std::thread::sleep(Duration::from_millis(200));
-        drop(pty);
-        let (out, last) = ended.recv_timeout(PROMPT).expect("release seen");
-        assert_eq!(out, b"", "read after the release");
-        assert!(matches!(last, Ok(0)), "ended with {last:?}");
-    }
-
-    #[test]
     fn output_alone_never_ends_the_reader() {
         let (_child, pty) = start("printf 'a\\0b'; sleep 0.2; printf 'c\\0'");
         let (out, last) = drain(pty.reader().unwrap()).recv_timeout(PROMPT).expect("reader ended");
@@ -780,7 +802,7 @@ mod pty_io_tests {
     }
 
     #[test]
-    fn a_release_racing_reads_always_ends_the_reader_and_leaks_nothing() {
+    fn a_release_racing_reads_always_ends_the_reader_and_never_shows_the_wake_byte() {
         for i in 0..100u64 {
             let script = if i % 2 == 0 { "exec yes" } else { "while :; do printf y; sleep 0.001; done" };
             let (_child, pty) = start(script);
@@ -850,7 +872,7 @@ mod pty_io_tests {
     }
 
     #[test]
-    fn a_writer_blocked_after_a_partial_write_ends_on_release() {
+    fn a_writer_blocked_on_a_full_terminal_ends_on_release() {
         let (_child, pty) = start("exec sleep 30");
         let mut writer = pty.writer().unwrap();
         let input = b"x\n".repeat(512 * 1024);
@@ -862,7 +884,7 @@ mod pty_io_tests {
             let _ = done.send(writer.write_all(&input[n..]));
         });
         let (n, len) = first.recv_timeout(PROMPT).expect("a first write returned");
-        assert!(0 < n && n < len, "wrote {n} of {len}");
+        assert!(0 < n && n <= MAX_WRITE, "wrote {n} of {len}");
         assert!(ended.recv_timeout(Duration::from_millis(300)).is_err(), "a full terminal took the rest");
         drop(pty);
         let last = ended.recv_timeout(PROMPT).expect("release seen");
@@ -891,7 +913,7 @@ pub fn spawn_pty(
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    let slave_path = tty_name(&slave)?;
+    let slave_path = tty_name(&slave).ok();
     let mut cmd = Command::new(program);
     cmd.args(&argv[1..])
         .env_clear()
