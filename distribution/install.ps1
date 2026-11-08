@@ -36,7 +36,7 @@ function Warn-PathShadowing($path, $dir) {
             $found = Get-Command $name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $found) { continue }
             $expected = [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))
-            $same = $found.Path -ieq $expected
+            $same = [IO.Path]::GetFullPath($found.Path) -ieq $expected
             # An existing local hc.exe is preserved, but might not be our alias.
             if ($same -and $name -eq "hc") {
                 $same = (File-Sha256 $found.Path) -eq (File-Sha256 (Join-Path $dir "herdr-core.exe"))

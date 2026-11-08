@@ -16,6 +16,10 @@ foreach ($name in 'File-Sha256', 'Warn-PathShadowing') {
 $dir = Join-Path $env:TEST_ROOT 'install bin'
 $other = Join-Path $env:TEST_ROOT 'other bin'
 New-Item -ItemType Directory -Force $dir, $other | Out-Null
+# Windows runners can supply TEMP through an 8.3 path. Exercise that spelling when available.
+$fs = New-Object -ComObject Scripting.FileSystemObject
+$dir = $fs.GetFolder($dir).ShortPath
+$other = $fs.GetFolder($other).ShortPath
 foreach ($name in 'hc', 'herdr-core') {
     Copy-Item "$env:SystemRoot\System32\whoami.exe" (Join-Path $dir "$name.exe")
     Copy-Item "$env:SystemRoot\System32\whoami.exe" (Join-Path $other "$name.exe")
@@ -29,7 +33,7 @@ $env:Path = $other
 try {
     foreach ($shadowed in $false, $true) {
         $path = if ($shadowed) { "$other;$dir" } else { "$dir;$other" }
-        $text = (Warn-PathShadowing $path $dir 6>&1 | Out-String)
+        $text = (Warn-PathShadowing $path $dir 6>&1 | Out-String -Width 4096)
         foreach ($name in 'hc', 'herdr-core') {
             $extension = if ($name -eq 'hc') { 'ps1' } else { 'exe' }
             $expected = "another $name at $(Join-Path $other "$name.$extension")"
@@ -40,7 +44,7 @@ try {
     }
     # A preserved, unrelated alias in the install directory also needs a warning.
     Copy-Item -Force "$env:SystemRoot\System32\cmd.exe" (Join-Path $dir 'hc.exe')
-    $text = (Warn-PathShadowing $dir $dir 6>&1 | Out-String)
+    $text = (Warn-PathShadowing $dir $dir 6>&1 | Out-String -Width 4096)
     if (-not $text.Contains("another hc at $(Join-Path $dir 'hc.exe')")) { throw "missing local conflict: $text" }
     if ($text.Contains('another herdr-core')) { throw "wrong local conflict: $text" }
 } finally { $env:Path = $original }
