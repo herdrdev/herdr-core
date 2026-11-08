@@ -470,7 +470,7 @@ pub struct SendParams {
     #[arg(long = "if", value_name = "STATUS")]
     #[serde(rename = "if")]
     pub only_if: Option<IdleOrWorking>,
-    /// Then wait for the turn this send started.
+    /// Then wait for completion after this send's turn.
     #[arg(long)]
     #[serde(default)]
     pub wait: bool,
@@ -489,8 +489,9 @@ pub struct SendResult {
     pub status: Option<String>,
     /// The turn when the text went in.
     pub turn: u64,
-    /// Whether it went `working` within a few seconds; null when it doesn't
-    /// report status, so nobody can tell.
+    /// Whether `working` or a later turn was observed after sending, within a few
+    /// seconds. Includes an already-working program; not acknowledgment of the
+    /// message or a new task. False: neither observed; null: status was unreported.
     pub started: Option<bool>,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]

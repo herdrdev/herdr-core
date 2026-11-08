@@ -86,12 +86,86 @@ fn send_pastes_submits_and_reports_whether_work_started() {
     shows(&s, &agent, "033[200~hello-world033[201~");
     wait_until("turn 1", || s.json(&["get", &agent])["turn"] == 1);
 
-    // Reports status but never starts working: false. Never reports: unknown (null).
-    let lazy = run(&s, "stty -echo; r state=idle; while read -r l; do echo got; done");
+    // Already working satisfies the observation without advancing the turn.
+    let busy = run(&s, "stty -echo; r state=working; while read -r l; do echo got:$l; done");
+    wait_until("working", || status(&s, &busy) == "working");
+    let lazy = run(&s, "stty -echo; r state=idle; while read -r l; do echo got:$l; done");
     wait_until("idle", || status(&s, &lazy) == "idle");
-    assert_eq!(s.json(&["send", &lazy, "x"])["started"], false);
     let silent = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
-    assert!(s.json(&["send", &silent, "x"])["started"].is_null());
+    for (t, word, started, observation) in [
+        (&busy, json!("working"), json!(true), "working or a later turn observed"),
+        (&lazy, json!("idle"), json!(false), "no working state or later turn observed"),
+        (&silent, Value::Null, Value::Null, "it doesn't report status"),
+    ] {
+        // Explicit and automatic JSON keep the same result and diagnostics separate.
+        for prefix in [vec!["--json"], vec![]] {
+            let out = s.hc(&[prefix, vec!["send", t, "x"]].concat());
+            assert!(out.status.success());
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(result, json!({"status": word, "turn": 0, "started": started}));
+            let err = String::from_utf8(out.stderr).unwrap();
+            assert_eq!(err.contains(&format!("hc read {t} --lines 0")), started == false, "{err}");
+        }
+        // A real TTY selects the human path; stderr remains a separate pipe.
+        use std::io::BufRead;
+        use std::os::fd::FromRawFd;
+        let (master, slave) = unsafe {
+            let (mut master, mut slave) = (-1, -1);
+            assert_eq!(
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            for fd in [master, slave] {
+                assert_eq!(libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC), 0);
+            }
+            (std::fs::File::from_raw_fd(master), std::fs::File::from_raw_fd(slave))
+        };
+        let mut cmd = s.cmd();
+        cmd.args(["send", t, "x"]).stdout(slave).stderr(std::process::Stdio::piped());
+        if started == false {
+            cmd.arg("--wait");
+        }
+        let child = cmd.spawn().unwrap();
+        // Keep our slave open and drain output before closing it: macOS can
+        // discard unread PTY output when the last slave closes.
+        let mut reader = std::io::BufReader::new(master);
+        let mut human = String::new();
+        reader.read_line(&mut human).unwrap();
+        if started == false {
+            reader.read_line(&mut human).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        drop(cmd);
+        assert!(out.status.success());
+        assert!(human.contains(observation), "{human}");
+        if started == false {
+            assert!(human.contains(&format!("{t}: no working state or later turn observed")), "{human}");
+        }
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(err.contains(&format!("hc read {t} --lines 0")), started == false, "{err}");
+    }
+    // An advisory write failure must not discard the result of a delivered send.
+    let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let out = s
+        .cmd()
+        .args(["--json", "send", &lazy, "x"])
+        .stderr(std::process::Stdio::from(std::os::fd::OwnedFd::from(writer)))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+        json!({"status": "idle", "turn": 0, "started": false})
+    );
+    shows(&s, &busy, "got:x");
+    shows(&s, &lazy, "got:x");
 }
 
 #[test]

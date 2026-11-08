@@ -76,7 +76,7 @@ pub fn quiet() -> Duration {
     env_ms("HC_QUIET_MS", 3000)
 }
 
-/// How long `send` watches for the program to start working.
+/// How long `send` watches for working status or a later turn.
 fn started_window() -> Duration {
     env_ms("HC_STARTED_MS", 5000)
 }
@@ -98,7 +98,8 @@ pub fn paste(bracketed: bool, text: &str) -> Vec<u8> {
 pub struct Sent {
     pub status: Option<String>,
     pub turn: u64,
-    /// Whether it went `working` soon after; None when it never reports status.
+    /// Whether working or a later turn was observed; includes already working.
+    /// None when status was unreported at delivery.
     pub started: Option<bool>,
 }
 

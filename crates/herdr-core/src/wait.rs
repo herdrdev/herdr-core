@@ -25,7 +25,7 @@ pub struct WaitResult {
     /// False on timeout: a check-in, the terminal is still running.
     pub ended: bool,
     /// status, exit (including program loss in a kept terminal), output, timeout,
-    /// or not_started (after a send: it did not start working; a plain wait
+    /// or not_started (after a send: no working state or later turn was observed; a plain wait
     /// still follows that send's turn); with
     /// `children`: children; message (someone messaged the waiter, any
     /// wait); for each child in `children`: status, exit, or running (still
