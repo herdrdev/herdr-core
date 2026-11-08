@@ -12,6 +12,32 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
+
+#[test]
+fn via_runs_without_a_console_and_passes_the_remote_line_whole() {
+    let s = Session::new();
+    std::fs::create_dir_all(s.root.join("via dir")).unwrap();
+    let probe = s.file(
+        r"via dir\via.ps1",
+        r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ViaProbe {
+            [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'console.txt'), [ViaProbe]::GetConsoleWindow().ToInt64().ToString())
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'line.txt'), [Environment]::GetCommandLineArgs()[-1])
+$request = [Console]::ReadLine() | ConvertFrom-Json
+if ($request.method -ne 'hello') { exit 2 }
+[Console]::WriteLine('{"id":1,"error":{"code":-32000,"message":"via-probe","data":{"kind":"probe","hint":"done"}}}')
+"#,
+    );
+    let via = format!("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{probe}\"");
+    let output = cmd(&s.name, &s.root).args(["machine", "add", "--via", &via, "--name", "box"]).output().unwrap();
+    let error: Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["kind"], "probe", "{error}");
+    assert_eq!(std::fs::read_to_string(s.root.join("via dir/console.txt")).unwrap(), "0");
+    let line = std::fs::read_to_string(s.root.join("via dir/line.txt")).unwrap();
+    assert!(line.starts_with("sh -c 'p=$(command -v herdr-core)") && line.ends_with("exec \"$p\" connect'"), "{line}");
+}
+
 static LIVE: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
 
 struct Session {
