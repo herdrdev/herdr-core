@@ -527,8 +527,9 @@ Arguments:
   <TEXT>      Pasted, then submitted with Enter
 
 Options:
-      --force              Type even if the program is blocked (it may answer its dialog)
       --json               JSON output even in a terminal
+      --raw                Paste text without the sender tag on messages between agents
+      --force              Type even if the program is blocked (it may answer its dialog)
       --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]
       --wait               Then wait for the turn this send started
       --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)

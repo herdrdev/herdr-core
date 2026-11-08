@@ -60,6 +60,7 @@ failed send: it may still have arrived; read first.
 hc ls                              # all live terminals, not just yours
 hc get review                      # one terminal's observed state/status
 hc send review "Focus on the first bug"
+hc send --raw review "/compact"     # exact text, without the sender tag
 hc send --wait review "Recheck the fix"
 hc read --lines 100 review          # screen plus history; waits return status only
 hc interrupt review                # stop its current turn, not the process
@@ -99,6 +100,12 @@ children finish:
 - `not_started` from `send --wait`: it hasn't begun; read before deciding.
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
+
+Messages between agents carry a sender tag by default. `send --raw` omits
+that tag, for slash commands or other exact input (including punctuation and
+Unicode). It still pastes and submits normally, waits for readiness, refuses
+blocked targets unless `--force`, and supports `--if` and `--wait` locally
+and across machines.
 
 Reports arrive tagged, for example:
 
