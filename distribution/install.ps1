@@ -23,6 +23,19 @@ $ProgressPreference = "SilentlyContinue"
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "hc: $why" }
 
+function Warn-PathShadowing($path, $dir) {
+    $saved = $env:Path
+    try {
+        $env:Path = [Environment]::ExpandEnvironmentVariables($path)
+        foreach ($name in "hc", "herdr-core") {
+            $found = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found -and $found.Path -ine [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))) {
+                Write-Host "another $name at $($found.Path) comes first on your PATH; remove it or put $dir ahead of it."
+            }
+        }
+    } finally { $env:Path = $saved }
+}
+
 $releases = if ($env:HERDR_RELEASES_URL) { $env:HERDR_RELEASES_URL.TrimEnd("/") } else { "https://releases.herdr.dev" }
 $dir = if ($env:HC_INSTALL_DIR) { $env:HC_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\herdr-core" }
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -97,6 +110,9 @@ try {
         Write-Host "Added $dir to your PATH: new terminals have hc."
     }
     $key.Close()
+    # Windows builds a fresh terminal's PATH with machine entries before user entries.
+    $freshPath = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+    Warn-PathShadowing $freshPath $dir
     if (($env:Path -split ";") -notcontains $dir) { $env:Path += ";$dir" }
     Write-Host "Agents: hc --skill. People: hc --help."
 } finally {

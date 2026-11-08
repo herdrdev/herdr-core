@@ -1,0 +1,45 @@
+//! Exercise the Windows installer's warning without writing the user's PATH.
+#![cfg(windows)]
+
+#[test]
+fn the_installer_warns_using_the_supplied_fresh_terminal_path() {
+    let root = std::env::temp_dir().join(format!("hc-install-path-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:INSTALL_SCRIPT, [ref]$null, [ref]$null)
+$function = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Warn-PathShadowing' }, $true)
+if (-not $function) { throw 'missing warning function' }
+Invoke-Expression $function.Extent.Text
+$dir = Join-Path $env:TEST_ROOT 'install bin'
+$other = Join-Path $env:TEST_ROOT 'other bin'
+New-Item -ItemType Directory -Force $dir, $other | Out-Null
+foreach ($name in 'hc', 'herdr-core') {
+    Copy-Item "$env:SystemRoot\System32\whoami.exe" (Join-Path $dir "$name.exe")
+    Copy-Item "$env:SystemRoot\System32\whoami.exe" (Join-Path $other "$name.exe")
+}
+$original = $env:Path
+# A stale process PATH must not affect the supplied fresh-terminal PATH.
+$env:Path = $other
+try {
+    foreach ($shadowed in $false, $true) {
+        $path = if ($shadowed) { "$other;$dir" } else { "$dir;$other" }
+        $text = (Warn-PathShadowing $path $dir 6>&1 | Out-String)
+        foreach ($name in 'hc', 'herdr-core') {
+            $expected = "another $name at $(Join-Path $other "$name.exe")"
+            if ($text.Contains($expected) -ne $shadowed) { throw "wrong warning: $text" }
+        }
+        if ($text.Contains('comes first on your PATH') -ne $shadowed) { throw "wrong warning: $text" }
+        if ($env:Path -ne $other) { throw 'process PATH was not restored' }
+    }
+} finally { $env:Path = $original }
+"#;
+    let out = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", script])
+        .env("INSTALL_SCRIPT", concat!(env!("CARGO_MANIFEST_DIR"), "/../../distribution/install.ps1"))
+        .env("TEST_ROOT", &root)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
