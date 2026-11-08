@@ -718,7 +718,8 @@ pub async fn reported_afar(core: &Core, to: &To, caller: Option<&str>, there: &s
         To::Machine(m) => &m.id,
         To::Peer { id, .. } => id,
     };
-    let parents_core = core.lock().peers.iter().find(|(_, p)| p.name == prefix).map(|(id, _)| id.clone());
+    let parents_core =
+        core.lock().peers.iter().find(|(id, p)| *id == prefix || p.name == prefix).map(|(id, _)| id.clone());
     if parents_core.as_ref() != Some(reached) {
         return;
     }
