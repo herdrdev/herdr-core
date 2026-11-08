@@ -19,6 +19,7 @@ pub mod notes;
 pub mod paths;
 pub mod picker;
 pub mod platform;
+pub mod push;
 pub mod put;
 pub mod relay;
 pub mod releases;
