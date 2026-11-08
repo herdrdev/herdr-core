@@ -28,7 +28,7 @@ function Warn-PathShadowing($path, $dir) {
     try {
         $env:Path = [Environment]::ExpandEnvironmentVariables($path)
         foreach ($name in "hc", "herdr-core") {
-            $found = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            $found = Get-Command $name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found -and $found.Path -ine [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))) {
                 Write-Host "another $name at $($found.Path) comes first on your PATH; remove it or put $dir ahead of it."
             }
