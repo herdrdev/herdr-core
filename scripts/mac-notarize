@@ -29,9 +29,18 @@ if [[ $status != 0 ]] || ! jq -e '.status == "Accepted"' "$work/submission.json"
   echo 'core notarization failed' >&2
   exit 1
 fi
+# Apple's ticket service sometimes drops the connection (NSURLError -1005).
+with_retries() {
+  local try
+  for try in {1..6}; do
+    "$@" && return 0
+    ((try == 6)) || { echo "retrying: $*" >&2; sleep 30; }
+  done
+  return 1
+}
 if [[ -d $bin/Contents ]]; then
-  xcrun stapler staple "$bin"
-  xcrun stapler validate "$bin"
+  with_retries xcrun stapler staple "$bin"
+  with_retries xcrun stapler validate "$bin"
   assess=(--type execute)
 else
   # Gatekeeper rejects a bare executable as "not an app" under --type execute.
