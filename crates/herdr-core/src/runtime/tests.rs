@@ -773,3 +773,26 @@ fn adopting_a_holder_whose_tail_repeats_the_status_announces_nothing() {
     let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\");
     assert!(events.is_empty(), "a replay of what subscribers already heard: {events:?}");
 }
+
+#[tokio::test]
+async fn every_1000th_event_sweeps_the_push_log() {
+    use crate::push::send::Msg;
+    let (core, root) = test_core();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let mut st = core.lock();
+        let nothing = crate::events::Filter { terminal: Some("t999".into()), ..Default::default() };
+        core.subscribe(&mut st, nothing, crate::events::Sink::Push { name: "x".into(), tx });
+        while st.events.seq < 2500 {
+            core.doc_event(&mut st, json!({}), None);
+        }
+    }
+    let mut sweeps = 0;
+    while let Ok(msg) = rx.try_recv() {
+        assert!(matches!(msg, Msg::Sweep), "the filter matches no event");
+        sweeps += 1;
+    }
+    assert_eq!(sweeps, 2, "at 1000 and 2000");
+    drop(core);
+    remove_root(&root);
+}

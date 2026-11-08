@@ -102,6 +102,11 @@ pub enum Sink {
     },
     /// The core's own waits: every event, unbounded (they live for one call).
     Waiter(mpsc::UnboundedSender<Value>),
+    /// A webhook: matching events, with `ms` and the record, to the push sender.
+    Push {
+        name: String,
+        tx: mpsc::UnboundedSender<crate::push::send::Msg>,
+    },
 }
 
 pub(crate) struct Sub {
@@ -141,6 +146,10 @@ impl Core {
     /// a terminal that is done or quiet.
     pub fn unsubscribe_waiter(&self, st: &mut State, tx: &mpsc::UnboundedSender<Value>) {
         st.events.subs.retain(|s| !matches!(&s.sink, Sink::Waiter(w) if w.same_channel(tx)));
+    }
+
+    pub fn unsubscribe_push(&self, st: &mut State, name: &str) {
+        st.events.subs.retain(|s| !matches!(&s.sink, Sink::Push { name: n, .. } if n == name));
     }
 
     pub fn subscribed(&self, st: &State, conn: &Arc<Conn>, channel: u32) -> bool {
@@ -184,6 +193,12 @@ impl Core {
     fn deliver_event(&self, st: &mut State, mut params: Value, target: Target<'_>) {
         st.events.seq += 1;
         params["seq"] = st.events.seq.into();
+        let ms = crate::runtime::now_ms();
+        if st.events.seq.is_multiple_of(1000) {
+            let push =
+                st.events.subs.iter().find_map(|s| if let Sink::Push { tx, .. } = &s.sink { Some(tx) } else { None });
+            push.map(|tx| tx.send(crate::push::send::Msg::Sweep));
+        }
         let afar = params["machine"].is_string() || params["terminal"].as_str().is_some_and(|a| a.contains('/'));
         let plain = notification("event", params.clone());
         let with_record = |record: &Value| {
@@ -232,6 +247,11 @@ impl Core {
                     Err(mpsc::error::TrySendError::Closed(_)) => false,
                 },
                 Sink::Waiter(tx) => tx.send(params.clone()).is_ok(),
+                Sink::Push { name, tx } => {
+                    let mut event = params.clone();
+                    (event["ms"], event["record"]) = (ms.into(), record.clone());
+                    tx.send(crate::push::send::Msg::Event { hook: name.clone(), event }).is_ok()
+                }
             }
         });
         st.events.subs = subs;
@@ -264,7 +284,7 @@ impl Core {
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => false,
                 },
-                Sink::Waiter(_) => true,
+                Sink::Waiter(_) | Sink::Push { .. } => true,
             }
         });
         st.events.subs = subs;
