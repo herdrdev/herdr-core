@@ -6,6 +6,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // --- Connections -----------------------------------------------------------
 
@@ -603,65 +605,268 @@ pub fn boot_id() -> io::Result<Option<String>> {
 /// A program on its own terminal.
 pub struct Pty {
     master: File,
-    stop: Stream,
-    _stop_sender: Stream,
+    /// The slave's path, reopened only to wake IO on release.
+    slave: PathBuf,
+    released: Arc<AtomicBool>,
 }
 
-/// Cancels blocked IO when the holder releases the terminal, even if a
-/// detached program keeps its slave open.
+/// Blocking IO on the master that a release ends, even if a detached program
+/// keeps its slave open. A blocking read is one syscall per chunk of output,
+/// where a cancellable poll-then-read would be two.
 pub struct PtyIo {
     master: File,
-    stop: Stream,
+    released: Arc<AtomicBool>,
 }
 
-impl PtyIo {
-    fn ready(&self, events: i16) -> io::Result<bool> {
-        let mut fds = [
-            libc::pollfd { fd: self.master.as_raw_fd(), events, revents: 0 },
-            libc::pollfd { fd: self.stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-        ];
-        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(fds[1].revents == 0)
-    }
-}
+/// The most one write puts into the slave's input queue. Small enough to fit
+/// the queue once a release has emptied it (1024 bytes on macOS, 4096 on
+/// Linux), so a writer woken by that never blocks again.
+const MAX_WRITE: usize = 512;
 
 impl Read for PtyIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
+        if self.released.load(Ordering::Acquire) {
             return Ok(0);
         }
-        loop {
-            if !self.ready(libc::POLLIN)? {
-                return Ok(0);
-            }
-            match self.master.read(buf) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                result => return result,
-            }
+        let n = self.master.read(buf)?;
+        // A release sets the flag before it writes its wake byte, so a read that
+        // returns the byte always sees the flag here. Everything read after a
+        // release is dropped, the byte included: none of it reaches a viewer or
+        // the scrollback. Output alone never ends the reader, whatever its bytes.
+        if self.released.load(Ordering::Acquire) {
+            return Ok(0);
         }
+        Ok(n)
     }
 }
 
 impl Write for PtyIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
+        if self.released.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::BrokenPipe.into());
         }
-        loop {
-            if !self.ready(libc::POLLOUT)? {
-                return Err(io::ErrorKind::BrokenPipe.into());
-            }
-            match self.master.write(buf) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                result => return result,
-            }
-        }
+        self.master.write(&buf[..buf.len().min(MAX_WRITE)])
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.master.flush()
+    }
+}
+
+impl Drop for Pty {
+    /// Wakes IO blocked on this terminal: a reader with one byte of output, a
+    /// writer by discarding the input queued for a program that is being let go.
+    fn drop(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.released.store(true, Ordering::Release);
+        // O_NOCTTY: the holder must never adopt the terminal. O_NONBLOCK: a full
+        // output queue means the reader isn't blocked, so a lost byte is fine.
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+            .open(&self.slave);
+        match slave {
+            Ok(slave) => {
+                unsafe { libc::tcflush(slave.as_raw_fd(), libc::TCIFLUSH) };
+                let _ = (&slave).write(&[0]);
+            }
+            Err(e) => eprintln!("holder: cannot wake IO on {}: {e}", self.slave.display()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pty_io_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    const PROMPT: Duration = Duration::from_secs(2);
+
+    /// Ends the program however the test ends: releasing a PTY doesn't. Bind it
+    /// before the PTY so it drops after it: on macOS a program exiting with
+    /// unread output waits in its last close until every master is closed,
+    /// so the wait is bounded too, for a failing test whose IO threads still
+    /// hold one.
+    struct Running(Process);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let deadline = Instant::now() + PROMPT;
+            while matches!(self.0.try_wait(), Ok(None)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    fn start(script: &str) -> (Running, Pty) {
+        let env = std::collections::BTreeMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+        let (pty, child) = spawn_pty(&shell_line(script), &env, "/", 80, 24).unwrap();
+        (Running(child), pty)
+    }
+
+    /// Reads until the reader ends, collecting what it read and how it ended.
+    fn drain(mut reader: PtyIo) -> mpsc::Receiver<(Vec<u8>, io::Result<usize>)> {
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut out, mut buf) = (Vec::<u8>::new(), [0u8; 4096]);
+            let last = loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break Ok(0),
+                    Ok(n) => out.extend(&buf[..n]),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => break Err(e),
+                }
+            };
+            let _ = done.send((out, last));
+        });
+        ended
+    }
+
+    fn ended_by_hangup(last: &io::Result<usize>) -> bool {
+        matches!(last, Ok(0)) || last.as_ref().is_err_and(|e| e.raw_os_error() == Some(libc::EIO))
+    }
+
+    #[test]
+    fn an_idle_reader_waits_for_output() {
+        let (_child, pty) = start("sleep 0.3; printf late");
+        let (out, last) = drain(pty.reader().unwrap()).recv_timeout(Duration::from_secs(5)).expect("reader ended");
+        assert_eq!(out, b"late");
+        assert!(ended_by_hangup(&last), "ended with {last:?}");
+    }
+
+    #[test]
+    fn a_release_ends_an_idle_reader() {
+        let (_child, pty) = start("exec sleep 30");
+        let ended = drain(pty.reader().unwrap());
+        std::thread::sleep(Duration::from_millis(200));
+        drop(pty);
+        let (_, last) = ended.recv_timeout(PROMPT).expect("release seen");
+        assert!(matches!(last, Ok(0)), "ended with {last:?}");
+    }
+
+    #[test]
+    fn a_release_ends_a_reader_of_a_busy_program() {
+        let (_child, pty) = start("exec yes");
+        let ended = drain(pty.reader().unwrap());
+        std::thread::sleep(Duration::from_millis(200));
+        let released = Instant::now();
+        drop(pty);
+        let (out, last) = ended.recv_timeout(PROMPT).expect("release seen");
+        eprintln!("busy reader ended {:?} after release", released.elapsed());
+        assert!(!out.is_empty(), "the program wrote nothing");
+        assert!(matches!(last, Ok(0)), "ended with {last:?}");
+    }
+
+    #[test]
+    fn the_wake_byte_never_reaches_the_reader() {
+        let (_child, pty) = start("exec sleep 30");
+        let ended = drain(pty.reader().unwrap());
+        std::thread::sleep(Duration::from_millis(200));
+        drop(pty);
+        let (out, last) = ended.recv_timeout(PROMPT).expect("release seen");
+        assert_eq!(out, b"", "read after the release");
+        assert!(matches!(last, Ok(0)), "ended with {last:?}");
+    }
+
+    #[test]
+    fn output_alone_never_ends_the_reader() {
+        let (_child, pty) = start("printf 'a\\0b'; sleep 0.2; printf 'c\\0'");
+        let (out, last) = drain(pty.reader().unwrap()).recv_timeout(PROMPT).expect("reader ended");
+        assert_eq!(out, b"a\0bc\0");
+        assert!(ended_by_hangup(&last), "ended with {last:?}");
+    }
+
+    #[test]
+    fn a_release_racing_reads_always_ends_the_reader_and_leaks_nothing() {
+        for i in 0..100u64 {
+            let script = if i % 2 == 0 { "exec yes" } else { "while :; do printf y; sleep 0.001; done" };
+            let (_child, pty) = start(script);
+            let ended = drain(pty.reader().unwrap());
+            std::thread::sleep(Duration::from_micros(i * 97 % 5000));
+            drop(pty);
+            let (out, last) = ended.recv_timeout(PROMPT).unwrap_or_else(|_| panic!("round {i}: release not seen"));
+            assert!(!out.contains(&0), "round {i}: the wake byte reached the reader");
+            assert!(matches!(last, Ok(0)), "round {i}: ended with {last:?}");
+        }
+    }
+
+    #[test]
+    fn a_release_after_the_program_exited_is_harmless() {
+        let (_child, pty) = start("printf done");
+        let (out, last) = drain(pty.reader().unwrap()).recv_timeout(PROMPT).expect("reader ended");
+        assert_eq!(out, b"done");
+        assert!(ended_by_hangup(&last), "ended with {last:?}");
+        drop(pty);
+    }
+
+    #[test]
+    fn a_reader_ends_when_the_program_exits() {
+        let (_child, pty) = start("printf done");
+        let (out, last) = drain(pty.reader().unwrap()).recv_timeout(PROMPT).expect("reader ended");
+        assert_eq!(out, b"done");
+        assert!(ended_by_hangup(&last), "ended with {last:?}");
+    }
+
+    extern "C" fn ignore(_: libc::c_int) {}
+
+    #[test]
+    fn a_signal_interrupting_a_waiting_reader_loses_no_output() {
+        let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = ignore as *const () as usize;
+            action.sa_flags = 0; // no SA_RESTART: a blocked poll or read fails with EINTR
+            assert_eq!(libc::sigaction(libc::SIGUSR1, &action, &mut previous), 0);
+        }
+        let (_child, pty) = start("printf early; sleep 1; printf late");
+        let mut reader = pty.reader().unwrap();
+        let (tid_tx, tid) = mpsc::channel();
+        let ended = std::thread::spawn(move || {
+            tid_tx.send(unsafe { libc::pthread_self() } as usize).unwrap();
+            let (mut out, mut interrupted, mut buf) = (Vec::<u8>::new(), 0, [0u8; 64]);
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => out.extend(&buf[..n]),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => interrupted += 1,
+                    Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                    Err(e) => panic!("read failed: {e}"),
+                }
+            }
+            (out, interrupted)
+        });
+        let tid = tid.recv().unwrap() as libc::pthread_t;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(50));
+            unsafe { libc::pthread_kill(tid, libc::SIGUSR1) };
+        }
+        let (out, interrupted) = ended.join().unwrap();
+        unsafe { libc::sigaction(libc::SIGUSR1, &previous, std::ptr::null_mut()) };
+        assert_eq!(out, b"earlylate");
+        assert!(interrupted > 0, "no read was interrupted");
+    }
+
+    #[test]
+    fn a_writer_blocked_after_a_partial_write_ends_on_release() {
+        let (_child, pty) = start("exec sleep 30");
+        let mut writer = pty.writer().unwrap();
+        let input = b"x\n".repeat(512 * 1024);
+        let (wrote, first) = mpsc::channel();
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let n = writer.write(&input).unwrap();
+            let _ = wrote.send((n, input.len()));
+            let _ = done.send(writer.write_all(&input[n..]));
+        });
+        let (n, len) = first.recv_timeout(PROMPT).expect("a first write returned");
+        assert!(0 < n && n < len, "wrote {n} of {len}");
+        assert!(ended.recv_timeout(Duration::from_millis(300)).is_err(), "a full terminal took the rest");
+        drop(pty);
+        let last = ended.recv_timeout(PROMPT).expect("release seen");
+        assert_eq!(last.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     }
 }
 
@@ -686,11 +891,7 @@ pub fn spawn_pty(
     for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
         unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
-    let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let (stop, stop_sender) = Stream::pair()?;
+    let slave_path = tty_name(&slave)?;
     let mut cmd = Command::new(program);
     cmd.args(&argv[1..])
         .env_clear()
@@ -708,13 +909,24 @@ pub fn spawn_pty(
         });
     }
     let child = cmd.spawn()?;
-    Ok((Pty { master, stop, _stop_sender: stop_sender }, child))
+    Ok((Pty { master, slave: slave_path, released: Arc::default() }, child))
+}
+
+fn tty_name(tty: &File) -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = [0u8; 256];
+    let err = unsafe { libc::ttyname_r(tty.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+    if err != 0 {
+        return Err(io::Error::from_raw_os_error(err));
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
 }
 
 impl Pty {
     /// Its output, read until the slave closes or this PTY is released.
     pub fn reader(&self) -> io::Result<PtyIo> {
-        Ok(PtyIo { master: self.master.try_clone()?, stop: self.stop.try_clone()? })
+        Ok(PtyIo { master: self.master.try_clone()?, released: self.released.clone() })
     }
 
     pub fn writer(&self) -> io::Result<PtyIo> {
