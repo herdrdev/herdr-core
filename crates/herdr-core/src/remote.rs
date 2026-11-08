@@ -707,26 +707,25 @@ pub fn peer_address(core: &Core, address: &str) -> Option<String> {
     st.peers.iter().find(|(id, p)| *id == prefix || p.name == prefix).map(|(_, p)| format!("{}/{rest}", p.name))
 }
 
-/// A child here sent a message to `params["terminal"]` (`there` on `to`): a
-/// report when that is its parent, however it named it (`desktop/lead`).
-pub async fn reported_afar(core: &Core, to: &To, params: &Value, there: &str) {
-    let caller = params["caller"].as_str();
+/// A child here sent a message to `there` on `to`: a report when that is its
+/// parent's core and its parent there, however it named it (`desktop/lead`).
+pub async fn reported_afar(core: &Core, to: &To, caller: Option<&str>, there: &str) {
     let parent =
         caller.and_then(crate::terminals::parse_id).and_then(|c| core.lock().reg.terminals.get(&c)?.parent.clone());
     let Some(parent) = parent else { return };
-    let sent = params["terminal"].as_str().unwrap_or_default();
-    let to_parent = match peer_address(core, sent) {
-        _ if sent == parent => true,
-        Some(sent_to) if sent_to == parent => true,
-        // Another name on its parent's machine: ask what it is called there.
-        Some(sent_to) => {
-            parent.split_once('/').map(|p| p.0) == sent_to.split_once('/').map(|p| p.0)
-                && forward_to(core, to, "terminal.get", json!({ "terminal": there }))
-                    .await
-                    .is_ok_and(|r| r["address"].as_str() == Some(parent.as_str()))
-        }
-        None => false,
+    let Some((prefix, rest)) = parent.split_once('/') else { return };
+    let reached = match to {
+        To::Machine(m) => &m.id,
+        To::Peer { id, .. } => id,
     };
+    let parents_core = core.lock().peers.iter().find(|(_, p)| p.name == prefix).map(|(id, _)| id.clone());
+    if parents_core.as_ref() != Some(reached) {
+        return;
+    }
+    let to_parent = there == rest
+        || forward_to(core, to, "terminal.get", json!({ "terminal": there }))
+            .await
+            .is_ok_and(|r| r["address"].as_str().and_then(|a| a.rsplit('/').next()) == Some(rest));
     if to_parent {
         core.reported(caller, &parent);
     }
