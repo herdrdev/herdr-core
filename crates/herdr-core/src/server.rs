@@ -39,7 +39,8 @@ pub fn serve() -> io::Result<()> {
     let core = Core::start(paths, info)?;
     let bound = AsyncListener::bind(&socket)?;
 
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let served = runtime.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;
         crate::restart::discard(&core.paths);
         let kept = core.clone();
@@ -56,6 +57,7 @@ pub fn serve() -> io::Result<()> {
         crate::remote::start_all(&core);
         tokio::spawn(core.clone().watch_foreground());
         tokio::spawn(core.clone().save_when_due());
+        tokio::spawn(crate::push::send::run(core.clone()));
         let term = platform::termination();
         tokio::pin!(term);
         loop {
@@ -74,11 +76,16 @@ pub fn serve() -> io::Result<()> {
         }
         platform::remove_endpoint(&socket);
         finish(&core).await
-    })
+    });
+    // Blocking threads still running (a webhook POST waits up to 30 s) must not
+    // hold the lock past the stop: the next core is waiting for it.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    served
 }
 
 /// Finish queued registry work before the runtime cancels its tasks (which still own Core).
 pub(crate) async fn finish(core: &Core) -> io::Result<()> {
+    core.push.flush();
     if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
         core.handover().await?;
     }

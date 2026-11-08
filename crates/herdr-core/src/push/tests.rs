@@ -117,6 +117,53 @@ fn a_full_backlog_drops_the_oldest() {
     assert_eq!((backlog.len(), backlog.front(), backlog.back()), (BACKLOG, Some(&entry(1, 1)), Some(&entry(100, 1))));
 }
 
+/// A core's webhooks in a scratch folder, holding `spec`.
+fn kept(spec: &PushAddParams) -> (std::path::PathBuf, send::Push) {
+    let dir = std::env::temp_dir().join(format!("hc-push-{}", crate::platform::random_hex()));
+    crate::platform::private_dir(&dir).unwrap();
+    let push = send::Push::load(&dir, KEEP);
+    let hook = crate::api::PushHook { spec: spec.clone(), seen: Default::default() };
+    push.hooks.lock().unwrap().insert(spec.name.clone(), hook);
+    (dir, push)
+}
+
+fn seen(status: u16) -> crate::api::PushSeen {
+    let ok = (200..300).contains(&status);
+    crate::api::PushSeen {
+        last_ok_ms: ok.then_some(1),
+        last_status: Some(status),
+        gone: status == 410,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_replaced_webhook_ignores_the_old_endpoints_answers_and_gone_stays() {
+    let old = spec(PushFormat::Json);
+    let new = PushAddParams { url: "https://ntfy.example/upNew?up=1".into(), ..old.clone() };
+    let (dir, push) = kept(&new);
+    let gone = || push.hooks.lock().unwrap()["phone"].seen.gone;
+    assert!(!push.record(&old, seen(410)), "an answer for the old url");
+    assert!(!gone());
+    assert!(push.record(&new, seen(410)));
+    assert!(push.record(&new, seen(200)), "a later success (push.test)");
+    assert!(gone(), "gone until added again");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn what_posts_observe_is_written_once_flushed_not_per_post() {
+    let s = spec(PushFormat::Json);
+    let (dir, push) = kept(&s);
+    push.record(&s, seen(503));
+    push.record(&s, seen(200));
+    assert!(!dir.join("push.json").exists(), "nothing written per POST");
+    push.flush();
+    let saved: Value = serde_json::from_slice(&std::fs::read(dir.join("push.json")).unwrap()).unwrap();
+    assert_eq!(saved["phone"]["last_status"], 200);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn the_envelope_carries_the_event_only_when_it_fits() {
     let event = json!({"type": "finished", "terminal": "rohan/t7", "data": {"exit_code": 0}, "seq": 9, "ms": 5,

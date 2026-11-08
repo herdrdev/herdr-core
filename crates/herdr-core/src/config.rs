@@ -27,6 +27,10 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+    /// Days pushed events stay fetchable with `hc push events` (default 7; 0: none are kept).
+    pub push_retention_days: Option<f64>,
+    /// Most the push log may take on disk, in MB (default 4).
+    pub push_log_mb: Option<f64>,
 }
 
 impl Config {
@@ -48,6 +52,15 @@ impl Config {
 
     pub fn machine_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs_f64(self.machine_timeout.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(30.0))
+    }
+
+    pub fn push_retention(&self) -> std::time::Duration {
+        let days = self.push_retention_days.filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(7.0);
+        std::time::Duration::from_secs_f64(days * 86400.0)
+    }
+
+    pub fn push_log_bytes(&self) -> usize {
+        (self.push_log_mb.filter(|m| m.is_finite() && *m >= 0.0).unwrap_or(4.0) * 1024.0 * 1024.0) as usize
     }
 
     pub fn history_bytes(&self) -> usize {
