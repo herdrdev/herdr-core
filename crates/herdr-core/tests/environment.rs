@@ -10,7 +10,7 @@ fn raw_core(s: &Session) -> std::process::Child {
     use std::os::unix::process::CommandExt;
     let mut cmd = s.cmd();
     // Keep this serve in the child on macOS instead of testing a launchd launcher.
-    cmd.env("SSH_CONNECTION", "test-direct");
+    cmd.env("SSH_CONNECTION", "test-direct").env("HC_LAUNCHD_DIRECT", std::process::id().to_string());
     let mut vars: Vec<_> = cmd
         .get_envs()
         .filter_map(|(key, value)| {
@@ -302,7 +302,13 @@ fn a_failed_or_competing_start_does_not_consume_a_valid_snapshot() {
     let registry = s.root.join("state/herdr-core/test/terminals.json");
     std::fs::write(&registry, b"broken").unwrap();
     // Observe serve's failure, not a successful intermediate launchd detach.
-    let failed = s.cmd().env("SSH_CONNECTION", "test-direct").arg("serve").output().unwrap();
+    let failed = s
+        .cmd()
+        .env("SSH_CONNECTION", "test-direct")
+        .env("HC_LAUNCHD_DIRECT", std::process::id().to_string())
+        .arg("serve")
+        .output()
+        .unwrap();
     assert!(!failed.status.success());
     assert!(snapshot(&s).exists(), "retry must still be able to restore");
     std::fs::remove_file(registry).unwrap();
@@ -312,6 +318,7 @@ fn a_failed_or_competing_start_does_not_consume_a_valid_snapshot() {
     let out = s
         .cmd()
         .env("SSH_CONNECTION", "test-direct")
+        .env("HC_LAUNCHD_DIRECT", std::process::id().to_string())
         .arg("serve")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -273,10 +273,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
   standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. Startup explicitly requests that job once, including
-  during login when automatic launches may be deferred. SSH starts stay direct.
-  If launchd fails, startup falls back to a direct child and logs the reason in
-  `core.log`; that core may end with its launching app. A start timeout records
-  the job label, failed phase and available spawn state before cleanup.
+  during login when automatic launches may be deferred. SSH starts use it too
+  when the user has a GUI login session, so terminals get that session's keychain
+  and privacy context; without one they stay direct. If launchd fails, startup
+  falls back to a direct child and logs the reason in `core.log`; that core may
+  end with its launching app. A start timeout records the job label, failed
+  phase and available spawn state before cleanup.
 - On macOS, reopening Herdr after logout/login refreshes an older GUI core's
   login context while keeping surviving terminals. New terminals use the new
   login; existing programs retain their original OS context. An explicit
