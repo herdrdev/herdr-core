@@ -713,13 +713,20 @@ pub async fn reported_afar(core: &Core, to: &To, params: &Value, there: &str) {
     let caller = params["caller"].as_str();
     let parent =
         caller.and_then(crate::terminals::parse_id).and_then(|c| core.lock().reg.terminals.get(&c)?.parent.clone());
-    let sent_to = params["terminal"].as_str().and_then(|t| peer_address(core, t));
-    let (Some(parent), Some(sent_to)) = (parent, sent_to) else { return };
-    let to_parent = sent_to == parent
-        || (parent.split_once('/').map(|p| p.0) == sent_to.split_once('/').map(|p| p.0)
-            && forward_to(core, to, "terminal.get", json!({ "terminal": there }))
-                .await
-                .is_ok_and(|r| r["address"].as_str() == Some(parent.as_str())));
+    let Some(parent) = parent else { return };
+    let sent = params["terminal"].as_str().unwrap_or_default();
+    let to_parent = match peer_address(core, sent) {
+        _ if sent == parent => true,
+        Some(sent_to) if sent_to == parent => true,
+        // Another name on its parent's machine: ask what it is called there.
+        Some(sent_to) => {
+            parent.split_once('/').map(|p| p.0) == sent_to.split_once('/').map(|p| p.0)
+                && forward_to(core, to, "terminal.get", json!({ "terminal": there }))
+                    .await
+                    .is_ok_and(|r| r["address"].as_str() == Some(parent.as_str()))
+        }
+        None => false,
+    };
     if to_parent {
         core.reported(caller, &parent);
     }
