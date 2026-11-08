@@ -20,9 +20,11 @@ pub const FINISHED_LINES: usize = 1000;
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;
+mod push;
 mod run;
 mod types;
 use doc::*;
+use push::*;
 mod waiting;
 use run::*;
 pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
@@ -146,6 +148,24 @@ methods! { Ctx<'_>;
     "machine.rm" => machine_rm, MachineParams => RemoveResult,
         "Forget a machine. Its terminals keep running there.",
         errors ["machine_unknown"];
+    "push.add" => push_add, PushAddParams => PushHook,
+        "Add a webhook, or replace one by name (a new endpoint): the core POSTs each matching event to `url` even when no client is connected, retrying 429, 5xx and no answer up to 3 times. `json`: the push envelope as JSON, HMAC signed with `secret`. `unifiedpush`: Web Push encrypted for `p256dh`/`auth`, VAPID signed (see push.key).",
+        errors ["invalid_params", "internal"];
+    "push.list" => push_list, Empty => PushListResult,
+        "Each webhook and what its POSTs observed (last_ok_ms, last_status, last_error, gone). Secrets are never echoed.",
+        errors [];
+    "push.rm" => push_rm, PushNameParams => RemoveResult,
+        "Forget a webhook.",
+        errors ["not_found", "internal"];
+    "push.test" => push_test, PushNameParams => PushTestResult,
+        "POST one test event to a webhook now, once, and return the HTTP status that came back.",
+        errors ["not_found"];
+    "push.events" => push_events, PushEventsParams => PushEventsResult,
+        "Pushed events from the push log, by id (`seq` and `ms`), or every one after an id (`since`) to catch up after being offline. Kept push_retention_days (default 7).",
+        errors ["invalid_params", "not_found"];
+    "push.key" => push_key, Empty => PushKeyResult,
+        "This core's VAPID public key (base64url, unpadded), for UnifiedPush.register(..., vapid). Made the first time it is asked for.",
+        errors ["internal"];
     "rpc.discover" => rpc_discover, Empty => serde_json::Value,
         "The whole API as an OpenRPC document: every method with its params, result and errors in JSON Schema.",
         errors [];

@@ -56,6 +56,23 @@ Machine installation or update copies executable code there and restarts that se
 Forgetting a machine removes the connection here, not its remote programs or state.
 See [machines](machines.md).
 
+## Webhooks
+
+A webhook (`hc push add`) sends events to the URL it names, from this machine, whether or not anyone is connected.
+Each push carries the whole event when it fits, and the event carries the terminal's whole record as `hc get` shows
+it: its command line (`argv`), folder (`cwd`), name, labels, parent, window title, the foreground process's command
+line and folder, and agents' status titles and messages. Anything a program was given on its command line, a token
+included, goes with it. Adding one needs nothing beyond API access, which already allows running commands, so core
+does not restrict addresses: `http://` to a LAN server is allowed. A `json` body is not encrypted, only signed when a
+secret is set, so over `http://` all of that crosses the network in clear; use https elsewhere. `unifiedpush` bodies
+are end-to-end encrypted to the receiving app. TLS checks certificates against the system's trusted roots.
+
+Delivery honours a proxy in core's own environment (whatever started core, a service manager or the `hc` that
+started it, not the shell you run `hc push` from): the first of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY` (or
+lowercase) that is set carries every webhook, http and https alike, except hosts listed in `NO_PROXY`. The proxy sees
+`http://` bodies and the host of every webhook. Only http and https proxies are supported: a SOCKS proxy there is not
+used as one (POSTs fail or go direct), so don't rely on it to carry webhooks. The Windows system proxy is not read.
+
 ## State and endpoints
 
 | Item | Default |
@@ -76,7 +93,9 @@ On Windows, pipe names include the account name and session.
 A custom endpoint does not move the state directory.
 Keep Unix socket paths short; the OS limits their length.
 
-State includes terminal records, saved screens and history, machine connections, peer records, and API documents.
+State includes terminal records, saved screens and history, machine connections, peer records, API documents,
+webhooks with their secrets (`push.json`), the VAPID key (`vapid.json`) and the push log (`push-log.jsonl`, pushed
+events with agents' status text). Core writes those three only for your account (mode 0600 on Unix).
 Core and holder logs also live there. Treat the whole directory as private: terminal output and saved screens may contain secrets.
 State is not encrypted by core. Removing state is destructive, not a way to stop running programs safely.
 

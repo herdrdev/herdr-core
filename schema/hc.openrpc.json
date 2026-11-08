@@ -600,6 +600,223 @@
         ],
         "type": "object"
       },
+      "PushEventId": {
+        "description": "An event's id on this core: its events-stream seq and when it happened.\nOn the command line `SEQ:MS`.",
+        "properties": {
+          "ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "ms"
+        ],
+        "type": "object"
+      },
+      "PushEventsResult": {
+        "properties": {
+          "events": {
+            "description": "Each `{seq, ms, event}`: `event` as events.subscribe delivers it, with\n`ms`, and the terminal's `record` at that moment.",
+            "items": true,
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
+      "PushFormat": {
+        "oneOf": [
+          {
+            "const": "json",
+            "description": "Plain JSON, signed when it has a secret.",
+            "type": "string"
+          },
+          {
+            "const": "unifiedpush",
+            "description": "Web Push (RFC 8291) encrypted, VAPID signed: ntfy, NextPush.",
+            "type": "string"
+          }
+        ]
+      },
+      "PushHook": {
+        "description": "A webhook as kept. Listed without `secret` and `auth`.",
+        "properties": {
+          "auth": {
+            "description": "unifiedpush: the receiver's auth secret (base64url), required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "children_of": {
+            "description": "Only children of this terminal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contact": {
+            "description": "unifiedpush: who runs this core, for the push service (`mailto:you@example.com`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "description": "Event types that count (repeatable; default status, finished, lost).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "format": {
+            "$ref": "#/components/schemas/PushFormat",
+            "default": "json"
+          },
+          "gone": {
+            "default": false,
+            "description": "The endpoint said it is gone (404, 410, 507): nothing more is sent until it is added again.",
+            "type": "boolean"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only terminals carrying all of these labels, exactly (repeatable).",
+            "type": "object"
+          },
+          "last_error": {
+            "description": "Why the last POST failed; cleared by a success.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ok_ms": {
+            "description": "When a POST last succeeded (2xx).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_status": {
+            "description": "The HTTP status the last POST got; none when it got no answer.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Its name here. Adding a name again replaces it (a new endpoint).",
+            "type": "string"
+          },
+          "p256dh": {
+            "description": "unifiedpush: the receiver's public key (base64url), required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret": {
+            "description": "json: sign every POST (`X-Hc-Signature: sha256=<hex hmac of \"<X-Hc-Timestamp>.<body>\">`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "states": {
+            "description": "Status words that count for status and turn events (repeatable;\ndefault blocked, done, error). A status event counts when its word changes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "terminal": {
+            "description": "Only this terminal (`t7`, `rohan/t7`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "Where to POST, kept byte for byte (`https://ntfy.sh/upAbc?up=1`). http or https.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url"
+        ],
+        "type": "object"
+      },
+      "PushKeyResult": {
+        "properties": {
+          "key": {
+            "description": "This core's VAPID public key, base64url without padding (87 characters):\ngive it to `UnifiedPush.register(..., vapid)`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "PushListResult": {
+        "properties": {
+          "webhooks": {
+            "items": {
+              "$ref": "#/components/schemas/PushHook"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "webhooks"
+        ],
+        "type": "object"
+      },
+      "PushTestResult": {
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "ok, gone, rejected, retry or dropped.",
+            "type": "string"
+          },
+          "status": {
+            "description": "The HTTP status that came back; none when nothing answered.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "type": "object"
+      },
       "PutResult": {
         "properties": {
           "bytes": {
@@ -3802,6 +4019,359 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RemoveResult"
+        }
+      }
+    },
+    {
+      "description": "Add a webhook, or replace one by name (a new endpoint): the core POSTs each matching event to `url` even when no client is connected, retrying 429, 5xx and no answer up to 3 times. `json`: the push envelope as JSON, HMAC signed with `secret`. `unifiedpush`: Web Push encrypted for `p256dh`/`auth`, VAPID signed (see push.key).",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
+        }
+      ],
+      "name": "push.add",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "unifiedpush: the receiver's auth secret (base64url), required.",
+          "name": "auth",
+          "required": false,
+          "schema": {
+            "description": "unifiedpush: the receiver's auth secret (base64url), required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Only children of this terminal.",
+          "name": "children_of",
+          "required": false,
+          "schema": {
+            "description": "Only children of this terminal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "unifiedpush: who runs this core, for the push service (`mailto:you@example.com`).",
+          "name": "contact",
+          "required": false,
+          "schema": {
+            "description": "unifiedpush: who runs this core, for the push service (`mailto:you@example.com`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Event types that count (repeatable; default status, finished, lost).",
+          "name": "events",
+          "required": false,
+          "schema": {
+            "description": "Event types that count (repeatable; default status, finished, lost).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "name": "format",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/PushFormat",
+            "default": "json"
+          }
+        },
+        {
+          "description": "Only terminals carrying all of these labels, exactly (repeatable).",
+          "name": "labels",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only terminals carrying all of these labels, exactly (repeatable).",
+            "type": "object"
+          }
+        },
+        {
+          "description": "Its name here. Adding a name again replaces it (a new endpoint).",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "description": "Its name here. Adding a name again replaces it (a new endpoint).",
+            "type": "string"
+          }
+        },
+        {
+          "description": "unifiedpush: the receiver's public key (base64url), required.",
+          "name": "p256dh",
+          "required": false,
+          "schema": {
+            "description": "unifiedpush: the receiver's public key (base64url), required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "json: sign every POST (`X-Hc-Signature: sha256=<hex hmac of \"<X-Hc-Timestamp>.<body>\">`).",
+          "name": "secret",
+          "required": false,
+          "schema": {
+            "description": "json: sign every POST (`X-Hc-Signature: sha256=<hex hmac of \"<X-Hc-Timestamp>.<body>\">`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Status words that count for status and turn events (repeatable;\ndefault blocked, done, error). A status event counts when its word changes.",
+          "name": "states",
+          "required": false,
+          "schema": {
+            "description": "Status words that count for status and turn events (repeatable;\ndefault blocked, done, error). A status event counts when its word changes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Only this terminal (`t7`, `rohan/t7`).",
+          "name": "terminal",
+          "required": false,
+          "schema": {
+            "description": "Only this terminal (`t7`, `rohan/t7`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Where to POST, kept byte for byte (`https://ntfy.sh/upAbc?up=1`). http or https.",
+          "name": "url",
+          "required": true,
+          "schema": {
+            "description": "Where to POST, kept byte for byte (`https://ntfy.sh/upAbc?up=1`). http or https.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PushHook"
+        }
+      }
+    },
+    {
+      "description": "Each webhook and what its POSTs observed (last_ok_ms, last_status, last_error, gone). Secrets are never echoed.",
+      "errors": [],
+      "name": "push.list",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PushListResult"
+        }
+      }
+    },
+    {
+      "description": "Forget a webhook.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
+        }
+      ],
+      "name": "push.rm",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The webhook's name.",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "description": "The webhook's name.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RemoveResult"
+        }
+      }
+    },
+    {
+      "description": "POST one test event to a webhook now, once, and return the HTTP status that came back.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        }
+      ],
+      "name": "push.test",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The webhook's name.",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "description": "The webhook's name.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PushTestResult"
+        }
+      }
+    },
+    {
+      "description": "Pushed events from the push log, by id (`seq` and `ms`), or every one after an id (`since`) to catch up after being offline. Kept push_retention_days (default 7).",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        }
+      ],
+      "name": "push.events",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "At most this many (default 100).",
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "description": "At most this many (default 100).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "One pushed event: its ms (with --seq).",
+          "name": "ms",
+          "required": false,
+          "schema": {
+            "description": "One pushed event: its ms (with --seq).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "One pushed event: its seq (with --ms).",
+          "name": "seq",
+          "required": false,
+          "schema": {
+            "description": "One pushed event: its seq (with --ms).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Every pushed event after this one, in the order they happened (`SEQ:MS`).\nWhen it has expired: those from its ms on.",
+          "name": "since",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PushEventId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every pushed event after this one, in the order they happened (`SEQ:MS`).\nWhen it has expired: those from its ms on."
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PushEventsResult"
+        }
+      }
+    },
+    {
+      "description": "This core's VAPID public key (base64url, unpadded), for UnifiedPush.register(..., vapid). Made the first time it is asked for.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
+        }
+      ],
+      "name": "push.key",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PushKeyResult"
         }
       }
     },

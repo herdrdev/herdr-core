@@ -211,6 +211,85 @@ subscription (including the first connection), are reported locally as `missed`
 to unfiltered subscribers, using the local sequence. Refetch documents on all
 watched machines after it.
 
+## Webhooks
+
+`push.add` keeps a webhook: a URL plus a filter (`terminal`, `children_of`,
+labels, as `events.subscribe`; and `events`, `states`). The core POSTs each
+matching event to it even when no client is connected. By default the
+events are `status`, `finished` and `lost`, and a `status` event counts only
+when its word changes to `blocked`, `done` or `error` (a cleared status
+counts as a change: blocked, cleared, blocked pushes twice). `events` takes
+the event types below, `states` the 7501 words (`idle`, `working`, `done`,
+`blocked`, `error`); anything else is refused. Adding a name again replaces
+it (an app calls it again when its endpoint rotates); answers still coming
+from the old endpoint are ignored.
+
+Each webhook gets its pushes one at a time, in the order the events
+happened: a retry holds back the events after it. When more than 100 wait,
+the oldest is skipped (the core logs it; it is still in the push log).
+Pushes still waiting, and their retries, are dropped when core stops; a
+receiver catches up with `push.events` `since` its last `seq:ms`.
+
+Every push, in either format, carries the same envelope (v1):
+
+```
+{"v":1,"core":"k3f9…","seq":1234,"ms":1762600000000,"type":"status",
+ "terminal":"rohan/t7","name":"review","machine":"rohan","state":"blocked",
+ "event":{…}}
+```
+
+- `core` is `CoreInfo.id`; `(seq, ms)` is the event's id on that core. `seq`
+  is the events-stream seq (`hc events` shows the same), and restarts with
+  each core process; `ms` tells the runs apart.
+- `name` (the terminal's), `machine` (only for an added machine's terminal),
+  `state` (status and turn events), `exit` (finished, when it has a code).
+  Each string is cut to 64 bytes.
+- `event` is the whole event as `events.subscribe` delivers it, plus `ms`
+  and `record`: the terminal as it was then, the whole public `Terminal`
+  (`argv`, `cwd`, name, labels, title, `foreground`, status messages; see
+  [security](../docs/security.md#webhooks)). It is left out when the push
+  would pass its format's limit (3993 bytes for `unifiedpush`, 64 KiB for
+  `json`): the summary always fits, so a receiver can always notify.
+- `push.test` sends `type: "test"` with seq 0.
+
+Every pushed event is appended once to the push log (`push-log.jsonl` in
+core state), fit or not. `push.events {seq, ms}` returns it whole;
+`push.events {since: {seq, ms}}` returns those appended after it (in that
+order, so a clock jump skips nothing), or, when it has expired, those from
+its `ms` on. An entry goes after `push_retention_days` (default 7; 0 keeps
+none), past 1000 entries, or past `push_log_mb` (default 4) in total.
+
+Formats:
+
+- `json`: the envelope as `application/json`. With a `secret`, each POST
+  has `X-Hc-Timestamp` (Unix seconds) and `X-Hc-Signature:
+  sha256=<hex HMAC-SHA256 of "<timestamp>.<body>" with the secret>`. Check
+  both and refuse old timestamps.
+- `unifiedpush`: RFC 8291 `aes128gcm` for the receiver's `p256dh` and
+  `auth`, one record of at most 4096 bytes, with `TTL: 86400`, `Urgency:
+  high` for `blocked` and `error` (else `normal`), and `Authorization: vapid
+  t=<ES256 JWT>, k=<key>` (RFC 8292; `aud` the URL's origin, `exp` 12 h,
+  `sub` the `contact`). `k` is `push.key`: pass it to
+  `UnifiedPush.register(..., vapid)`. The key is made once per core
+  (`vapid.json`); deleting the file makes a new one when core next starts
+  (a running core keeps the key it has). An unreadable `vapid.json` is not
+  replaced, since a new key would break every registration: unifiedpush
+  POSTs fail with `cannot load the VAPID key` until it is fixed or deleted.
+
+Answers: 2xx is success. 404, 410 and 507 mark the webhook `gone`: nothing
+more is sent until it is added again (`push.test` still POSTs and reports
+what it got, but never clears `gone`). 401 and 403 are recorded (`vapid
+rejected` for unifiedpush) and not retried. 429, 5xx and no answer are
+retried up to 3 tries, waiting `Retry-After` when given. Other 4xx are
+recorded and dropped. `push.list` shows what was observed (`last_ok_ms`,
+`last_status`, `last_error`, `gone`), never `secret` or `auth`.
+Webhooks persist in `push.json`; these files are readable only by this
+user. https is checked against the system's trusted certificates; redirects
+are not followed. What POSTs observed is written within 2 s (and when core
+stops); adding and removing are written before they answer. POSTs go through
+the http(s) proxy in core's environment (`ALL_PROXY`, `HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY`); see [security](../docs/security.md#webhooks).
+
 ## Status
 
 A terminal's status is whatever its program reported through OSC 7501, the

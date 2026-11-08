@@ -194,6 +194,30 @@ text rewriting needed: only the edit travels.
 Remote paths start at that machine's home unless you set `--cwd`; local
 paths start at your current folder. Prefer explicit paths for remote work.
 
+## Webhooks: tell a person when you're not watching
+
+When the user asks to be told (on their phone, in a chat) when agents get
+blocked, finish or fail, add a webhook. The core POSTs each matching event
+even when no client is connected, and retries 429, 5xx and no answer.
+
+```sh
+hc push add ci --url https://example.com/hook --secret s3cret    # JSON, HMAC signed
+hc push add phone --format unifiedpush --url <endpoint> --p256dh <key> --auth <secret>
+hc push add mine --url <url> --label team=web --event finished   # filters, like hc events
+hc push test ci        # one test POST now: prints the HTTP status
+hc push ls             # what each one last observed; `gone` stops sending until added again
+hc push events --since SEQ:MS   # whole events a push left out
+```
+
+Defaults: `status`, `finished` and `lost` events; status counts only when its
+word changes to `blocked`, `done` or `error` (`--event`, `--state` to change;
+an unknown type or word is refused). Each webhook gets its pushes in order.
+A push carries the terminal's whole record (command line, folder, labels):
+use https, or `--format unifiedpush`, off the local network.
+Every push carries `seq` and `ms`; one too big for its format comes without
+`event`: fetch it with `hc push events --seq N --ms T`. `hc push key` prints
+the VAPID key a UnifiedPush app registers with. `hc push rm` forgets one.
+
 ## Status, recovery, and cleanup
 
 - State is `live` or `finished`. Status comes from the program's OSC 7501

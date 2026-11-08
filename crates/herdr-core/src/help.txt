@@ -38,6 +38,8 @@ More
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')
+  push add|ls|rm|test|events|key   webhooks: POST events to a URL while nobody
+                              watches (json, or unifiedpush for ntfy and NextPush)
   connect                     the API over stdin/stdout (ssh box hc connect)
   schema                      the API as JSON Schema, for app builders
 

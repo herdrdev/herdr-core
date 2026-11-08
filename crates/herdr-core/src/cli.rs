@@ -15,11 +15,13 @@ use std::io::{IsTerminal, Read};
 mod file;
 mod machine;
 mod output;
+mod push;
 mod run;
 mod update;
 use file::*;
 use machine::*;
 use output::*;
+use push::*;
 use run::*;
 use update::*;
 
@@ -79,6 +81,11 @@ enum Cmd {
     Machine {
         #[command(subcommand)]
         action: MachineCmd,
+    },
+    /// Webhooks: the core POSTs events to a URL even when no client is connected.
+    Push {
+        #[command(subcommand)]
+        action: PushCmd,
     },
     /// Follow fact changes as they happen (one JSON line each when piped).
     Events(SubscribeParams),
@@ -630,6 +637,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         }
         Cmd::Update { from: Some(from), force, .. } => update(&paths, &from, force)?,
         Cmd::Machine { action } => machine(&paths, action, call)?,
+        Cmd::Push { action } => push(action, call)?,
         Cmd::File { action } => match file(action, asked, call)? {
             Some(out) => out,
             None => return Ok(None),
@@ -757,6 +765,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("machine login", "machine.connect"),
     ("machine rename", "machine.rename"),
     ("machine rm", "machine.rm"),
+    ("push add", "push.add"),
+    ("push ls", "push.list"),
+    ("push rm", "push.rm"),
+    ("push test", "push.test"),
+    ("push events", "push.events"),
+    ("push key", "push.key"),
 ];
 /// Client-only methods: handshake and opaque document storage.
 pub const API_ONLY: &[&str] = &["hello", "doc.get", "doc.set"];
