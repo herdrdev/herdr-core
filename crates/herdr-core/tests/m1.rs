@@ -126,6 +126,22 @@ fn read_prints_plain_text_even_when_piped() {
     assert!(out.starts_with("say \"hi\"\nsecond\n"), "{out:?}");
 }
 
+#[test]
+fn read_ansi_tells_faint_text_from_typed_text() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", r"printf '> \033[2mhint\033[0m\n> typed\n'; sleep 100"]);
+    wait_text(&s, &t, "typed");
+    assert_eq!(s.json(&["read", &t])["text"], "> hint\n> typed", "plain by default");
+    let ansi = |s: &Session| s.json(&["read", &t, "--ansi"])["text"].as_str().unwrap().to_string();
+    let text = ansi(&s);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("> ") && lines[0].contains("\x1b[2mhint"), "{text:?}");
+    assert!(!lines[1].contains("\x1b[2m"), "{text:?}");
+    s.json(&["kill", &t]);
+    wait_finished(&s, &t);
+    assert!(ansi(&s).contains("\x1b[2mhint"), "finished too");
+}
+
 fn wait_text(s: &Session, t: &str, needle: &str) {
     wait_until(&format!("{needle:?} in {t}"), || text(s, t).contains(needle));
 }

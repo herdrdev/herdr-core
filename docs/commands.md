@@ -458,6 +458,7 @@ Arguments:
 Options:
       --json           JSON output even in a terminal
       --lines <LINES>  Lines of history above the screen [default: 0]
+      --ansi           Keep styles as SGR escapes, e.g. faint `ESC[2m` (not for a full-screen app's history)
   -h, --help           Print help
 ```
 

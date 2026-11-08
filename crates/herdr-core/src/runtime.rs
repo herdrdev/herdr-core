@@ -761,14 +761,15 @@ impl Core {
         }
     }
 
-    /// The screen text of a live or finished terminal.
-    pub fn screen_text(&self, st: &State, id: u32) -> Option<String> {
+    /// The screen text of a live or finished terminal, with SGR escapes if `ansi`.
+    pub fn screen_text(&self, st: &State, id: u32, ansi: bool) -> Option<String> {
+        let text = |s: &Screen| if ansi { s.ansi_text() } else { s.plain_text() };
         match st.screens.get(&id) {
-            Some(screen) => Some(screen.plain_text()),
+            Some(screen) => Some(text(screen)),
             None => std::fs::read(self.snapshot_path(id))
                 .ok()
                 .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()))
-                .map(|s| s.plain_text()),
+                .map(|s| text(&s)),
         }
     }
 

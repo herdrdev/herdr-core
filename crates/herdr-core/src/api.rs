@@ -385,7 +385,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         let lines = if t.is_live() { p.lines } else { p.lines.min(FINISHED_LINES) };
         let rows = t.rows as usize;
         let exact = t.screen == "exact";
-        let text = core.screen_text(&st, id);
+        let text = core.screen_text(&st, id, p.ansi);
         let mut complete = exact && text.is_some();
         let text = text.unwrap_or_default();
         let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
