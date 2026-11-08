@@ -167,7 +167,7 @@ fn terminals_on_another_machine_work_like_local_ones() {
 /// A local agent (it reports status; what is typed into it shows on its
 /// screen) that starts `child` on rohan; returns both addresses.
 fn parent_with_child_on_rohan(s: &Session, child: &str) -> (String, String) {
-    let parent = run(s, &["sh", "-c", &script(s, "r state=idle; cat")]);
+    let parent = run(s, &["--name", "lead", "sh", "-c", &script(s, "r state=idle; cat")]);
     wait_until("the parent reports", || get(s, &parent)["reported"] == true);
     let out = s
         .cmd()
@@ -192,12 +192,14 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
     let asked = s.cmd().env("HC_TERMINAL_ID", &parent).args(["send", &child, "task"]).output().unwrap();
     assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 
-    let said = rohan.cmd().env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "hi-parent"]).output().unwrap();
+    // By name: still its parent.
+    let prefix = parent_there.split('/').next().unwrap();
+    let named = format!("{prefix}/lead");
+    let said = rohan.cmd().env("HC_TERMINAL_ID", "t1").args(["send", &named, "hi-parent"]).output().unwrap();
     assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stderr));
     wait_until("the child's message", || text(&s, &parent).contains(&format!("<hc from=\"{child}\">hi-parent</hc>")));
 
     let other = run(&s, &["sh", "-c", &script(&s, "r state=idle; cat")]);
-    let prefix = parent_there.split('/').next().unwrap();
     let (_, refused) = rohan.err(&["--json", "send", &format!("{prefix}/{other}"), "x"]);
     assert_eq!(refused["error"]["kind"], "denied", "only its parents: {refused}");
 

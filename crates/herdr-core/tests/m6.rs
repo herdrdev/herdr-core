@@ -120,7 +120,7 @@ fn a_turn_the_parent_asked_for_that_ends_without_a_report_is_a_note() {
         &s,
         &["--parent", &p, "--name", "worker"],
         &format!(
-            "stty -echo; r state=idle; {turn}; read -r l; r state=working; w reported; r state=done; w own; r state=working; r state=done; sleep 100"
+            "stty -echo; r state=idle; {turn}; read -r l; r state=working; w reported; r state=done; w own; r state=working; r state=done; read -r l; r state=done; sleep 100"
         ),
     );
     let quiet = run(&s, &["--parent", &p, "--no-notify"], &format!("stty -echo; r state=idle; {turn}; sleep 100"));
@@ -142,6 +142,9 @@ fn a_turn_the_parent_asked_for_that_ends_without_a_report_is_a_note() {
     std::thread::sleep(Duration::from_millis(1500));
     let t = text(&s, &p);
     assert_eq!(t.matches("without reporting").count(), 1, "a reported turn, its own turn, --no-notify: {t}");
+
+    hc_in(&s, &p, &["send", &kid, "task three"]); // answered done, never working
+    wait_until("a second note", || text(&s, &p).matches("without reporting").count() == 2);
 }
 
 #[test]

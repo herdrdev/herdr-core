@@ -428,10 +428,10 @@ async fn handle(
             )),
         },
         Ok(Some((to, routed))) => {
+            let there = routed["terminal"].as_str().unwrap_or_default().to_string();
             let result = crate::remote::forward_to(core, &to, method, routed).await;
             if result.is_ok() && method == "terminal.send" {
-                // A child here reporting to its parent on another machine.
-                core.reported(params["caller"].as_str(), params["terminal"].as_str().unwrap_or_default());
+                crate::remote::reported_afar(core, &to, &params, &there).await;
             }
             result
         }

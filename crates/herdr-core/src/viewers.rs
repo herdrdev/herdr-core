@@ -215,10 +215,12 @@ impl Core {
         if first_task_finished {
             t.first_task_turn = None;
         }
-        // A turn its parent asked for ended done or idle with no report (blocked
-        // or errored, it can still go on with the task: that is news of its own).
-        let settled = t.is_live() && t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "done" | "idle"));
-        let unreported = settled && t.asked.is_some_and(|turn| t.turn > turn || first_task_finished);
+        // A turn its parent asked for ended done or idle with no report, or its
+        // root said done without working first (blocked or errored, it can still
+        // go on with the task: that is news of its own).
+        let word = t.status.as_ref().filter(|_| t.is_live()).map(|s| s.state.as_str());
+        let unreported = matches!(word, Some("done" | "idle"))
+            && t.asked.is_some_and(|turn| t.turn > turn || (change.root_report && word == Some("done")));
         if unreported {
             t.asked = None;
         }
