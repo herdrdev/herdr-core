@@ -141,6 +141,7 @@ fn exec_on_conn(s: &Session, params: serde_json::Value) -> Conn {
 fn exec_limit_can_be_set_for_the_core() {
     let mut s = Session::new();
     s.env.push(("HC_MAX_EXECS".into(), "2".into()));
+    s.json(&["server", "start"]);
     let first = exec_on_conn(&s, json!({"argv": ["sh", "-c", format!("{} sleep 100", stubborn(&s, "limit1"))]}));
     pid_in(&s, "limit1");
     let second = exec_on_conn(&s, json!({"argv": ["sh", "-c", format!("{} sleep 100", stubborn(&s, "limit2"))]}));
