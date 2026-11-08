@@ -35,14 +35,15 @@ function Warn-PathShadowing($path, $dir) {
         foreach ($name in "hc", "herdr-core") {
             $found = Get-Command $name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $found) { continue }
+            $foundPath = [IO.Path]::GetFullPath($found.Path)
             $expected = [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))
-            $same = [IO.Path]::GetFullPath($found.Path) -ieq $expected
+            $same = $foundPath -ieq $expected
             # An existing local hc.exe is preserved, but might not be our alias.
             if ($same -and $name -eq "hc") {
-                $same = (File-Sha256 $found.Path) -eq (File-Sha256 (Join-Path $dir "herdr-core.exe"))
+                $same = (File-Sha256 $foundPath) -eq (File-Sha256 (Join-Path $dir "herdr-core.exe"))
             }
             if (-not $same) {
-                Write-Host "another $name at $($found.Path) comes first on your PATH; remove it and run the installer again, or put $dir ahead of it."
+                Write-Host "another $name at $foundPath comes first on your PATH; remove it and run the installer again, or put $dir ahead of it."
             }
         }
     } finally { $env:Path = $saved }

@@ -33,10 +33,10 @@ $env:Path = $other
 try {
     foreach ($shadowed in $false, $true) {
         $path = if ($shadowed) { "$other;$dir" } else { "$dir;$other" }
-        $text = (Warn-PathShadowing $path $dir 6>&1 | Out-String -Width 4096)
+        $text = (Warn-PathShadowing $path $dir 6>&1 | ForEach-Object { $_.ToString() }) -join "`n"
         foreach ($name in 'hc', 'herdr-core') {
             $extension = if ($name -eq 'hc') { 'ps1' } else { 'exe' }
-            $expected = "another $name at $(Join-Path $other "$name.$extension")"
+            $expected = "another $name at $([IO.Path]::GetFullPath((Join-Path $other "$name.$extension")))"
             if ($text.Contains($expected) -ne $shadowed) { throw "wrong warning: $text" }
         }
         if ($text.Contains('comes first on your PATH') -ne $shadowed) { throw "wrong warning: $text" }
@@ -44,8 +44,8 @@ try {
     }
     # A preserved, unrelated alias in the install directory also needs a warning.
     Copy-Item -Force "$env:SystemRoot\System32\cmd.exe" (Join-Path $dir 'hc.exe')
-    $text = (Warn-PathShadowing $dir $dir 6>&1 | Out-String -Width 4096)
-    if (-not $text.Contains("another hc at $(Join-Path $dir 'hc.exe')")) { throw "missing local conflict: $text" }
+    $text = (Warn-PathShadowing $dir $dir 6>&1 | ForEach-Object { $_.ToString() }) -join "`n"
+    if (-not $text.Contains("another hc at $([IO.Path]::GetFullPath((Join-Path $dir 'hc.exe')))")) { throw "missing local conflict: $text" }
     if ($text.Contains('another herdr-core')) { throw "wrong local conflict: $text" }
 } finally { $env:Path = $original }
 "#;
