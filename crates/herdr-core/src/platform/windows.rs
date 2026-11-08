@@ -298,6 +298,9 @@ impl Listener {
 pub type AsyncRead = tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeServer>;
 pub type AsyncWrite = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeServer>;
 
+// Duplex named pipes cannot half-close: read EOF means the client disconnected.
+pub async fn reply_closed(_read: &AsyncRead) {}
+
 /// The core's pipe for clients.
 pub struct AsyncListener {
     name: PathBuf,

@@ -53,6 +53,24 @@ pub fn listen(path: &Path) -> io::Result<Listener> {
 pub type AsyncRead = tokio::net::unix::OwnedReadHalf;
 pub type AsyncWrite = tokio::net::unix::OwnedWriteHalf;
 
+/// Read EOF can be a caller's SHUT_WR: probe the reply side without sending bytes.
+pub async fn reply_closed(read: &AsyncRead) {
+    loop {
+        let result = unsafe {
+            libc::send(read.as_ref().as_raw_fd(), std::ptr::null(), 0, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+        };
+        if result < 0
+            && matches!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPIPE | libc::ECONNRESET | libc::ENOTCONN)
+            )
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 /// The core's socket for clients.
 pub struct AsyncListener(tokio::net::UnixListener);
 

@@ -30,6 +30,35 @@ fn hc_in(s: &Session, t: &str, args: &[&str]) -> Value {
 }
 
 #[test]
+fn a_parent_note_waits_for_a_draft_and_survives_a_dialog_while_waiting() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "3000".into()));
+    let p = run(
+        &s,
+        &[],
+        "stty -echo; r state=idle; (w busy; r state=blocked; w free; r state=idle) & while read -r l; do echo \"parent-got:$l\"; done",
+    );
+    wait_until("parent ready", || get(&s, &p)["reported"] == true);
+    let mut person = common::framed::Viewer::attach(&s, &p, 80, 24, json!({}));
+    person.typed(b"my draft");
+    let kid = run(&s, &["--parent", &p], "r state=working; w news; r state=blocked; sleep 100");
+    touch(&s, "news");
+    wait_until("child blocked", || get(&s, &kid)["status"]["state"] == "blocked");
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(!text(&s, &p).contains("parent-got:"), "note submitted the draft");
+    touch(&s, "busy");
+    wait_until("parent dialog", || get(&s, &p)["status"]["state"] == "blocked");
+    person.typed(b"\r");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(!text(&s, &p).contains("<hc>"), "note answered the dialog");
+    touch(&s, "free");
+    wait_until("note after the dialog", || text(&s, &p).contains(&format!("parent-got:<hc>{kid} is blocked")));
+    let got = text(&s, &p);
+    assert!(got.contains("parent-got:my draft"), "{got}");
+    assert_eq!(got.matches("is blocked").count(), 1, "{got}");
+}
+
+#[test]
 fn a_terminal_is_nobodys_caller_in_another_session() {
     let s = session();
     let other = |args: &[&str]| s.cmd().env("HC_SESSION", "other").args(args).output().unwrap();

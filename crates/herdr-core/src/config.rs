@@ -15,7 +15,7 @@ pub struct Config {
     /// Notes to parent agents and `<hc>` tags on messages between agents, on
     /// or off (default on). Off: hc types nothing on its own.
     pub notes: Option<bool>,
-    /// Seconds without a person typing before a note goes in (default 3).
+    /// Seconds of quiet before a note (default 3); after Enter or a clear it goes in at once.
     pub notes_quiet: Option<f64>,
     /// Size of a terminal nobody is typing in, `COLSxROWS` (default 200x120).
     pub headless: Option<String>,

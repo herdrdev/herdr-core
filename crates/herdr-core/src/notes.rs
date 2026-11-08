@@ -264,7 +264,7 @@ impl Core {
         // Notes from other machines were decided there: type them as they are.
         let afar = self.lock().afar_notes.remove(&parent).unwrap_or_default();
         let typed = self
-            .type_in(parent, quiet, |st, t| {
+            .type_in(parent, quiet, true, |st, t| {
                 if !can_take_note(t) {
                     return Err(RpcError::new("busy", "the parent got busy", ""));
                 }

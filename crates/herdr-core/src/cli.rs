@@ -47,7 +47,7 @@ enum Cmd {
     Label(LabelParams),
     /// Keep a live terminal after loss (--off disables).
     Keep(crate::api::KeepParams),
-    /// Paste text into a terminal and press Enter (waits for a person to pause).
+    /// Paste text into a terminal and press Enter (waits for a person's unfinished draft).
     Send(SendParams),
     /// Wait for your children (--children any) or one terminal; a message to you also ends it.
     Wait(WaitParams),
