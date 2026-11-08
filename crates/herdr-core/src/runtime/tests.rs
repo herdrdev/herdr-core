@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[tokio::test(start_paused = true)]
 async fn keys_pressed_during_a_paste_follow_its_submit() {
@@ -468,4 +468,64 @@ fn remove_root(root: impl AsRef<std::path::Path>) {
             Err(e) => panic!("removing {}: {e}", root.as_ref().display()),
         }
     }
+}
+
+/// What a subscriber hears when a holder whose program reported `tail` while
+/// unwatched is adopted after a crash or a failed read (not a handover).
+fn status_events_on_crash_adoption(tail: &[u8]) -> Vec<Value> {
+    use crate::events::{Filter, Sink};
+    use std::sync::atomic::AtomicBool;
+    let (core, root) = test_core();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let id = {
+        let mut st = core.lock();
+        let new = crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() };
+        let id = st.reg.create(new, now_ms()).unwrap();
+        let t = st.reg.terminals.get_mut(&id).unwrap();
+        t.holder = Some("fake".into());
+        t.reported = true;
+        t.status = Some(crate::status::Status {
+            state: "working".into(),
+            kind: None,
+            progress: None,
+            app: String::new(),
+            title: String::new(),
+            msg: String::new(),
+        });
+        core.subscribe(&mut st, Filter::default(), Sink::Plain { tx, behind: Arc::new(AtomicBool::new(false)) });
+        id
+    };
+    let welcome = proto::Welcome {
+        version: proto::VERSION,
+        instance: "fake".into(),
+        pid: 0,
+        build: crate::client::build_id(),
+        previous: "crash".into(),
+        terminals: vec![proto::HeldTerminal { id, pid: 1, cols: 80, rows: 24, exit: None }],
+    };
+    {
+        let mut st = core.lock();
+        core.adopt(&mut st, &welcome, HashMap::from([(id, tail.to_vec())]));
+    }
+    let mut events = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        events.push(msg["params"].clone());
+    }
+    drop(core);
+    remove_root(&root);
+    events.into_iter().filter(|e| e["type"] == "status").collect()
+}
+
+#[test]
+fn adopting_a_holder_announces_a_status_its_tail_changed() {
+    let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
+    assert_eq!(events.len(), 1, "one status event for the final word, not one per replayed report: {events:?}");
+    assert_eq!(events[0]["data"]["status"]["state"], "idle");
+}
+
+#[test]
+fn adopting_a_holder_whose_tail_repeats_the_status_announces_nothing() {
+    let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\");
+    assert!(events.is_empty(), "a replay of what subscribers already heard: {events:?}");
 }

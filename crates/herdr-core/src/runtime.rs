@@ -477,6 +477,8 @@ impl Core {
                 // A crash tail repeats reports we already counted: take its final word,
                 // but count at most the one turn that may have ended while we were down.
                 let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
+                let facts = |t: &crate::terminals::Terminal| (t.status.clone(), t.records.clone(), t.reported);
+                let heard = facts(rec);
                 for r in &reports {
                     crate::status::apply(rec, r);
                 }
@@ -488,7 +490,9 @@ impl Core {
                 // Only a changed final word/turn proves new activity in a crash replay.
                 // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
                 let root_report = rec.turn != turn || now != was;
-                self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
+                // Subscribers hear the final facts once, and only if the replay changed them.
+                let status = facts(rec) != heard;
+                self.status_changed(st, id, crate::status::Change { status, root_report, ..Default::default() });
             }
             if spawning {
                 self.spawn_result(st, instance, id, Ok(h.pid));
