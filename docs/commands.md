@@ -348,7 +348,7 @@ Arguments:
 
 Options:
       --json               JSON output even in a terminal
-      --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name
+      --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name. On Windows, a program and its arguments (CommandLineToArgvW split, no shell), with the remote line appended as one argument, no console window; Unix stays an sh line. WSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl
       --temp               Mark it short-lived (a sandbox for a task), so clients can show it apart from machines that stay. hc treats it like any other; remove it with `hc machine rm`
       --install            Copy this hc there when it has none or one too old, without asking (for scripts; in a terminal you are asked)
       --name <NAME>        What to call it here (default: the target's host)

@@ -3657,11 +3657,11 @@
           }
         },
         {
-          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
           "name": "via",
           "required": false,
           "schema": {
-            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
             "type": [
               "string",
               "null"

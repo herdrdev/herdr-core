@@ -7,6 +7,20 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+pub fn check_via(_target: &str) -> io::Result<()> {
+    Ok(())
+}
+
+pub fn via_add_hint(target: &str) -> String {
+    format!("hc machine add --via '{}' --name <name>", target.replace('\'', r"'\''"))
+}
+
+pub fn via_command(target: &str, line: &str) -> io::Result<Command> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(format!("{target} \"$1\"")).arg("sh").arg(line);
+    Ok(cmd)
+}
+
 // --- Connections -----------------------------------------------------------
 
 /// A connection to a core or a holder (blocking).

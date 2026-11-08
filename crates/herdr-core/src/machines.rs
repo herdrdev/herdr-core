@@ -50,17 +50,20 @@ impl Reach<'_> {
     /// Says how to add it again, for hints.
     fn add(&self) -> String {
         match self.via {
-            true => format!("hc machine add --via '{}' --name <name>", self.target.replace('\'', r"'\''")),
+            true => crate::platform::via_add_hint(self.target),
             false => format!("hc machine add {}", self.target),
         }
     }
 
     /// The command that runs `line` there.
-    fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
+    fn command(
+        &self,
+        paths: &crate::paths::Paths,
+        extra: &[&str],
+        line: &str,
+    ) -> Result<std::process::Command, RpcError> {
         if self.via {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
-            return cmd;
+            return crate::platform::via_command(self.target, line).map_err(|e| unreachable(*self, &e.to_string()));
         }
         let mut cmd = ssh(paths, self.target, extra);
         #[cfg(windows)]
@@ -73,7 +76,7 @@ impl Reach<'_> {
             cmd.arg("-T");
         }
         cmd.arg(self.target).arg(line);
-        cmd
+        Ok(cmd)
     }
 }
 
@@ -136,14 +139,15 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
 }
 
 /// An ssh target goes to ssh as one argument: never an option, never two
-/// words. A command (`via`) is a shell line here, on one line.
+/// words. A command (`via`) is one local command line.
 pub fn check_target(to: Reach) -> Result<(), RpcError> {
     let target = to.target;
     if to.via {
-        if cfg!(windows) || target.trim().is_empty() || target.chars().any(char::is_control) {
-            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, run by sh here")));
+        if target.trim().is_empty() || target.chars().any(char::is_control) {
+            return Err(RpcError::invalid_params(format!("bad command {target:?}: one line, no control characters")));
         }
-        return Ok(());
+        return crate::platform::check_via(target)
+            .map_err(|e| RpcError::invalid_params(format!("bad command {target:?}: {e}")));
     }
     if target.is_empty() || target.starts_with('-') || target.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(RpcError::invalid_params(format!("bad ssh target {target:?}")));
@@ -232,7 +236,12 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// ~/.local/bin. On Windows, whose shell may be cmd or PowerShell, one line
 /// both read alike; the installer put hc on PATH. Never prompts: a login a
 /// person must type fails fast.
-fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
+fn pipe(
+    paths: &crate::paths::Paths,
+    to: Reach,
+    session: Option<&str>,
+    windows: bool,
+) -> Result<tokio::process::Command, RpcError> {
     let remote = if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
@@ -245,10 +254,10 @@ fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: 
         )
     };
     let options = ["BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "ServerAliveCountMax=4"];
-    let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote));
+    let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote)?);
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 /// What the pipe's line says when there is no hc there.
@@ -257,7 +266,7 @@ const NOT_HERE: &str = "herdr-core is not installed here";
 fn unreachable(to: Reach, why: &str) -> RpcError {
     let target = to.target;
     let hint = match to.via {
-        true => format!("check that `{target} echo ok` prints ok without asking anything"),
+        true => format!("check that `{target} 'echo ok'` prints ok without asking anything"),
         false => format!("check that `ssh {target}` logs in without a password prompt (keys or an agent)"),
     };
     RpcError::new("unreachable", format!("cannot reach {target}: {why}"), hint)
@@ -311,7 +320,7 @@ async fn dial_once(
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
     let mut child =
-        pipe(paths, to, session, windows).spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
+        pipe(paths, to, session, windows)?.spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let (mut stdin, stdout, mut stderr) =
         (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let mut params = json!({"generation": crate::api::GENERATION});
@@ -439,7 +448,7 @@ fn run_raw(
     input: &[u8],
 ) -> Result<std::process::Output, RpcError> {
     use std::io::Write;
-    let mut cmd = to.command(paths, &["BatchMode=yes", "ConnectTimeout=10"], command);
+    let mut cmd = to.command(paths, &["BatchMode=yes", "ConnectTimeout=10"], command)?;
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let mut stdin = child.stdin.take().expect("piped");
@@ -626,7 +635,7 @@ mod tests {
         assert_eq!(super::default_name("rohan", |name| name == "rohan"), Some("rohan-2".into()));
         let ssh = |target| Reach { target, via: false };
         assert!(check_target(ssh("-oProxyCommand=x")).is_err() && check_target(ssh("a b")).is_err());
-        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok() || cfg!(windows));
+        assert!(check_target(Reach { target: "fly ssh console -C", via: true }).is_ok());
         assert_eq!(platform("Darwin arm64"), "macos aarch64");
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
@@ -649,7 +658,7 @@ mod tests {
     #[test]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
         let paths = crate::paths::Paths::from_env().unwrap();
-        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
+        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true).unwrap();
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         assert_eq!(
             line,

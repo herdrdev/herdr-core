@@ -174,6 +174,9 @@ remote files and commands. `hc machine ls` lists configured machines; see
 Without `--name`, SSH machines use the first host label (IPs stay whole),
 shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken
 or looks like a terminal id (`t14` becomes `t14-2`).
+On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
+no shell), with the remote line appended as one argument, no console window;
+Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows

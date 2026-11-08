@@ -735,7 +735,10 @@ pub struct MachineAddParams {
     /// Reach it with this command instead of ssh: it is given a shell line to
     /// run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,
     /// `fly ssh console -a app --pty=false -C`). It must pass bytes both ways
-    /// untouched and ask nothing. Needs --name.
+    /// untouched and ask nothing. Needs --name. On Windows, a program and its
+    /// arguments (CommandLineToArgvW split, no shell), with the remote line
+    /// appended as one argument, no console window; Unix stays an sh line.
+    /// WSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.
     #[arg(long, value_name = "COMMAND")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
