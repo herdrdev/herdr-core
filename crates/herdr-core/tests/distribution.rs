@@ -135,9 +135,9 @@ fn the_installer_warns_only_when_another_copy_wins_on_path() {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     for (path, shadowed) in [
-        ("/usr/bin:/bin".to_owned(), false),
         (format!("{}:{}:/usr/bin:/bin", other.display(), bin.display()), true),
         (format!("{}:{}:/usr/bin:/bin", bin.display(), other.display()), false),
+        ("/usr/bin:/bin".to_owned(), false),
     ] {
         let out = s
             .program("sh")
@@ -148,6 +148,7 @@ fn the_installer_warns_only_when_another_copy_wins_on_path() {
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
+        assert!(bin.join("hc").is_symlink());
         s.bin = bin.join("herdr-core");
         let text = String::from_utf8(out.stdout).unwrap();
         for name in ["hc", "herdr-core"] {
@@ -163,7 +164,7 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     let r = Releases::new(&s, THIS, &[&here()]);
     let bin = s.root.join("bin");
     let install = |s: &Session| {
-        // A PATH without the hc this machine already has: else no `hc` link is added.
+        // Keep the machine's installed commands out of this isolated install.
         let mut cmd = s.program("sh");
         cmd.arg(format!("{ROOT}/../../distribution/install.sh")).env("PATH", "/usr/bin:/bin");
         let out = cmd.env("HERDR_RELEASES_URL", &r.url).env("HC_INSTALL_DIR", &bin).output().unwrap();

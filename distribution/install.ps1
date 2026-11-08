@@ -3,8 +3,8 @@
 #   powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
 #
 # Into %LOCALAPPDATA%\Programs\herdr-core (herdr-core.exe, Microsoft's
-# ConPTY beside it), added to your PATH, with hc.exe linked to it only if no
-# `hc` exists. An hc that is already there is swapped the planned way (hc
+# ConPTY beside it), added to your PATH, with hc.exe linked beside it unless
+# that path already exists. An hc that is already there is swapped the planned way (hc
 # update --from): running terminals keep running. No admin needed.
 # HC_VERSION=0.2.0 picks a version; HERDR_RELEASES_URL points elsewhere
 # (tests); HC_INSTALL_DIR installs elsewhere.
@@ -93,7 +93,7 @@ try {
         Write-Host "hc $version installed into $dir."
     }
     Copy-Item -Recurse -Force "$tmp\hc\THIRD-PARTY-NOTICES" $dir -ErrorAction SilentlyContinue
-    if (-not (Get-Command hc -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $dir "hc.exe"))) {
+    if (-not (Test-Path (Join-Path $dir "hc.exe"))) {
         New-Item -ItemType HardLink -Path (Join-Path $dir "hc.exe") -Target $exe | Out-Null
     }
 

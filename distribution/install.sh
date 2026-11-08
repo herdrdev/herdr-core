@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://releases.herdr.dev/core/install.sh | sh
 #
-# Into ~/.local/bin/herdr-core, with `hc` beside it only if no `hc` exists
-# (some window managers ship one). An hc that is already there is swapped
+# Into ~/.local/bin/herdr-core, with `hc` beside it unless that path exists.
+# Other commands named hc are left in place. An hc already there is swapped
 # the planned way (hc update --from): running terminals keep running. One
 # from a package manager is left to it. HC_VERSION=0.2.0 picks a version;
 # HERDR_RELEASES_URL points elsewhere (tests).
@@ -108,7 +108,7 @@ else
   mv -f "$bin/herdr-core.new" "$bin/herdr-core"
   say "hc $version installed into $bin/herdr-core."
 fi
-if ! command -v hc >/dev/null 2>&1 && [ ! -e "$bin/hc" ]; then
+if [ ! -e "$bin/hc" ] && [ ! -L "$bin/hc" ]; then
   ln -s herdr-core "$bin/hc"
 fi
 
