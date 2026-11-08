@@ -120,7 +120,7 @@ esac
 for name in hc herdr-core; do
   found=$(command -v "$name" || true)
   if [ -n "$found" ] && ! [ "$found" -ef "$bin/herdr-core" ]; then
-    say "another $name at $found comes first on your PATH; remove it or put $bin ahead of it."
+    say "another $name at $found comes first on your PATH; remove it and run the installer again, or put $bin ahead of it."
   fi
 done
 say "Agents: hc --skill. People: hc --help."

@@ -8,9 +8,11 @@ fn the_installer_warns_using_the_supplied_fresh_terminal_path() {
     let script = r#"
 $ErrorActionPreference = 'Stop'
 $ast = [Management.Automation.Language.Parser]::ParseFile($env:INSTALL_SCRIPT, [ref]$null, [ref]$null)
-$function = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Warn-PathShadowing' }, $true)
-if (-not $function) { throw 'missing warning function' }
-Invoke-Expression $function.Extent.Text
+foreach ($name in 'File-Sha256', 'Warn-PathShadowing') {
+    $function = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+    if (-not $function) { throw "missing $name function" }
+    Invoke-Expression $function.Extent.Text
+}
 $dir = Join-Path $env:TEST_ROOT 'install bin'
 $other = Join-Path $env:TEST_ROOT 'other bin'
 New-Item -ItemType Directory -Force $dir, $other | Out-Null
@@ -36,6 +38,11 @@ try {
         if ($text.Contains('comes first on your PATH') -ne $shadowed) { throw "wrong warning: $text" }
         if ($env:Path -ne $other) { throw 'process PATH was not restored' }
     }
+    # A preserved, unrelated alias in the install directory also needs a warning.
+    Copy-Item -Force "$env:SystemRoot\System32\cmd.exe" (Join-Path $dir 'hc.exe')
+    $text = (Warn-PathShadowing $dir $dir 6>&1 | Out-String)
+    if (-not $text.Contains("another hc at $(Join-Path $dir 'hc.exe')")) { throw "missing local conflict: $text" }
+    if ($text.Contains('another herdr-core')) { throw "wrong local conflict: $text" }
 } finally { $env:Path = $original }
 "#;
     let out = std::process::Command::new("powershell.exe")

@@ -23,14 +23,26 @@ $ProgressPreference = "SilentlyContinue"
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "hc: $why" }
 
+function File-Sha256($path) {
+    $stream = [IO.File]::OpenRead($path)
+    try { -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) } finally { $stream.Close() }
+}
+
 function Warn-PathShadowing($path, $dir) {
     $saved = $env:Path
     try {
         $env:Path = [Environment]::ExpandEnvironmentVariables($path)
         foreach ($name in "hc", "herdr-core") {
             $found = Get-Command $name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found -and $found.Path -ine [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))) {
-                Write-Host "another $name at $($found.Path) comes first on your PATH; remove it or put $dir ahead of it."
+            if (-not $found) { continue }
+            $expected = [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))
+            $same = $found.Path -ieq $expected
+            # An existing local hc.exe is preserved, but might not be our alias.
+            if ($same -and $name -eq "hc") {
+                $same = (File-Sha256 $found.Path) -eq (File-Sha256 (Join-Path $dir "herdr-core.exe"))
+            }
+            if (-not $same) {
+                Write-Host "another $name at $($found.Path) comes first on your PATH; remove it and run the installer again, or put $dir ahead of it."
             }
         }
     } finally { $env:Path = $saved }
@@ -70,8 +82,7 @@ try {
     curl.exe -fsSL $download -o "$tmp\hc.zip"
     if ($LASTEXITCODE) { Fail "download failed: $($t.url)" }
     # .NET, not Get-FileHash: that one fails when PowerShell 7 starts 5.1.
-    $stream = [IO.File]::OpenRead("$tmp\hc.zip")
-    try { $got = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) } finally { $stream.Close() }
+    $got = File-Sha256 "$tmp\hc.zip"
     if ($got -ne $t.sha256) { Fail "the download is damaged (checksum mismatch); try again" }
   }
     New-Item -ItemType Directory -Force "$tmp\hc" | Out-Null
