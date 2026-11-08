@@ -252,6 +252,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
+- `HC_MAX_EXECS` in the core server environment sets the concurrent exec limit (default 16).
 - Updates and `hc server restart` keep the environment the core started with;
   stopping and starting takes a fresh one. Per-terminal API `env` overrides still
   apply, as do Linux session and Windows registry refreshes. SIGTERM hands over

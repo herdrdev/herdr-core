@@ -19,14 +19,27 @@ pub const MAX_STDERR: usize = 1 << 20;
 pub const MAX_STDIN: usize = 8 << 20;
 pub const DEFAULT_TIMEOUT: f64 = 60.0;
 const MAX_TIMEOUT: f64 = 600.0;
-const MAX_RUNNING: usize = 16;
+/// Execs allowed at once; `HC_MAX_EXECS` in the server environment overrides it.
+const DEFAULT_MAX_RUNNING: usize = 16;
+
+fn max_running() -> usize {
+    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| {
+        std::env::var("HC_MAX_EXECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_RUNNING)
+    })
+}
+
 /// How long output may still come after everything was ended (a process that
 /// escaped the sweep may hold a pipe).
 const DRAIN: Duration = Duration::from_secs(2);
 
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
-/// One of the `MAX_RUNNING` places, given back on drop: held until
+/// One of the `max_running()` places, given back on drop: held until
 /// everything the exec started was ended, so a stopping core waits for that.
 struct Slot;
 
@@ -38,11 +51,11 @@ impl Slot {
     }
 
     fn take() -> Result<Slot, RpcError> {
-        if RUNNING.fetch_add(1, Ordering::SeqCst) >= MAX_RUNNING {
+        if RUNNING.fetch_add(1, Ordering::SeqCst) >= max_running() {
             RUNNING.fetch_sub(1, Ordering::SeqCst);
             return Err(RpcError::new(
                 "unavailable",
-                format!("{MAX_RUNNING} execs are running already"),
+                format!("{} execs are running already", max_running()),
                 "try again when one is done",
             ));
         }

@@ -138,6 +138,21 @@ fn exec_on_conn(s: &Session, params: serde_json::Value) -> Conn {
 }
 
 #[test]
+fn exec_limit_can_be_set_for_the_core() {
+    let mut s = Session::new();
+    s.env.push(("HC_MAX_EXECS".into(), "2".into()));
+    let first = exec_on_conn(&s, json!({"argv": ["sh", "-c", format!("{} sleep 100", stubborn(&s, "limit1"))]}));
+    pid_in(&s, "limit1");
+    let second = exec_on_conn(&s, json!({"argv": ["sh", "-c", format!("{} sleep 100", stubborn(&s, "limit2"))]}));
+    pid_in(&s, "limit2");
+    assert_eq!(s.err(&["--json", "exec", "true"]).1["error"]["kind"], "unavailable");
+    drop(first);
+    gone(pid_in(&s, "limit1"));
+    wait_until("an exec slot is free", || s.hc(&["exec", "true"]).status.success());
+    drop(second);
+}
+
+#[test]
 fn exec_ends_when_its_caller_goes_away_here_or_across_a_line() {
     let rohan = Session::new();
     let mut s = Session::new();
