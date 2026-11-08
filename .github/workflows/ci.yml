@@ -63,6 +63,9 @@ jobs:
       - run: cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
         env:
           ZIG: ${{ github.workspace }}/scripts/zig-stub.sh
+          # ring's C needs Windows headers; type-checking links nothing.
+          CC_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
+          AR_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
 
   test:
     strategy:
