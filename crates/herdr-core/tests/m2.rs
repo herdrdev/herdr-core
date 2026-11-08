@@ -180,6 +180,20 @@ fn size_follows_the_last_active_typing_viewer() {
 }
 
 #[test]
+fn an_observer_keeps_the_size_a_terminal_started_with() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let params = json!({"argv": ["sleep", "100"], "size": {"cols": 73, "rows": 19}});
+    let t = s.connect().call(1, "terminal.run", params)["result"]["address"].as_str().unwrap().to_string();
+
+    let mut observer = Viewer::attach(&s, &t, 40, 10, json!({"observe": true}));
+    assert_eq!(size(&s, &t), (73, 19), "attaching to watch");
+    observer.conn.send(observer.channel, wire::CLOSE, &[]);
+    observer.until("detached", |v| v.closed.is_some());
+    assert_eq!(size(&s, &t), (73, 19), "done watching");
+}
+
+#[test]
 fn observers_receive_the_terminal_grid_and_a_repaint_when_it_changes() {
     let s = Session::new();
     let t = run(&s, &["sh", "-c", "echo retained; exec sleep 100"]);

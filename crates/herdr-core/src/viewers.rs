@@ -91,7 +91,9 @@ impl Core {
             display: req.display,
             recovering,
         });
-        self.apply_size(&mut st, id);
+        if !req.observe {
+            self.apply_size(&mut st, id);
+        }
         let paint = first_paint(&st, id, req.history);
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
@@ -311,9 +313,13 @@ impl Core {
         self.unsubscribe(&mut st, conn, channel);
         let mut touched = Vec::new();
         for (id, vs) in st.viewers.iter_mut() {
-            let before = vs.len();
-            vs.retain(|v| !(Arc::ptr_eq(&v.conn, conn) && channel.is_none_or(|c| c == v.channel)));
-            if vs.len() != before {
+            let mut typing_left = false;
+            vs.retain(|v| {
+                let leaves = Arc::ptr_eq(&v.conn, conn) && channel.is_none_or(|c| c == v.channel);
+                typing_left |= leaves && !v.observe;
+                !leaves
+            });
+            if typing_left {
                 touched.push(*id);
             }
         }
