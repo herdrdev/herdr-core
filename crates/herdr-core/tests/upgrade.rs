@@ -26,6 +26,12 @@ fn an_old_retained_holder_restores_the_new_cores_environment_after_raw_restart()
     s.env.retain(|(key, _)| key != "HC_RESTART_VALUE");
     s.env.push(("HC_RESTART_VALUE".into(), "saved-core".into()));
     let pid = s.json(&["server", "restart"])["pid"].clone();
+    // A previous release that saves its environment hands "old-holder" on;
+    // older ones give the new core the updater's "saved-core". Either way, the
+    // raw restart below must keep what this core has now.
+    let before = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
+    assert!(before.status.success(), "{before:?}");
+    let expected = String::from_utf8_lossy(&before.stdout).into_owned();
     let reply = s.connect().call(1, "server.restart", serde_json::json!({}));
     assert!(reply.get("error").is_none(), "{reply}");
     // No autostarting CLI: only the released holder can launch the successor.
@@ -36,7 +42,7 @@ fn an_old_retained_holder_restores_the_new_cores_environment_after_raw_restart()
     });
     let out = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "saved-core");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
     s.json(&["send", &terminal, "after"]);
     says(&s, &terminal, "got-after");
 }
