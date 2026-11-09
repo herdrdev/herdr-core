@@ -25,6 +25,8 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     s.env.push(("HC_FOREGROUND_MS".into(), "30".into()));
     s.env.push(("TERM".into(), "vt100".into()));
     s.env.push(("TERM_PROGRAM".into(), "keep-test".into()));
+    s.env.push(("COLORTERM".into(), "".into()));
+    s.env.push(("TERM_PROGRAM_VERSION".into(), "1".into()));
     s.env.push(("HC_KEEP_TEST".into(), "preserved".into()));
     let dir = s.root.join("last");
     std::fs::create_dir(&dir).unwrap();
@@ -50,11 +52,15 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     let r = get(&s, &t);
     assert_eq!(r["cwd"], canonical_dir.display().to_string());
     assert_eq!(r["name"], "kept");
-    assert_eq!(r["identity"], "keep-test");
+    assert_eq!(r["identity"], "ghostty");
     assert_eq!((r["cols"].as_u64(), r["rows"].as_u64()), (Some(91), Some(29)));
     let mut viewer = framed::Viewer::attach(&s, &t, 91, 29, serde_json::json!({}));
-    s.json(&["send", &t, "printf 'kept-env:%s:%s\\n' \"$TERM\" \"$HC_KEEP_TEST\""]);
-    viewer.shows("kept-env:vt100:preserved");
+    s.json(&[
+        "send",
+        &t,
+        "printf 'kept-env:%s:%s:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"${TERM_PROGRAM_VERSION-}\" \"$HC_KEEP_TEST\"",
+    ]);
+    viewer.shows("kept-env:xterm-256color:truecolor:ghostty::preserved");
     assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
     assert!(!pid_alive(old));
 }

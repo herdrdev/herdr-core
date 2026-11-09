@@ -16,7 +16,7 @@ pub const GENERATION: u32 = 1;
 pub const FEATURES: &[&str] =
     &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
 pub const FINISHED_LINES: usize = 1000;
-/// A terminal's identity: fixed at start from whoever starts it.
+/// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;

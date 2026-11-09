@@ -213,9 +213,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
-- Programs get the login session's environment. A local `DISPLAY` or
-  `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
-  connections. Host displays (including SSH forwarding) stay as they are.
+- Programs get the login session's environment with the core's terminal identity:
+  TERM=xterm-256color, COLORTERM=truecolor and TERM_PROGRAM=ghostty, with no
+  TERM_PROGRAM_VERSION. The caller's identity is not forwarded. Explicit API
+  `env` overrides still apply; kept replacement shells retain that identity.
+  A local `DISPLAY` or `WAYLAND_DISPLAY` is left out only when its socket is
+  missing or refuses connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death

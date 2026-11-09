@@ -229,8 +229,8 @@ pub struct RunParams {
     #[arg(long, value_name = "MACHINE")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
-    /// Set on top of the core's environment. Clients pass their terminal
-    /// identity here (TERM, TERM_PROGRAM, COLORTERM).
+    /// Override the core's environment and terminal identity. Omit terminal
+    /// identity variables to use the core's defaults.
     #[arg(skip)]
     #[serde(default)]
     pub env: BTreeMap<String, String>,

@@ -305,22 +305,17 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
     let address = if chosen.is_empty() {
         // Our shell if we have one, else the machine's own (Windows has no $SHELL).
         let argv: Vec<String> = std::env::var("SHELL").into_iter().filter(|s| !s.is_empty()).collect();
-        let r = call(paths, "terminal.run", json!({"argv": argv, "cwd": here(), "env": identity_env()}))?;
+        let r = call(paths, "terminal.run", json!({"argv": argv, "cwd": here()}))?;
         r["address"].as_str().unwrap_or_default().to_string()
     } else if let Some(machine) = chosen.strip_prefix('+') {
         // No program: its own shell, whatever that is there.
-        let r = call(paths, "terminal.run", json!({"on": machine, "env": identity_env()}))?;
+        let r = call(paths, "terminal.run", json!({"on": machine}))?;
         r["address"].as_str().unwrap_or_default().to_string()
     } else {
         chosen
     };
     eprintln!("{}", crate::attach::run(paths, &address, false, 0)?);
     Ok(None)
-}
-
-/// Only our terminal's identity travels; programs get the core's environment.
-fn identity_env() -> std::collections::BTreeMap<String, String> {
-    std::env::vars().filter(|(k, _)| crate::api::IDENTITY_VARS.contains(&k.as_str())).collect()
 }
 
 /// `json`: print JSON (asked, or piped). `asked`: `--json` itself, not a
@@ -392,7 +387,6 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             if p.on.is_none() {
                 p.cwd = from_here(p.cwd); // our folder means nothing on another machine
             }
-            p.env = identity_env();
             p.caller = Some(caller());
             if let Some(line) = shell_line(&p.argv) {
                 (p.line, p.argv) = (Some(line), Vec::new());

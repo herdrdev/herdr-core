@@ -224,8 +224,7 @@ pub(crate) fn terminal_env(
     (env, scope)
 }
 
-/// The core's environment minus whoever started the core's identity, plus the
-/// caller's identity and this terminal's address.
+/// The core's environment with its own terminal identity and explicit client overrides.
 pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = base
         .into_iter()
@@ -234,6 +233,9 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
                 && !["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME].contains(&k.as_str())
         })
         .collect();
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert("TERM_PROGRAM".into(), "ghostty".into());
     crate::platform::merge_env(&mut env, extra);
     if let Ok(session) = std::env::var("HC_SESSION") {
         env.insert("HC_SESSION".into(), session);
@@ -241,9 +243,7 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
     if let Some(lang) = crate::locale::for_programs(&env) {
         env.insert("LANG".into(), lang); // a core started from Finder has none
     }
-    env.entry("TERM".into()).or_insert_with(|| "xterm-256color".into());
-    env.entry("COLORTERM".into()).or_insert_with(|| "truecolor".into());
-    if env.get("TERM_PROGRAM").is_none_or(|p| p == "herdr") {
+    if env.get("TERM_PROGRAM").is_some_and(|p| p == "herdr") {
         env.insert("TERM_PROGRAM".into(), "ghostty".into());
         env.remove("TERM_PROGRAM_VERSION"); // the version belonged to whatever we replaced
     }

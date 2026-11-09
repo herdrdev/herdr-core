@@ -1689,7 +1689,7 @@
           }
         },
         {
-          "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+          "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
           "name": "env",
           "required": false,
           "schema": {
@@ -1697,7 +1697,7 @@
               "type": "string"
             },
             "default": {},
-            "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+            "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
             "type": "object"
           }
         },
