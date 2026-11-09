@@ -87,6 +87,7 @@ struct Holder {
 
 /// Runs a holder on `socket` (each holder has its own; the core picks the path).
 pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
+    platform::prepare_holder();
     platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
     paths.create_dirs()?;

@@ -11,6 +11,8 @@ pub use unix::*;
 pub mod systemd;
 
 #[cfg(target_os = "macos")]
+mod macos_appkit;
+#[cfg(target_os = "macos")]
 mod macos_bundle;
 #[cfg(target_os = "macos")]
 mod macos_launchd;
@@ -42,6 +44,14 @@ pub fn daemon_startup() -> bool {
 pub fn prepare_core() {
     #[cfg(target_os = "macos")]
     macos_launchd::prepare_core();
+}
+
+/// Complete the holder's background-app registration before starting threads or terminals.
+pub fn prepare_holder() {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_appkit::check_in() {
+        eprintln!("holder: background app registration unavailable: {error}");
+    }
 }
 
 /// Daemons must not keep launchd's 256-fd or systemd's 1024-fd soft limit.

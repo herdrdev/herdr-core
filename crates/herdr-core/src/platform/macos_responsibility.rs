@@ -19,7 +19,10 @@ pub fn holder_startup() {
         return;
     }
     let result = (|| {
-        let mut cmd = Command::new(std::env::current_exe()?);
+        // AppKit must discover the signed bundle, even when hc was invoked through an install symlink.
+        let exe = std::env::current_exe()?;
+        let exe = exe.canonicalize().ok().filter(|p| super::macos_bundle::source_is_bundle(p)).unwrap_or(exe);
+        let mut cmd = Command::new(exe);
         cmd.args(std::env::args_os().skip(1)).env(MARKER, std::process::id().to_string());
         exec(cmd)
     })();
