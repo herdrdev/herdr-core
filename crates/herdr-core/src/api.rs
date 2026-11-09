@@ -318,14 +318,13 @@ async fn terminal_rm(core: Ctx<'_>, p: TerminalParams) -> Result<RemoveResult, R
 
 async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    let public = {
+    {
         let mut st = core.lock();
         let t = st.reg.terminals.get_mut(&id).expect("resolved");
         if !t.is_live() {
             return Err(RpcError::invalid_params("only live terminals can be kept"));
         }
         t.keep = p.keep;
-        let public = Public(t.clone());
         let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
         core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
         if let Some(reason) = lost {
@@ -333,10 +332,10 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
             core.changed.notify_waiters();
         }
         core.save(&st);
-        public
-    };
+    }
+    let result = record(core, id).map(Public);
     core.flush_saved().await?;
-    Ok(public)
+    result
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {
