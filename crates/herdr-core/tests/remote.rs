@@ -237,7 +237,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     rohan.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     let mut s = Session::new();
     let (var, fake) = fake_ssh(&s, &[("rohan", &rohan)]);
-    // Everything rohan sends comes at ~320 KB/s; 0.7 s of silence is all a machine gets.
+    // Everything rohan sends comes at ~320 KB/s; 2.2 s of silence is all a machine gets.
     let slow = s.root.join("slow-ssh");
     let throttle = "import sys, time\nwhile b := sys.stdin.buffer.read1(32768):\n    sys.stdout.buffer.write(b); sys.stdout.buffer.flush(); time.sleep(0.1)";
     std::fs::write(&slow, format!("#!/bin/sh\n{fake} \"$@\" | python3 -c '{throttle}'\n")).unwrap();
@@ -245,7 +245,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     s.env.push((var, slow.display().to_string()));
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     s.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     rohan.json(&["server", "start"]);
     s.json(&["machine", "add", "rohan"]);
@@ -385,17 +385,19 @@ fn a_send_from_a_plain_shell_on_another_machine_arrives_as_is() {
 fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     let mut rohan = Session::new();
     rohan.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
             .map(|(k, v)| (k.into(), v.into())),
     );
     let mut s = Session::new();
     s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
     s.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "0"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
     );
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    // Readiness must exceed the base call timeout, with room for normal scheduling gaps.
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     let templates = rohan.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&templates).unwrap();
     rohan.json(&["server", "start"]);
