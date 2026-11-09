@@ -568,6 +568,33 @@ fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {
     }
 }
 
+#[test]
+fn a_draining_holder_keeps_its_programs_and_refuses_new_work_after_reconnect() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "draining");
+    let (mut core, welcome) = raw_hello(&socket);
+    assert!(!welcome.draining);
+    raw_spawn(&mut core, 1, &["sleep", "100"]);
+    let (kind, id, payload) = proto::read(&mut core).unwrap().unwrap();
+    assert_eq!((kind, id), (proto::SPAWNED, 1));
+    let pid = proto::parse::<proto::Spawned>(&payload).unwrap().pid as i64;
+    raw_send(&mut core, proto::frame(proto::DRAIN, 0, &[]));
+    raw_send(&mut core, proto::frame(proto::FOREGROUND, 1, &[]));
+    assert_eq!(proto::read(&mut core).unwrap().unwrap().0, proto::FOREGROUND_IS);
+
+    let (mut next, welcome) = raw_hello(&socket);
+    assert!(welcome.draining);
+    assert_eq!(welcome.terminals[0].pid as i64, pid);
+    assert_eq!(proto::read(&mut next).unwrap().unwrap().0, proto::TAIL);
+    raw_spawn(&mut next, 2, &["sleep", "100"]);
+    let (kind, id, payload) = proto::read(&mut next).unwrap().unwrap();
+    assert_eq!((kind, id), (proto::SPAWN_FAILED, 2));
+    assert!(proto::parse::<proto::SpawnFailed>(&payload).unwrap().error.contains("draining"));
+    assert!(pid_alive(pid));
+    raw_send(&mut next, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Shutdown));
+    assert_eq!(proto::read(&mut next).unwrap().unwrap().0, proto::BYE);
+}
+
 /// A holder on its own, driven by the test as its core; killed when dropped.
 struct RawHolder(std::process::Child);
 

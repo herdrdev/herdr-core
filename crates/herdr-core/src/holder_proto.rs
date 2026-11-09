@@ -81,6 +81,10 @@ pub struct Welcome {
     /// starts a new holder for new terminals and lets this one drain.
     #[serde(default)]
     pub build: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_session: Option<crate::platform::LoginSession>,
+    #[serde(default)]
+    pub draining: bool,
     /// How the previous core left: "none", "handover" or "crash".
     pub previous: String,
     pub terminals: Vec<HeldTerminal>,

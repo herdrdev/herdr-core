@@ -55,6 +55,7 @@ pub fn serve() -> io::Result<()> {
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;
     // The winning serve is still single-threaded, including when launched by an old holder.
+    let _ = platform::login_session();
     unsafe { crate::restart::restore(&paths) };
     let info = load_identity(&paths.state, platform::machine_id())?;
     let socket = paths.socket.clone();

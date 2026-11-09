@@ -75,6 +75,7 @@ struct State {
 }
 
 struct Holder {
+    login_session: Option<platform::LoginSession>,
     state: Mutex<State>,
     changed: Condvar,
     instance: String,
@@ -87,6 +88,7 @@ struct Holder {
 
 /// Runs a holder on `socket` (each holder has its own; the core picks the path).
 pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
+    let login_session = platform::login_session();
     platform::prepare_holder();
     platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
@@ -98,6 +100,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         .and_then(|v| v.parse().ok())
         .map_or(Duration::from_secs(3), Duration::from_millis);
     let holder = Arc::new(Holder {
+        login_session,
         state: Mutex::new(State {
             terms: HashMap::new(),
             core: None,
@@ -197,6 +200,8 @@ impl Holder {
                 instance: self.instance.clone(),
                 pid: std::process::id(),
                 build: crate::client::build_id(),
+                login_session: self.login_session,
+                draining: self.draining.load(std::sync::atomic::Ordering::SeqCst),
                 previous: st.previous.into(),
                 terminals: ids
                     .iter()
@@ -312,6 +317,14 @@ impl Holder {
         let mut st = self.lock();
         if let Some(t) = st.terms.get(&id) {
             let frame = proto::json_frame(proto::SPAWNED, id, &proto::Spawned { pid: t.pid });
+            return self.to_core(&mut st, &frame);
+        }
+        if self.draining.load(std::sync::atomic::Ordering::SeqCst) {
+            let frame = proto::json_frame(
+                proto::SPAWN_FAILED,
+                id,
+                &proto::SpawnFailed { error: "holder is draining; start a terminal through the current core".into() },
+            );
             return self.to_core(&mut st, &frame);
         }
         let started = platform::spawn_pty(&spec.argv, &spec.env, &spec.cwd, spec.cols, spec.rows)
@@ -440,6 +453,10 @@ impl Holder {
             st.restarts.push(now);
             st.core_left = now;
             drop(st);
+            if !platform::holder_can_start_core(self.login_session) {
+                eprintln!("holder: original GUI login unavailable; waiting for a fresh launcher");
+                continue;
+            }
             if let Err(e) = crate::client::spawn_core(&self.paths) {
                 eprintln!("holder: cannot start core: {e:?}");
             }

@@ -322,6 +322,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "login_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoginSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OS login inherited by this core. Absent when unavailable or unsupported."
+          },
           "methods": {
             "items": {
               "type": "string"
@@ -464,6 +475,33 @@
           "terminals",
           "hidden_finished",
           "machines"
+        ],
+        "type": "object"
+      },
+      "LoginSession": {
+        "description": "The OS login a process inherited, rather than text restored from its environment.",
+        "properties": {
+          "gui": {
+            "description": "Unknown provenance never triggers automatic replacement.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user"
         ],
         "type": "object"
       },

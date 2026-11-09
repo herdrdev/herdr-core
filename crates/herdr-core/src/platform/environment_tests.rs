@@ -91,3 +91,17 @@ fn windows_path_keys_are_matched_without_case() {
     assert_eq!(env.get(std::ffi::OsStr::new("HOME")), Some(&std::ffi::OsString::from("new")));
     assert_eq!(env.get(std::ffi::OsStr::new("Path")), Some(&std::ffi::OsString::from("saved")));
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn xpc_flags_belong_to_neither_a_replacement_core_nor_its_programs() {
+    use std::ffi::OsStr;
+    let env = super::restored_environment(
+        [("XPC_FLAGS".into(), "0x2".into()), ("XPC_SERVICE_NAME".into(), "old-service".into())],
+        [("XPC_FLAGS".into(), "0x0".into()), ("XPC_SERVICE_NAME".into(), "0".into())],
+        false,
+    );
+    assert!(!env.contains_key(OsStr::new("XPC_FLAGS")));
+    assert_eq!(env.get(OsStr::new("XPC_SERVICE_NAME")).unwrap(), "0");
+    assert!(!super::program_env().await.contains_key("XPC_FLAGS"));
+}

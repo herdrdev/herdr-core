@@ -275,6 +275,13 @@ paths start at your current folder. Prefer explicit paths for remote work.
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
+- On macOS, reopening Herdr after logout/login refreshes an older GUI core's
+  login context while keeping surviving terminals. New terminals use the new
+  login; existing programs retain their original OS context. An explicit
+  `hc server restart` from a healthy login also retires holders from another
+  login without ending their programs. Viewing a healthy SSH core does not
+  replace it, and lock/unlock does not rotate holders. Cores installed before
+  this session metadata need an update or explicit restart once.
 - Updates and `hc server restart` keep the environment the core started with.
   Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
   environment for new terminals without ending running programs. Existing

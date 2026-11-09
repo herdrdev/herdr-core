@@ -1,35 +1,17 @@
 //! Each holder keeps its coalition represented after its GUI children quit.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_void};
 use std::io;
-
-#[repr(C)]
-#[derive(Default)]
-struct AuditInfo {
-    user: u32,
-    mask: [u32; 2],
-    terminal: [u32; 6],
-    session: u32,
-    flags: u64,
-}
-
-unsafe extern "C" {
-    fn getaudit_addr(info: *mut AuditInfo, size: c_int) -> c_int;
-}
 
 pub fn check_in() -> io::Result<()> {
     if !super::macos_bundle::source_is_bundle(&std::env::current_exe()?.canonicalize()?) {
         return Ok(());
     }
-    let mut audit = AuditInfo::default();
-    if unsafe { getaudit_addr(&mut audit, std::mem::size_of::<AuditInfo>() as c_int) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
     // AppKit cannot connect without a window server. SSH holders retain their headless startup.
-    if audit.flags & 0x10 == 0 {
+    let Some(session) = super::macos_session::graphic_session()? else {
         return Ok(());
-    }
-    if !gui_session_usable(audit.session) {
+    };
+    if !gui_session_usable(session) {
         return Err(io::Error::other("GUI login unavailable; retaining headless holder startup"));
     }
     unsafe {
@@ -99,12 +81,5 @@ mod tests {
     #[test]
     fn a_missing_gui_login_is_not_eligible_for_appkit() {
         assert!(!gui_session_usable(u32::MAX));
-    }
-
-    #[test]
-    fn audit_identity_is_readable_without_privileged_process_inspection() {
-        let mut info = AuditInfo::default();
-        assert_eq!(unsafe { getaudit_addr(&mut info, std::mem::size_of::<AuditInfo>() as c_int) }, 0);
-        assert_ne!(info.session, 0);
     }
 }

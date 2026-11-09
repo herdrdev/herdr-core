@@ -2,6 +2,9 @@
 //! surface: connections, terminals, process trees, the console, files.
 //! Everything above it is shared.
 
+mod session;
+pub use session::{LoginSession, holder_current};
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -18,6 +21,8 @@ mod macos_bundle;
 mod macos_launchd;
 #[cfg(target_os = "macos")]
 mod macos_responsibility;
+#[cfg(target_os = "macos")]
+mod macos_session;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
 
@@ -52,6 +57,37 @@ pub fn prepare_holder() {
     if let Err(error) = macos_appkit::check_in() {
         eprintln!("holder: background app registration unavailable: {error}");
     }
+}
+
+pub fn login_session() -> Option<LoginSession> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_session::current()
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+pub fn connect_for_app(paths: &crate::paths::Paths) -> Result<Stream, crate::rpc::RpcError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_session::connect(paths)
+    }
+    #[cfg(not(target_os = "macos"))]
+    crate::client::connect_or_start(paths)
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn holder_can_start_core(session: Option<LoginSession>) -> bool {
+    #[cfg(target_os = "macos")]
+    if let Some(id) = macos_session::graphic_session()
+        .ok()
+        .flatten()
+        .or_else(|| session.filter(|s| s.gui == Some(true)).map(|s| s.id))
+    {
+        return macos_appkit::gui_session_usable(id);
+    }
+    true
 }
 
 /// Daemons must not keep launchd's 256-fd or systemd's 1024-fd soft limit.
@@ -241,6 +277,10 @@ pub(crate) fn restored_environment(
         keep
     };
     let discarded = |key: &OsStr| {
+        #[cfg(target_os = "macos")]
+        if named(key, "XPC_FLAGS") {
+            return true;
+        }
         [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
             .iter()
             .any(|name| named(key, name))
@@ -275,6 +315,8 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
         .await
         .expect("environment reader panicked");
     }
+    #[cfg(target_os = "macos")]
+    env.remove("XPC_FLAGS");
     env.retain(|k, _| !SSH_LOGIN.contains(&k.as_str()));
     drop_unreachable_displays(&mut env);
     env

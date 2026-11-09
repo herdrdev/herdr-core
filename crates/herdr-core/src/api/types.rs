@@ -120,6 +120,9 @@ pub struct HelloResult {
     pub framed: bool,
     pub methods: Vec<String>,
     pub features: Vec<String>,
+    /// OS login inherited by this core. Absent when unavailable or unsupported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_session: Option<crate::platform::LoginSession>,
 }
 
 #[derive(Serialize, JsonSchema, Clone)]

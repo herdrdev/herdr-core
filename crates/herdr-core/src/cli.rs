@@ -857,7 +857,7 @@ fn wait_closed(stream: &crate::platform::Stream) {
 
 /// Copies bytes between stdin/stdout and the core: plain or framed, untouched.
 fn connect(paths: &Paths) -> Result<(), RpcError> {
-    let stream = client::connect_or_start(paths)?;
+    let stream = crate::platform::connect_for_app(paths)?;
     let mut to_core = stream.try_clone().map_err(|e| RpcError::internal(e.to_string()))?;
     std::thread::spawn(move || {
         pump(&mut *crate::platform::console::stdin(), &mut to_core);
