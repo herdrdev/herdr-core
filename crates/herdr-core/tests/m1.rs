@@ -305,8 +305,9 @@ fn planned_restart_restores_the_exact_screen() {
     let pid = get(&s, &t)["pid"].clone();
     let old = status(&s)["pid"].as_i64().unwrap();
     let new = s.json(&["server", "restart"])["pid"].as_i64().unwrap();
-    assert!(!pid_alive(old) && new != old);
-    std::thread::sleep(Duration::from_millis(700));
+    assert_ne!(new, old);
+    wait_until("old core exit", || !pid_alive(old));
+    wait_text(&s, &t, "three");
 
     let rec = get(&s, &t);
     assert_eq!((rec["state"].as_str(), rec["screen"].as_str()), (Some("live"), Some("exact")));
