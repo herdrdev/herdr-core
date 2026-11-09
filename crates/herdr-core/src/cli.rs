@@ -15,10 +15,14 @@ use std::io::{IsTerminal, Read};
 mod file;
 mod machine;
 mod output;
+mod push;
+mod run;
 mod update;
 use file::*;
 use machine::*;
 use output::*;
+use push::*;
+use run::*;
 use update::*;
 
 #[derive(Parser)]
@@ -77,6 +81,11 @@ enum Cmd {
     Machine {
         #[command(subcommand)]
         action: MachineCmd,
+    },
+    /// Webhooks: the core POSTs events to a URL even when no client is connected.
+    Push {
+        #[command(subcommand)]
+        action: PushCmd,
     },
     /// Follow fact changes as they happen (one JSON line each when piped).
     Events(SubscribeParams),
@@ -628,6 +637,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         }
         Cmd::Update { from: Some(from), force, .. } => update(&paths, &from, force)?,
         Cmd::Machine { action } => machine(&paths, action, call)?,
+        Cmd::Push { action } => push(action, call)?,
         Cmd::File { action } => match file(action, asked, call)? {
             Some(out) => out,
             None => return Ok(None),
@@ -635,98 +645,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
     }))
 }
 
-/// A template's task is plain text, so `--name x` after it is hc's, not part
-/// of the task. A program's arguments stay its own.
-/// Flags given before the program stay; flags after the task are added.
-/// Also says whether those flags asked for --json.
-fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), RpcError> {
-    let Some((q, json)) = trailing_flags(paths, &p.argv)? else { return Ok((p, false)) };
-    let merged = RunParams {
-        argv: q.argv,
-        name: q.name.or(p.name),
-        cwd: q.cwd.or(p.cwd),
-        on: q.on.or(p.on),
-        labels: [p.labels, q.labels].concat(),
-        parent: q.parent.or(p.parent),
-        no_parent: p.no_parent || q.no_parent,
-        no_notify: p.no_notify || q.no_notify,
-        outlive_parent: p.outlive_parent || q.outlive_parent,
-        rm: p.rm || q.rm,
-        keep: p.keep || q.keep,
-        bg: p.bg || q.bg,
-        timeout: q.timeout.or(p.timeout),
-        ..p
-    };
-    if merged.parent.is_some() && merged.no_parent {
-        return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
-    }
-    Ok((merged, json))
-}
-
-/// The task with hc's flags moved out of it, parsed on their own (behind a
-/// `--`, so a flag missing its value can't take the template's name).
-fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, bool)>, RpcError> {
-    use clap::CommandFactory;
-    if argv.len() < 2 || !matches!(crate::templates::load(paths, &argv[0]), Ok(Some(_))) {
-        return Ok(None);
-    }
-    let cli = Cli::command();
-    let Some(run) = cli.find_subcommand("run") else { return Ok(None) };
-    let (mut flags, mut task) = (Vec::new(), Vec::new());
-    let mut rest = argv[1..].iter();
-    while let Some(a) = rest.next() {
-        let long = a.strip_prefix("--").map(|l| l.split('=').next().unwrap_or(l));
-        match long.and_then(|l| run.get_arguments().chain(cli.get_arguments()).find(|arg| arg.get_long() == Some(l))) {
-            Some(arg) => {
-                flags.push(a.clone());
-                if arg.get_action().takes_values() && !a.contains('=') {
-                    flags.extend(rest.next().cloned());
-                }
-            }
-            None => task.push(a.clone()),
-        }
-    }
-    if flags.is_empty() {
-        return Ok(None);
-    }
-    let args =
-        ["hc".to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
-    match Cli::try_parse_from(args) {
-        Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((q, json))),
-        Ok(_) => Ok(None),
-        Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
-    }
-}
-
 /// A request as the JSON the API takes.
 fn to(params: &impl serde::Serialize) -> Value {
     serde_json::to_value(params).unwrap_or_default()
-}
-
-/// One string with spaces or shell signs is a shell line, as in a bash tool.
-fn shell_line(argv: &[String]) -> Option<String> {
-    let shell_sign = |c: char| c.is_whitespace() || ";|&<>$`*?(){}~'\"".contains(c);
-    match argv {
-        [line] if line.contains(shell_sign) => Some(line.clone()),
-        _ => None,
-    }
-}
-
-/// The directory we run in, as the shell names it ($PWD keeps symlinks like
-/// macOS /var/tmp), else as the OS resolves it.
-fn here() -> Option<String> {
-    let real = std::env::current_dir().ok()?;
-    let logical = std::env::var("PWD").ok().filter(|p| std::fs::canonicalize(p).ok() == real.canonicalize().ok());
-    Some(logical.unwrap_or_else(|| real.display().to_string()))
-}
-
-/// A folder here as the caller means it: relative ones start where hc runs,
-/// not where the core does.
-fn from_here(cwd: Option<String>) -> Option<String> {
-    match (cwd, here()) {
-        (Some(cwd), Some(here)) => Some(std::path::Path::new(&here).join(cwd).display().to_string()),
-        (cwd, here) => cwd.or(here),
-    }
 }
 
 /// Who is asking: this hc terminal, else the shell or script that ran us.
@@ -782,42 +703,6 @@ fn stop(paths: &Paths) -> Result<Out, RpcError> {
     let r = client::call(&stream, "server.stop", json!({}))?;
     wait_closed(&stream);
     Ok(Out { json: r, human: "core stopped".into() })
-}
-
-/// A run that waited: its output as text (like read), a last line when there
-/// is more to say, and the program's exit code as hc's (124: still running).
-fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
-    use std::io::Write;
-    let t = r["address"].as_str().unwrap_or("?");
-    // An older hc (on another machine) ignores the wait: it only started it.
-    if r.get("wait").is_none() {
-        let fix = t.split_once('/').map(|(m, _)| format!(": hc machine update {m}")).unwrap_or_default();
-        println!("[hc] started as {t}, not waited on: that hc is older{fix}");
-        std::process::exit(0);
-    }
-    let w = &r["wait"];
-    let status = w["status"].as_str().unwrap_or("no status");
-    let (note, code) = match w["reason"].as_str() {
-        Some("timeout") => (Some(format!("still running as {t}: hc wait {t}, hc read {t}")), 124),
-        Some("exit") => match (w["exit_code"].as_i64(), w["signal"].as_i64()) {
-            (Some(0), _) => (None, 0),
-            (Some(c), _) => (Some(format!("{t} exited (exit {c})")), c as i32),
-            (_, Some(sig)) => (Some(format!("{t} ended by signal {sig}")), 128 + sig as i32),
-            _ => (Some(format!("{t} ended")), 1),
-        },
-        _ if status == "blocked" => (Some(format!("{t} is blocked: read it, then answer with hc send or hc keys")), 0),
-        _ => (Some(format!("{t} is {status}: hc send {t} <text>")), 0),
-    };
-    let mut text = r["output"].as_str().unwrap_or_default().trim_end().to_string();
-    if let Some(first) = r.get("first_message").filter(|f| f["sent"] != true) {
-        text.push_str(&format!("\n[hc] first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
-    }
-    if let Some(note) = note {
-        text.push_str(&format!("\n[hc] {note}"));
-    }
-    let mut out = std::io::stdout();
-    let _ = writeln!(out, "{}", text.trim_start_matches('\n')).and_then(|_| out.flush());
-    std::process::exit(code);
 }
 
 /// The core closes every connection when its process exits.
@@ -880,166 +765,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("machine login", "machine.connect"),
     ("machine rename", "machine.rename"),
     ("machine rm", "machine.rm"),
+    ("push add", "push.add"),
+    ("push ls", "push.list"),
+    ("push rm", "push.rm"),
+    ("push test", "push.test"),
+    ("push events", "push.events"),
+    ("push key", "push.key"),
 ];
 /// Client-only methods: handshake and opaque document storage.
 pub const API_ONLY: &[&str] = &["hello", "doc.get", "doc.set"];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    fn parsed(args: &[&str]) -> Cmd {
-        Cli::try_parse_from([&["hc"], args].concat()).unwrap().cmd.unwrap()
-    }
-
-    #[test]
-    fn the_picker_orders_by_last_change_by_what_needs_you_and_by_name() {
-        let t = |address: &str, name: &str, state: Option<&str>, ms: u64| {
-            let status = state.map(|s| serde_json::json!({"state": s}));
-            serde_json::json!({"address": address, "name": name, "state": "live", "created_ms": 1,
-                "status": status, "status_ms": state.map(|_| ms)})
-        };
-        let all = [
-            t("t1", "web", Some("working"), 30),
-            t("t2", "api", Some("done"), 20),
-            t("t3", "shell", None, 0),
-            t("t4", "Docs", Some("blocked"), 10),
-            t("t5", "cli", Some("idle"), 40),
-        ];
-        let orders: Vec<(&str, String)> = orders(&all)
-            .into_iter()
-            .map(|(name, ts)| (name, ts.iter().map(|t| t["address"].as_str().unwrap()).collect::<Vec<_>>().join(" ")))
-            .collect();
-        assert_eq!(
-            orders,
-            [
-                ("recent", "t5 t1 t2 t4 t3".into()),
-                ("status", "t4 t1 t5 t2 t3".into()),
-                ("name", "t2 t5 t4 t3 t1".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn picker_rows_narrower_than_the_headings_list_without_a_header() {
-        let t = serde_json::json!({"address": "t1", "argv": ["pi"], "cwd": "/a"});
-        assert_eq!(items(&[t], false).len(), 1);
-    }
-
-    #[test]
-    fn rows_say_where_a_terminal_lives_else_its_folder_and_no_other_labels() {
-        let t = |extra: Value| {
-            let mut t = serde_json::json!({"address": "t1", "argv": ["pi"], "cwd": "/a/bliss", "state": "live"});
-            t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            let item = items(&[t], false).remove(0);
-            (picker::plain(&item.rest), item.short)
-        };
-        let labels = serde_json::json!({"where": "herdr-core / review", "herdr.tab": "tab3", "ws": "x9"});
-        let (rest, short) = t(serde_json::json!({"labels": labels, "name": "rev"}));
-        assert_eq!(short, "rev \u{b7} herdr-core / review");
-        assert!(
-            rest.contains("herdr-core / review")
-                && !rest.contains("bliss")
-                && !rest.contains("x9")
-                && !rest.contains("tab3"),
-            "{rest}"
-        );
-        assert_eq!(t(serde_json::json!({"labels": {"ws": "x9"}})).1, "pi \u{b7} bliss");
-    }
-
-    #[test]
-    fn human_folders_follow_the_foreground_but_json_keeps_the_launch_folder() {
-        for foreground in [json!({"cwd": "/current/work"}), json!({"cwd": null}), Value::Null] {
-            let t = json!({"address": "t1", "argv": ["bash"], "cwd": "/launch/start", "foreground": foreground});
-            let original = t.clone();
-            let cwd = if foreground["cwd"].is_string() { "/current/work" } else { "/launch/start" };
-            assert_eq!(folder(&t), cwd.rsplit('/').next().unwrap());
-            assert!(picker::plain(&items(std::slice::from_ref(&t), false)[0].rest).contains(&folder(&t)));
-            assert!(describe(&t).contains(&format!("  cwd: {cwd}\n")));
-            assert_eq!(short(&t), json!({"address": "t1", "cwd": "/launch/start", "agent": "bash"}));
-            assert_eq!(t, original, "formatting must not change the full get record");
-        }
-    }
-
-    #[test]
-    fn get_keeps_an_unsent_first_message_visible_to_people() {
-        let mut t = json!({"address": "t1", "argv": ["pi"], "state": "live"});
-        assert!(!describe(&t).contains("first message"));
-        t["first_message"] = json!({"sent": false, "reason": "output did not settle"});
-        assert!(describe(&t).contains("first message NOT sent: output did not settle"));
-    }
-
-    #[test]
-    fn every_api_method_has_a_command_or_is_api_only() {
-        Cli::command().debug_assert();
-        for method in crate::api::METHOD_NAMES {
-            let covered = COMMANDS.iter().any(|(_, m)| m == method) || API_ONLY.contains(method);
-            assert!(covered, "{method} has no command and is not marked API-only");
-        }
-        for (command, _) in COMMANDS {
-            let mut cmd = Cli::command();
-            for word in command.split(' ') {
-                cmd = cmd.find_subcommand(word).unwrap_or_else(|| panic!("no command `{command}`")).clone();
-            }
-        }
-    }
-
-    #[test]
-    fn a_command_line_becomes_the_api_request() {
-        let Cmd::Send(p) = parsed(&["send", "t3", "hi there", "--if", "idle", "--wait", "--timeout", "2.5"]) else {
-            panic!()
-        };
-        let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "wait": true, "timeout": 2.5, "caller": null});
-        assert_eq!(to(&p), want);
-        assert!(serde_json::from_value::<SendParams>(want).is_ok(), "and the API reads it back");
-
-        let Cmd::Wait(p) = parsed(&["wait", "t3", "--output", "ready"]) else { panic!() };
-        assert_eq!(to(&p)["output"], "ready");
-
-        let Cmd::Run(p) = parsed(&["run", "--label", "a=1", "--label", "b=x=y", "--label", "a=2", "sh", "-c", "true"])
-        else {
-            panic!()
-        };
-        assert_eq!(
-            to(&p)["labels"],
-            json!({"a": "2", "b": "x=y"}),
-            "an object; values may hold =; the last repeat wins"
-        );
-        assert_eq!(to(&p)["argv"], json!(["sh", "-c", "true"]));
-    }
-
-    #[test]
-    fn a_wait_prints_what_happened() {
-        let one = |reason: &str| json!({"terminal": "t1", "ended": reason != "timeout", "reason": reason, "status": "working", "turn": 2, "exit_code": 42, "children": []});
-        assert!(describe_wait(&one("timeout")).starts_with("t1 still running: working"));
-        assert!(describe_wait(&one("exit")).starts_with("t1 exited (exit 42"));
-        let all = json!({"terminal": "t0", "reason": "children", "children": [one("exit")]});
-        assert!(describe_wait(&all).starts_with("t1 exited"));
-        let none = json!({"terminal": "t0", "reason": "children", "children": []});
-        assert_eq!(describe_wait(&none), "no children are working");
-        let message = json!({"terminal": "t0", "reason": "message", "from": "t2", "children": []});
-        assert!(describe_wait(&message).contains("t2"), "{}", describe_wait(&message));
-        let mut interrupted = one("message");
-        interrupted["ended"] = false.into();
-        interrupted["from"] = "t1".into();
-        assert_eq!(
-            describe_wait(&interrupted),
-            "a message from t1 (already in your input)\nt1 still running: working, turn 2 (wait again to keep waiting)"
-        );
-    }
-
-    #[test]
-    fn older_compares_versions_as_numbers() {
-        assert!(older("hc 0.1.9", "hc 0.2.0") && older("hc 0.2.0", "hc 0.10.0"));
-        assert!(!older("hc 0.2.0", "hc 0.2.0") && !older("hc 0.10.0", "hc 0.9.9") && !older("hc dev", "hc 0.2.0"));
-    }
-
-    #[test]
-    fn labels_need_a_key() {
-        assert!(Cli::try_parse_from(["hc", "label", "t1", "nokey"]).is_err());
-        assert!(Cli::try_parse_from(["hc", "label", "t1", "=v"]).is_err());
-        let Cmd::Label(p) = parsed(&["label", "t1", "gone="]) else { panic!() };
-        assert_eq!(to(&p)["labels"], json!({"gone": ""}), "an empty value removes it");
-    }
-}
+mod tests;

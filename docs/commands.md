@@ -48,6 +48,8 @@ More
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')
+  push add|ls|rm|test|events|key   webhooks: POST events to a URL while nobody
+                              watches (json, or unifiedpush for ntfy and NextPush)
   connect                     the API over stdin/stdout (ssh box hc connect)
   schema                      the API as JSON Schema, for app builders
 
@@ -423,6 +425,153 @@ Usage: hc machine update [OPTIONS] <MACHINE>
 
 Arguments:
   <MACHINE>  The machine's name
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc push
+
+```text
+Webhooks: the core POSTs events to a URL even when no client is connected
+
+Usage: hc push [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add a webhook, or replace one with the same name: hc push add phone --url https://… [--format unifiedpush …]
+  ls      List webhooks and what their POSTs observed
+  rm      Forget a webhook
+  test    POST one test event now and print the HTTP status that came back
+  events  Pushed events, whole: one (--seq N --ms T), or all after one (--since SEQ:MS)
+  key     This core's VAPID public key, for UnifiedPush.register(..., vapid)
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc push add
+
+```text
+Add a webhook, or replace one with the same name: hc push add phone --url https://… [--format unifiedpush …]
+
+Usage: hc push add [OPTIONS] --url <URL> <NAME>
+
+Arguments:
+  <NAME>
+          Its name here. Adding a name again replaces it (a new endpoint)
+
+Options:
+      --json
+          JSON output even in a terminal
+
+      --url <URL>
+          Where to POST, kept byte for byte (`https://ntfy.sh/upAbc?up=1`). http or https
+
+      --format <FORMAT>
+          Possible values:
+          - json:        Plain JSON, signed when it has a secret
+          - unifiedpush: Web Push (RFC 8291) encrypted, VAPID signed: ntfy, NextPush
+          
+          [default: json]
+
+      --event <TYPE>
+          Event types that count (repeatable; default status, finished, lost)
+
+      --state <WORD>
+          Status words that count for status and turn events (repeatable; default blocked, done, error). A status event counts when its word changes
+
+      --terminal <TERMINAL>
+          Only this terminal (`t7`, `rohan/t7`)
+
+      --children-of <CHILDREN_OF>
+          Only children of this terminal
+
+      --label <K=V>
+          Only terminals carrying all of these labels, exactly (repeatable)
+
+      --secret <SECRET>
+          json: sign every POST (`X-Hc-Signature: sha256=<hex hmac of "<X-Hc-Timestamp>.<body>">`)
+
+      --p256dh <P256DH>
+          unifiedpush: the receiver's public key (base64url), required
+
+      --auth <AUTH>
+          unifiedpush: the receiver's auth secret (base64url), required
+
+      --contact <CONTACT>
+          unifiedpush: who runs this core, for the push service (`mailto:you@example.com`)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## hc push events
+
+```text
+Pushed events, whole: one (--seq N --ms T), or all after one (--since SEQ:MS)
+
+Usage: hc push events [OPTIONS]
+
+Options:
+      --json            JSON output even in a terminal
+      --seq <SEQ>       One pushed event: its seq (with --ms)
+      --ms <MS>         One pushed event: its ms (with --seq)
+      --since <SEQ:MS>  Every pushed event after this one, in the order they happened (`SEQ:MS`). When it has expired: those from its ms on
+      --limit <LIMIT>   At most this many (default 100)
+  -h, --help            Print help
+```
+
+## hc push key
+
+```text
+This core's VAPID public key, for UnifiedPush.register(..., vapid)
+
+Usage: hc push key [OPTIONS]
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc push ls
+
+```text
+List webhooks and what their POSTs observed
+
+Usage: hc push ls [OPTIONS]
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc push rm
+
+```text
+Forget a webhook
+
+Usage: hc push rm [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The webhook's name
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc push test
+
+```text
+POST one test event now and print the HTTP status that came back
+
+Usage: hc push test [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The webhook's name
 
 Options:
       --json  JSON output even in a terminal

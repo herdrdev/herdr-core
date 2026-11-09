@@ -136,16 +136,47 @@ pub fn reset(t: &mut Terminal) -> Change {
     Change { status: had, turn_ended: end_turn(t, was_working), ..Default::default() }
 }
 
-fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn encode(bytes: &[u8], table: &[u8], pad: bool) -> String {
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
         let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
         for i in 0..4 {
-            out.push(if i <= chunk.len() { TABLE[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            if i <= chunk.len() {
+                out.push(table[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else if pad {
+                out.push('=');
+            }
         }
     }
     out
+}
+
+fn base64(bytes: &[u8]) -> String {
+    encode(bytes, BASE64, true)
+}
+
+/// URL-safe base64 without padding (Web Push keys, JWTs).
+pub fn base64url(bytes: &[u8]) -> String {
+    encode(bytes, BASE64URL, false)
+}
+
+/// Either alphabet, padded or not, as browsers and Android hand keys out.
+pub fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| BASE64URL.iter().position(|&t| t == c).or_else(|| BASE64.iter().position(|&t| t == c));
+    let digits: Vec<u32> =
+        text.trim_end_matches('=').bytes().map(|c| digit(c).map(|d| d as u32)).collect::<Option<_>>()?;
+    if digits.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for chunk in digits.chunks(4) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, d)| n | d << (18 - 6 * i));
+        out.extend((0..chunk.len() - 1).map(|i| (n >> (16 - 8 * i)) as u8));
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -244,5 +275,12 @@ mod tests {
         assert_eq!(screen.take_status_reports(), vec![sent]);
         assert_eq!(base64(b"Apply?"), "QXBwbHk/");
         assert_eq!(base64(b"ab"), "YWI=");
+        assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
+        for bytes in [&b""[..], b"a", b"ab", b"abc", &[0xfb, 0xff, 0xfe, 0x00]] {
+            assert_eq!(base64url_decode(&base64url(bytes)).as_deref(), Some(bytes));
+            assert_eq!(base64url_decode(&base64(bytes)).as_deref(), Some(bytes), "padded, standard alphabet");
+        }
+        assert_eq!(base64url_decode("a"), None);
+        assert_eq!(base64url_decode("a b"), None);
     }
 }
