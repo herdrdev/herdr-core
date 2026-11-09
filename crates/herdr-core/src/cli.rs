@@ -47,7 +47,7 @@ enum Cmd {
     Label(LabelParams),
     /// Keep a live terminal after loss (--off disables).
     Keep(crate::api::KeepParams),
-    /// Paste text into a terminal and press Enter (waits for a person to pause).
+    /// Paste text into a terminal and press Enter (waits for a person's unfinished draft).
     Send(SendParams),
     /// Wait for your children (--children any) or one terminal; a message to you also ends it.
     Wait(WaitParams),
@@ -120,7 +120,11 @@ enum ServerCmd {
     Stop,
     Status,
     /// Restart the core (e.g. after an update); programs keep running.
-    Restart,
+    Restart {
+        /// Take this shell's environment for new terminals; run from a terminal outside Herdr.
+        #[arg(long)]
+        fresh: bool,
+    },
 }
 
 const HELP: &str = include_str!("help.txt");
@@ -305,22 +309,17 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
     let address = if chosen.is_empty() {
         // Our shell if we have one, else the machine's own (Windows has no $SHELL).
         let argv: Vec<String> = std::env::var("SHELL").into_iter().filter(|s| !s.is_empty()).collect();
-        let r = call(paths, "terminal.run", json!({"argv": argv, "cwd": here(), "env": identity_env()}))?;
+        let r = call(paths, "terminal.run", json!({"argv": argv, "cwd": here()}))?;
         r["address"].as_str().unwrap_or_default().to_string()
     } else if let Some(machine) = chosen.strip_prefix('+') {
         // No program: its own shell, whatever that is there.
-        let r = call(paths, "terminal.run", json!({"on": machine, "env": identity_env()}))?;
+        let r = call(paths, "terminal.run", json!({"on": machine}))?;
         r["address"].as_str().unwrap_or_default().to_string()
     } else {
         chosen
     };
     eprintln!("{}", crate::attach::run(paths, &address, false, 0)?);
     Ok(None)
-}
-
-/// Only our terminal's identity travels; programs get the core's environment.
-fn identity_env() -> std::collections::BTreeMap<String, String> {
-    std::env::vars().filter(|(k, _)| crate::api::IDENTITY_VARS.contains(&k.as_str())).collect()
 }
 
 /// `json`: print JSON (asked, or piped). `asked`: `--json` itself, not a
@@ -392,7 +391,6 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             if p.on.is_none() {
                 p.cwd = from_here(p.cwd); // our folder means nothing on another machine
             }
-            p.env = identity_env();
             p.caller = Some(caller());
             if let Some(line) = shell_line(&p.argv) {
                 (p.line, p.argv) = (Some(line), Vec::new());
@@ -550,12 +548,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = serde_json::to_string_pretty(&r).unwrap_or_default();
             Out { json: r, human }
         }
-        Cmd::Server { action: action @ (ServerCmd::Start | ServerCmd::Status | ServerCmd::Restart) } => {
-            if matches!(action, ServerCmd::Restart)
-                && let Some(stream) = client::connect_existing(&paths)
-            {
-                client::call(&stream, "server.restart", json!({}))?;
-                wait_closed(&stream);
+        Cmd::Server { action: action @ (ServerCmd::Start | ServerCmd::Status | ServerCmd::Restart { .. }) } => {
+            if let ServerCmd::Restart { fresh } = action {
+                restart(&paths, fresh)?;
             }
             let r = if crate::platform::status_may_start_core() {
                 call("server.status", json!({}))?
@@ -773,9 +768,44 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
     Ok(())
 }
 
+fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
+    if fresh && std::env::var_os("HC_TERMINAL_ID").is_some() {
+        eprintln!(
+            "hc: this shell carries Herdr's environment; run --fresh from a terminal outside Herdr or unset unwanted variables first"
+        );
+    }
+    let environment: std::collections::BTreeMap<_, _> =
+        crate::platform::utf8_vars().filter(|(k, _)| !k.starts_with('=')).collect();
+    let Some(stream) = client::connect_existing(paths) else {
+        if fresh {
+            crate::restart::prepare_start(paths, environment).map_err(|e| {
+                RpcError::new("unavailable", e.to_string(), "retry hc server restart --fresh once the core is running")
+            })?;
+        }
+        return Ok(());
+    };
+    let params = if fresh {
+        let hello = client::call(&stream, "hello", json!({}))?;
+        if !hello["features"].as_array().is_some_and(|f| f.contains(&json!("restart_environment"))) {
+            return Err(RpcError::new(
+                "refused",
+                "--fresh needs a newer running core",
+                "run hc update, then retry hc server restart --fresh",
+            ));
+        }
+        json!({"environment": environment})
+    } else {
+        json!({})
+    };
+    client::call(&stream, "server.restart", params)?;
+    wait_closed(&stream);
+    Ok(())
+}
+
 /// Stops the core and returns once it has exited (its connection closes).
 fn stop(paths: &Paths) -> Result<Out, RpcError> {
     let Some(stream) = client::connect_existing(paths) else {
+        crate::restart::discard_if_stopped(paths);
         return Ok(Out { json: json!({"stopped": false}), human: "no core running".into() });
     };
     let r = client::call(&stream, "server.stop", json!({}))?;

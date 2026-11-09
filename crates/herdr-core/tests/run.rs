@@ -48,6 +48,38 @@ fn initial_display_answers_the_programs_first_color_query() {
 }
 
 #[test]
+fn callers_use_the_cores_terminal_identity() {
+    let mut s = Session::new();
+    s.env.extend(
+        [("TERM", "dumb"), ("COLORTERM", ""), ("TERM_PROGRAM", "agent"), ("TERM_PROGRAM_VERSION", "1")]
+            .map(|(k, v)| (k.into(), v.into())),
+    );
+    let probe =
+        r#"sh -c 'printf "identity=%s:%s:%s:%s\n" "$TERM" "$COLORTERM" "$TERM_PROGRAM" "${TERM_PROGRAM_VERSION-}"'"#;
+    let (code, out) = hc(&s, &["run", probe]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("identity=xterm-256color:truecolor:ghostty:"), "{out:?}");
+
+    // The outer pane supplies a real PTY to the nested CLI.
+    let command =
+        format!("TERM=xterm-kitty COLORTERM=24bit TERM_PROGRAM=kitty TERM_PROGRAM_VERSION=0.40 {BIN} run {probe}");
+    let (code, out) = hc(&s, &["run", "sh", "-c", &command]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("identity=xterm-256color:truecolor:ghostty:"), "{out:?}");
+
+    let reply = s.connect().call(
+        1,
+        "terminal.run",
+        serde_json::json!({
+            "argv": ["sh", "-c", "printf '%s:%s:%s:%s' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\""],
+            "env": {"TERM": "vt100", "COLORTERM": "24bit", "TERM_PROGRAM": "client", "TERM_PROGRAM_VERSION": "2"},
+            "wait": true
+        }),
+    );
+    assert_eq!(reply["result"]["output"].as_str().unwrap().trim(), "vt100:24bit:client:2", "{reply}");
+}
+
+#[test]
 fn a_quick_command_returns_its_output_and_exit_code_and_leaves_no_note() {
     let mut s = Session::new();
     s.env.push(("HC_QUIET_MS".into(), "0".into()));

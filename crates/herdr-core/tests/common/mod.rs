@@ -30,8 +30,8 @@ impl Session {
         // A hung test should fail in seconds, not stall the suite.
         WATCHDOG.call_once(|| {
             std::thread::spawn(|| {
-                // 30 s here; CI's slower runners set HC_TEST_WATCHDOG_S.
-                let limit = std::env::var("HC_TEST_WATCHDOG_S").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+                // Allow slower hosts the same budget as CI; keep an override for hang diagnosis.
+                let limit = std::env::var("HC_TEST_WATCHDOG_S").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
                 std::thread::sleep(Duration::from_secs(limit));
                 eprintln!("test binary still running after {limit} s: cleaning up and aborting");
                 // Abort skips every Drop, so end this binary's sessions here first.

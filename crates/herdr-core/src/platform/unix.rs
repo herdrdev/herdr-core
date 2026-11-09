@@ -7,6 +7,20 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+pub fn check_via(_target: &str) -> io::Result<()> {
+    Ok(())
+}
+
+pub fn via_add_hint(target: &str) -> String {
+    format!("hc machine add --via '{}' --name <name>", target.replace('\'', r"'\''"))
+}
+
+pub fn via_command(target: &str, line: &str) -> io::Result<Command> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(format!("{target} \"$1\"")).arg("sh").arg(line);
+    Ok(cmd)
+}
+
 // --- Connections -----------------------------------------------------------
 
 /// A connection to a core or a holder (blocking).
@@ -52,6 +66,24 @@ pub fn listen(path: &Path) -> io::Result<Listener> {
 
 pub type AsyncRead = tokio::net::unix::OwnedReadHalf;
 pub type AsyncWrite = tokio::net::unix::OwnedWriteHalf;
+
+/// Read EOF can be a caller's SHUT_WR: probe the reply side without sending bytes.
+pub async fn reply_closed(read: &AsyncRead) {
+    loop {
+        let result = unsafe {
+            libc::send(read.as_ref().as_raw_fd(), std::ptr::null(), 0, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+        };
+        if result < 0
+            && matches!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPIPE | libc::ECONNRESET | libc::ENOTCONN)
+            )
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
 
 /// The core's socket for clients.
 pub struct AsyncListener(tokio::net::UnixListener);
@@ -543,6 +575,41 @@ pub fn machine_id() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "uninitialized")
+}
+
+/// Identity of this boot, not just the machine that owns the disk.
+pub fn boot_id() -> io::Result<Option<String>> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut bytes = [0u8; 128];
+        let mut size = bytes.len();
+        if unsafe {
+            libc::sysctlbyname(
+                c"kern.bootsessionuuid".as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let value = std::str::from_utf8(&bytes[..size]).map_err(io::Error::other)?.trim_end_matches('\0').trim();
+        if value.is_empty() {
+            return Err(io::Error::other("boot identity is empty"));
+        }
+        Ok(Some(value.into()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(io::Error::other("boot identity is empty"));
+        }
+        Ok(Some(value.into()))
+    }
 }
 
 // --- Terminals -------------------------------------------------------------

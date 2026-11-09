@@ -3,6 +3,27 @@ use crate::events::{Filter, Sink};
 use crate::paths::Paths;
 use std::sync::atomic::AtomicBool;
 
+#[tokio::test]
+async fn a_send_on_an_already_closed_line_fails_without_waiting() {
+    for writer_gone in [false, true] {
+        let (frames, mut rx) = mpsc::unbounded_channel();
+        let line = Line::new(frames, &json!({}));
+        if writer_gone {
+            rx.close();
+        } else {
+            line.close(); // The writer may not have finished shutting down yet.
+        }
+        let sent = tokio::time::timeout(
+            Duration::from_millis(200),
+            line.call("away", "terminal.send", json!({"terminal": "t1", "text": "hi"}), Duration::from_secs(30)),
+        )
+        .await
+        .expect("a closed transport must not hold a send");
+        assert!(sent.unwrap_err().message.contains("lost the line"));
+        assert!(lock(&line.pending).is_empty());
+    }
+}
+
 #[test]
 fn automatic_input_requires_support_at_every_hop() {
     for features in [json!([]), json!(["automatic_input"])] {

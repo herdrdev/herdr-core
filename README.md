@@ -23,6 +23,19 @@ Builds are available for Linux and macOS on x86_64 and aarch64, and Windows on x
 Linux builds are static. On Windows, templates and quoted shell commands need `sh` on PATH, such as Git for Windows provides.
 
 Run `hc update` to update. Running terminals keep running.
+Updates and `hc server restart` keep the environment the core started with;
+run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
+environment without ending programs. Stopping and starting also takes a fresh one.
+The update from an older core to 0.1.19 uses the updater's environment once,
+because older cores can't save it for the next core.
+
+If saving fails, the restart still goes ahead with the launcher's environment.
+Saved settings expire after three minutes and cannot carry over to another boot
+on Linux or macOS. On Windows, a restart cut short by a fast reboot can reuse them
+once. A plain SIGTERM keeps terminals and screens, but does not save settings.
+The new launcher still chooses the session's location and, on macOS, whether it
+starts from SSH or launchd.
+
 See [security](docs/security.md) for the trust and signing details.
 
 ## Run it and come back
@@ -64,6 +77,23 @@ needed. Running terminals, explicit programs, and quoted command lines keep
 their behavior. A bad setting reports a config error; a shell that cannot start
 reports `spawn_failed`. Recovery stays pending and retries, with errors in
 `core.log` (config) or `holder.log` (spawn); it never silently falls back to another shell.
+
+## Draft wait
+
+Sends and parent notes wait for you to send or clear an unfinished draft,
+up to 60 seconds after your last key. In the same config.toml:
+
+```toml
+notes_quiet = 3 # seconds of quiet before a parent note
+draft_wait = 60 # seconds a draft holds sends and notes; 0 keeps only the quiet pause
+```
+
+Both settings apply to the next delivery without restarting the core. Values must
+be finite, non-negative seconds that fit in a duration. If the config is invalid,
+delivery uses defaults and logs the config error once in `core.log`.
+Reverse sends allow at least the default 60-second draft hold.
+A parent configured above 60 seconds can still outwait a child configured below
+that parent's limit and cause its reverse send to time out.
 
 ## Agents run agents
 
@@ -139,6 +169,7 @@ just check
 ```
 
 `just install` installs this checkout and restarts your core. Running terminals keep running.
+
 `just docs` refreshes the command reference. `just docs-check` checks it and the examples; CI runs the same tests.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor setup and checks.

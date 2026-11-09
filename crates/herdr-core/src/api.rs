@@ -13,10 +13,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] =
-    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
+pub const FEATURES: &[&str] = &[
+    "framed",
+    "attach",
+    "events",
+    "status",
+    "shell",
+    "resize_notifications",
+    "automatic_input",
+    "restart_environment",
+];
 pub const FINISHED_LINES: usize = 1000;
-/// A terminal's identity: fixed at start from whoever starts it.
+/// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;
@@ -63,7 +71,7 @@ methods! { Ctx<'_>;
     "server.stop" => server_stop, Empty => StopResult,
         "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
         errors [];
-    "server.restart" => server_restart, Empty => StopResult,
+    "server.restart" => server_restart, RestartParams => StopResult,
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
         errors [];
     "terminal.run" => terminal_run, RunParams => RunResult,
@@ -96,13 +104,13 @@ methods! { Ctx<'_>;
         "Open a raw stream to a live terminal on this framed connection (see `hello` with `framed`). Loss ends the stream even when kept; reattach after the restarted event.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
-        "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+        "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
         errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
-        "Press named keys, encoded for the program's current keyboard modes. Same quiet rule as send.",
+        "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.interrupt" => terminal_interrupt, InterruptParams => InterruptResult,
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
@@ -219,14 +227,21 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
     }
+    crate::restart::discard(&core.paths);
     if let Err(e) = core.shutdown().await {
         eprintln!("core: shutdown registry flush failed: {}", e.message);
     }
     Ok(StopResult { stopped: true })
 }
 
-async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    crate::restart::prepare(core).await.map_err(|e| RpcError::internal(e.to_string()))?;
+async fn server_restart(core: Ctx<'_>, p: RestartParams) -> Result<StopResult, RpcError> {
+    crate::restart::prepare(core, p.environment).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidInput {
+            RpcError::invalid_params(e.to_string())
+        } else {
+            RpcError::internal(e.to_string())
+        }
+    })?;
     Ok(StopResult { stopped: true })
 }
 
@@ -317,14 +332,13 @@ async fn terminal_rm(core: Ctx<'_>, p: TerminalParams) -> Result<RemoveResult, R
 
 async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    let public = {
+    {
         let mut st = core.lock();
         let t = st.reg.terminals.get_mut(&id).expect("resolved");
         if !t.is_live() {
             return Err(RpcError::invalid_params("only live terminals can be kept"));
         }
         t.keep = p.keep;
-        let public = Public(t.clone());
         let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
         core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
         if let Some(reason) = lost {
@@ -332,10 +346,10 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
             core.changed.notify_waiters();
         }
         core.save(&st);
-        public
-    };
+    }
+    let result = record(core, id).map(Public);
     core.flush_saved().await?;
-    Ok(public)
+    result
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {

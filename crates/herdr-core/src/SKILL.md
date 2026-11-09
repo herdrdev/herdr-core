@@ -100,6 +100,18 @@ children finish:
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
+Sends and parent notes wait for an unfinished draft, up to 60 seconds since
+the person's last key. Set `draft_wait = 5` (seconds) in
+`~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
+to change that limit; `0` keeps only the quiet pause. Like `notes_quiet`,
+it is read for each delivery and takes precedence over the test environment
+fallback (`HC_DRAFT_MS`). Both settings require finite, non-negative seconds
+that fit in a duration. If the config is invalid, delivery uses defaults and
+logs the config error once in `core.log`. Reverse sends allow at least the
+default 60-second hold, but a parent configured above that
+can still outwait a child with a shorter limit. Sends to an added machine keep
+waiting while its line is alive.
+
 Reports arrive tagged, for example:
 
 ```text
@@ -169,7 +181,11 @@ Your harness's own file tools touch only the machine you run on. Use hc for
 remote files and commands. `hc machine ls` lists configured machines; see
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
 Without `--name`, SSH machines use the first host label (IPs stay whole),
-shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
+shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken
+or looks like a terminal id (`t14` becomes `t14-2`).
+On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
+no shell), with the remote line appended as one argument, no console window;
+Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
@@ -214,9 +230,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
-- Programs get the login session's environment. A local `DISPLAY` or
-  `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
-  connections. Host displays (including SSH forwarding) stay as they are.
+- Programs get the login session's environment with the core's terminal identity:
+  TERM=xterm-256color, COLORTERM=truecolor and TERM_PROGRAM=ghostty, with no
+  TERM_PROGRAM_VERSION. The caller's identity is not forwarded. Explicit API
+  `env` overrides still apply; kept replacement shells retain that identity.
+  A local `DISPLAY` or `WAYLAND_DISPLAY` is left out only when its socket is
+  missing or refuses connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
@@ -256,9 +275,21 @@ paths start at your current folder. Prefer explicit paths for remote work.
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
-- Planned restarts and updates preserve the core's launch environment for new
-  terminals; per-terminal API `env` overrides still apply. A stop followed by a
-  fresh start uses the new launcher's environment.
+- Updates and `hc server restart` keep the environment the core started with.
+  Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
+  environment for new terminals without ending running programs. Existing
+  programs keep their environment; kept terminals use the fresh one after
+  recovery. Stopping and starting also takes a fresh environment. Per-terminal
+  API `env` overrides still apply, as do Linux session and Windows registry
+  refreshes. SIGTERM hands over terminals/screens but does not save an environment.
+  Preservation is best effort: a failed save never blocks a restart.
+  The private handoff expires after three
+  minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:
+  a requested restart interrupted by a fast reboot can reuse it once. Session
+  paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
+  new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
+  not by the saved environment. The update from an older core to 0.1.19 takes the
+  updater's environment once: older cores can't write the note for their successor.
 - On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
   processes. They hang up the terminal and end its own program and foreground
   job; deliberately detached programs can survive (background server ports may

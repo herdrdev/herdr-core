@@ -30,6 +30,78 @@ fn hc_in(s: &Session, t: &str, args: &[&str]) -> Value {
 }
 
 #[test]
+fn invalid_config_keeps_pending_parent_notes_responsive_and_uses_the_default_hold() {
+    for setting in ["draft_wait", "notes_quiet"] {
+        let mut s = session();
+        s.env.push(("HC_DRAFT_MS".into(), "2500".into()));
+        let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");
+        wait_until("parent ready", || get(&s, &p)["reported"] == true);
+        let mut person = common::framed::Viewer::attach(&s, &p, 80, 24, json!({}));
+        let kid = run(&s, &["--parent", &p], "w news");
+        let config = s.root.join("config/herdr-core/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, format!("{setting} = inf\n")).unwrap();
+        person.typed(b"my draft");
+        let start = std::time::Instant::now();
+        touch(&s, "news");
+        // Fix the config even if the responsiveness check fails, so cleanup can stop the core.
+        let mut conn = s.connect();
+        conn.reader.get_ref().set_read_timeout(Some(Duration::from_millis(1000))).unwrap();
+        use std::io::{BufRead, Write};
+        std::thread::sleep(Duration::from_millis(400));
+        writeln!(
+            conn.writer,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.get", "params": {"terminal": p}})
+        )
+        .unwrap();
+        let mut response = String::new();
+        let result = conn.reader.read_line(&mut response);
+        if result.is_err() {
+            std::fs::write(&config, "").unwrap();
+        }
+        assert!(result.is_ok(), "pending note stalled the core with {setting} = inf: {result:?}");
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["reported"], true, "{response}");
+        assert!(!text(&s, &p).contains("parent-got:"), "note submitted the draft early");
+        wait_until("note with invalid config", || text(&s, &p).contains(&format!("<hc>{kid} exited")));
+        assert!(start.elapsed() >= Duration::from_millis(2400), "default draft hold was skipped");
+        let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
+        assert_eq!(log.matches("using delivery defaults").count(), 1, "{log}");
+        assert!(log.contains(setting), "{log}");
+    }
+}
+
+#[test]
+fn a_parent_note_waits_for_a_draft_and_survives_a_dialog_while_waiting() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "3000".into()));
+    let p = run(
+        &s,
+        &[],
+        "stty -echo; r state=idle; (w busy; r state=blocked; w free; r state=idle) & while read -r l; do echo \"parent-got:$l\"; done",
+    );
+    wait_until("parent ready", || get(&s, &p)["reported"] == true);
+    let mut person = common::framed::Viewer::attach(&s, &p, 80, 24, json!({}));
+    person.typed(b"my draft");
+    let kid = run(&s, &["--parent", &p], "r state=working; w news; r state=blocked; sleep 100");
+    touch(&s, "news");
+    wait_until("child blocked", || get(&s, &kid)["status"]["state"] == "blocked");
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(!text(&s, &p).contains("parent-got:"), "note submitted the draft");
+    touch(&s, "busy");
+    wait_until("parent dialog", || get(&s, &p)["status"]["state"] == "blocked");
+    person.typed(b"\r");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(!text(&s, &p).contains("<hc>"), "note answered the dialog");
+    touch(&s, "free");
+    wait_until("note after the dialog", || text(&s, &p).contains(&format!("parent-got:<hc>{kid} is blocked")));
+    let got = text(&s, &p);
+    assert!(got.contains("parent-got:my draft"), "{got}");
+    assert_eq!(got.matches("is blocked").count(), 1, "{got}");
+}
+
+#[test]
 fn a_terminal_is_nobodys_caller_in_another_session() {
     let s = session();
     let other = |args: &[&str]| s.cmd().env("HC_SESSION", "other").args(args).output().unwrap();

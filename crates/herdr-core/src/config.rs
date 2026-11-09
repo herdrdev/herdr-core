@@ -3,6 +3,7 @@
 use crate::rpc::RpcError;
 use serde::Deserialize;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
@@ -15,8 +16,12 @@ pub struct Config {
     /// Notes to parent agents and `<hc>` tags on messages between agents, on
     /// or off (default on). Off: hc types nothing on its own.
     pub notes: Option<bool>,
-    /// Seconds without a person typing before a note goes in (default 3).
-    pub notes_quiet: Option<f64>,
+    /// Seconds of quiet before a note (default 3); after Enter or a clear it goes in at once.
+    #[serde(default, deserialize_with = "seconds")]
+    pub notes_quiet: Option<Duration>,
+    /// Seconds an unfinished draft holds sends and notes after the last key (default 60); 0 disables it.
+    #[serde(default, deserialize_with = "seconds")]
+    pub draft_wait: Option<Duration>,
     /// Size of a terminal nobody is typing in, `COLSxROWS` (default 200x120).
     pub headless: Option<String>,
     /// Scrollback kept per live terminal, in MB (default 5).
@@ -27,6 +32,15 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+}
+
+fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    Option::<f64>::deserialize(d)?
+        .map(|s| {
+            Duration::try_from_secs_f64(s)
+                .map_err(|_| serde::de::Error::custom("seconds must be finite, non-negative, and fit in a duration"))
+        })
+        .transpose()
 }
 
 impl Config {
@@ -65,6 +79,15 @@ pub fn load(path: &Path) -> Result<Config, RpcError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(invalid(format!("{}: {e}", path.display()))),
     }
+}
+
+/// Delivery must keep running even while the config is being fixed.
+pub fn delivery(path: &Path) -> Config {
+    load(path).unwrap_or_else(|error| {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| eprintln!("core: {}; using delivery defaults", error.message));
+        Config::default()
+    })
 }
 
 /// A detach chord: the control byte it sends, and its key code for the

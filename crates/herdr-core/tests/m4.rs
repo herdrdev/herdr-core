@@ -159,11 +159,197 @@ fn agents_wait_for_a_person_to_pause() {
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
     let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
 
-    // Someone is typing: the send waits for the quiet time.
-    person.typed(b"q");
+    // Arrow keys still wait for quiet, without creating a draft.
+    person.typed(b"\x1b[A");
     let started = Instant::now();
     s.json(&["send", &t, "x"]);
     assert!(started.elapsed() >= Duration::from_millis(500), "sent after {:?}", started.elapsed());
+}
+
+#[test]
+fn a_send_waits_for_the_person_to_send_or_clear_their_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "2000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    for clear in [b"\r".as_slice(), b"\x7f\x7f\x7f"] {
+        person.typed(b"hey");
+        let sender = {
+            let mut cmd = s.cmd();
+            cmd.args(["send", &t, "x"]);
+            std::thread::spawn(move || cmd.output().unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(900));
+        assert!(!sender.is_finished(), "submitted the unfinished draft");
+        let cleared = Instant::now();
+        person.typed(clear);
+        assert!(sender.join().unwrap().status.success());
+        if clear == b"\x7f\x7f\x7f" {
+            assert!(cleared.elapsed() >= Duration::from_millis(500), "backspace keeps the quiet wait");
+        } else {
+            assert!(
+                cleared.elapsed() < Duration::from_millis(750),
+                "did not release immediately: {:?}",
+                cleared.elapsed()
+            );
+        }
+    }
+    person.typed(b"walk away");
+    let start = Instant::now();
+    s.json(&["send", &t, "after cap"]);
+    assert!(start.elapsed() >= Duration::from_millis(1900));
+}
+
+#[test]
+fn invalid_delivery_durations_use_defaults_without_losing_the_terminal() {
+    let s = session();
+    let t = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    for setting in ["draft_wait", "notes_quiet"] {
+        for value in ["inf", "-inf", "nan", "-1", "1e100"] {
+            std::fs::write(&config, format!("{setting} = {value}\n")).unwrap();
+            s.json(&["send", &t, "delivered"]);
+        }
+    }
+    std::fs::write(config, "draft_wait = 0\nnotes_quiet = 0\n").unwrap();
+    s.json(&["send", &t, "recovered"]);
+    wait_until("delivery after fixing config", || text(&s, &t).contains("recovered"));
+}
+
+#[test]
+fn draft_wait_config_releases_a_send_and_zero_keeps_only_the_quiet_pause() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    for (seconds, minimum, maximum) in [(2.0, 1900, 4000), (0.0, 500, 1600)] {
+        std::fs::write(&config, format!("draft_wait = {seconds}\n")).unwrap();
+        person.typed(b"draft");
+        let start = Instant::now();
+        s.json(&["send", &t, "x"]);
+        assert!(start.elapsed() >= Duration::from_millis(minimum), "released too early: {:?}", start.elapsed());
+        assert!(start.elapsed() < Duration::from_millis(maximum), "held too long: {:?}", start.elapsed());
+    }
+}
+
+#[test]
+fn an_abandoned_draft_send_never_types_and_does_not_hold_up_interrupt() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "2000".into()));
+    let t = run(&s, &format!("r state=idle; {BYTES}"));
+    wait_until("reported", || get(&s, &t)["reported"] == true);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"draft");
+    let mut sender = s.cmd().args(["send", &t, "^abandoned"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(sender.try_wait().unwrap().is_none());
+    let start = Instant::now();
+    s.json(&["interrupt", &t]);
+    assert!(start.elapsed() < Duration::from_millis(500), "interrupt queued behind the draft");
+    sender.kill().unwrap();
+    sender.wait().unwrap();
+    let mut caller = common::framed::Framed::open(&s);
+    caller.send(
+        0,
+        herdr_core::wire::DATA,
+        json!({"jsonrpc": "2.0", "id": 42, "method": "terminal.send",
+            "params": {"terminal": t, "text": "^cancelled"}})
+        .to_string()
+        .as_bytes(),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    caller.send(
+        0,
+        herdr_core::wire::DATA,
+        json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 42}}).to_string().as_bytes(),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    person.typed(b"\r");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!text(&s, &t).contains("5e"), "abandoned send typed its first byte");
+    s.json(&["send", &t, "z"]);
+    shows(&s, &t, "7a");
+}
+
+#[test]
+fn half_closed_callers_keep_their_sends() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    let s = session();
+    let t = run(&s, BYTES);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    for draft in [false, true] {
+        if draft {
+            person.typed(b"draft");
+        }
+        let mut caller = UnixStream::connect(s.socket()).unwrap();
+        writeln!(
+            caller,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.send",
+            "params": {"terminal": t, "text": "z"}})
+        )
+        .unwrap();
+        caller.shutdown(Shutdown::Write).unwrap();
+        if draft {
+            std::thread::sleep(Duration::from_millis(300));
+            person.typed(b"\r");
+        }
+        caller.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reply = String::new();
+        BufReader::new(caller).read_line(&mut reply).unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+    }
+    shows(&s, &t, "7a");
+}
+
+#[test]
+fn held_sends_keep_order_and_leave_interrupt_free_during_the_next_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = run(&s, &format!("r state=idle; {BYTES}"));
+    wait_until("reported", || get(&s, &t)["reported"] == true);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"draft");
+    let mut first = s.cmd().args(["send", &t, "X"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    let mut second = s.cmd().args(["send", &t, "Y"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    person.typed(b"\r");
+    shows(&s, &t, "58");
+    person.typed(b"next draft");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(second.try_wait().unwrap().is_none(), "second send submitted the next draft");
+    let start = Instant::now();
+    s.json(&["interrupt", &t]);
+    assert!(start.elapsed() < Duration::from_millis(500), "interrupt queued behind second draft");
+    person.typed(b"\r");
+    assert!(first.wait().unwrap().success());
+    assert!(second.wait().unwrap().success());
+    let output = text(&s, &t);
+    assert!(output.find("58").unwrap() < output.find("59").unwrap(), "{output}");
+}
+
+#[test]
+fn agent_clear_keys_end_the_tracked_draft() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = run(&s, BYTES);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    for clear in ["enter", "ctrl+c", "ctrl+u"] {
+        person.typed(b"draft");
+        s.json(&["keys", &t, clear]);
+        person.typed(b"\x1b[A");
+        let start = Instant::now();
+        s.json(&["send", &t, "x"]);
+        assert!(start.elapsed() < Duration::from_secs(2), "{clear}: stale draft held send");
+    }
 }
 
 #[test]
@@ -193,14 +379,14 @@ fn a_program_that_never_reads_its_input_stalls_nobody() {
 #[test]
 fn keys_follow_the_programs_keyboard_modes() {
     let s = session();
-    let t = s.json(&["run", "--bg", "sh", "-c", "printf '\\033[?1h'; stty raw -echo; od -An -c"])["address"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    shows(&s, &t, ""); // started
-    std::thread::sleep(Duration::from_millis(200));
+    // One byte at a time: uutils od (Ubuntu 26.04) holds its output until EOF.
+    // Unquoted $c drops the padding BSD od (macOS) puts before each byte.
+    let probe = "stty raw -echo; printf '\\033[?1hready\\n'; \
+                 while c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1) && [ -n \"$c\" ]; do printf ' %s' $c; done";
+    let t = s.json(&["run", "--bg", "sh", "-c", probe])["address"].as_str().unwrap().to_string();
+    shows(&s, &t, "ready");
     s.json(&["keys", &t, "up", "ctrl+c", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a"]);
-    shows(&s, &t, "033   O   A 003   a");
+    shows(&s, &t, "1b 4f 41 03 61");
     let (code, err) = s.err(&["keys", &t, "hyper+q"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (6, Some("invalid_params")));
 }

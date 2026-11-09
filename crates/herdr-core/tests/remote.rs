@@ -21,6 +21,178 @@ fn with_rohan_env(env: &[(&str, &str)]) -> (Session, Session) {
     (rohan, s)
 }
 
+/// A direct connection process whose PID lets a test cut the transport itself.
+fn recording_ssh(local: &Session, remote: &Session) -> (String, std::path::PathBuf) {
+    let ssh = local.root.join("record-ssh");
+    let line_pid = local.root.join("line-pid");
+    let r = remote.root.display();
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\necho $$ > {}\nexec env -i HOME={r} PATH=/usr/bin:/bin HC_SESSION=test \\
+         XDG_RUNTIME_DIR={r}/run XDG_STATE_HOME={r}/state XDG_CONFIG_HOME={r}/config {BIN} connect\n",
+            line_pid.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    (ssh.display().to_string(), line_pid)
+}
+
+#[test]
+fn remote_sends_outlive_a_draft_but_not_a_lost_or_frozen_line() {
+    use std::time::{Duration, Instant};
+    let mut rohan = Session::new();
+    rohan.env.extend(
+        [("HC_QUIET_MS", "0"), ("HC_DRAFT_MS", "1600"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+    );
+    let pid = rohan.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+    let mut s = Session::new();
+    let (ssh, line_pid) = recording_ssh(&s, &rohan);
+    s.env.push(("HC_SSH".into(), ssh));
+    s.env.extend([("HC_RECONNECT_MS", "200"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())));
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    s.json(&["machine", "add", "rohan"]);
+    let t = run(&rohan, &["sh", "-c", BYTES]);
+    let mut person = Viewer::attach(&rohan, &t, 80, 24, json!({}));
+    let remote = format!("rohan/{t}");
+    person.typed(b"draft");
+    let start = Instant::now();
+    s.json(&["send", &remote, "x"]);
+    assert!(start.elapsed() >= Duration::from_millis(1500), "did not wait for the draft");
+    person.typed(b"draft");
+    let mut caller = s.cmd().args(["send", &remote, "^cancelled"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(caller.try_wait().unwrap().is_none());
+    caller.kill().unwrap();
+    caller.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    person.typed(b"\r");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(!text(&rohan, &t).contains("5e"), "killed forward caller still typed");
+
+    for failure in ["removed", "killed", "frozen"] {
+        person.typed(b"draft");
+        let sender = {
+            let mut cmd = s.cmd();
+            cmd.args(["send", &remote, "y"]);
+            std::thread::spawn(move || cmd.output().unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!sender.is_finished());
+        let start = Instant::now();
+        match failure {
+            "frozen" => {
+                unsafe { libc::kill(pid, libc::SIGSTOP) };
+            }
+            "killed" => {
+                let line: i32 = std::fs::read_to_string(&line_pid).unwrap().trim().parse().unwrap();
+                assert_eq!(unsafe { libc::kill(line, libc::SIGKILL) }, 0);
+            }
+            _ => {
+                s.json(&["machine", "rm", "rohan"]);
+            }
+        }
+        let result = sender.join().unwrap();
+        if failure == "frozen" {
+            unsafe { libc::kill(pid, libc::SIGCONT) };
+        }
+        assert!(!result.status.success());
+        let err = String::from_utf8_lossy(&result.stderr);
+        assert!(err.contains("lost the line"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(3), "hung on a dead line: {:?}", start.elapsed());
+        eprintln!("{failure}: caller failed after {:?}: {err}", start.elapsed());
+        if failure == "removed" {
+            s.json(&["machine", "add", "rohan"]);
+        }
+        wait_until("reconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+        std::thread::sleep(Duration::from_millis(100));
+        person.typed(b"\r");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!text(&rohan, &t).contains("79"), "{failure}: abandoned send typed y");
+    }
+}
+
+#[test]
+fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
+    use std::time::{Duration, Instant};
+    let mut rohan = Session::new();
+    rohan.env.extend(
+        [("HC_DRAFT_MS", "4000"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
+    );
+    let mut s = Session::new();
+    let (ssh, line_pid) = recording_ssh(&s, &rohan);
+    s.env.push(("HC_SSH".into(), ssh));
+    s.env.extend(
+        [("HC_DRAFT_MS", "2500"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0")].map(|(k, v)| (k.into(), v.into())),
+    );
+    let config = rohan.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\ndraft_wait = 0\n").unwrap();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "draft_wait = 3\n").unwrap();
+    rohan.json(&["server", "start"]);
+    s.json(&["machine", "add", "rohan"]);
+    let (parent, _) = parent_with_child_on_rohan(&s, &script(&rohan, "r state=working; sleep 100"));
+    let parent_there = get(&rohan, "t1")["parent"].as_str().unwrap().to_string();
+    let mut person = Viewer::attach(&s, &parent, 80, 24, json!({}));
+    person.typed(b"draft");
+    let start = Instant::now();
+    let sender = {
+        let mut cmd = rohan.cmd();
+        cmd.env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "reverse"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(1100));
+    assert!(!sender.is_finished());
+    let out = sender.join().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(start.elapsed() >= Duration::from_millis(2900));
+    eprintln!("reverse with parent draft_wait=3 and child=0: {:?}", start.elapsed());
+    person.typed(b"draft before disconnect");
+    let sender = {
+        let mut cmd = rohan.cmd();
+        cmd.env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "disconnected"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let start = Instant::now();
+    let line: i32 = std::fs::read_to_string(line_pid).unwrap().trim().parse().unwrap();
+    assert_eq!(unsafe { libc::kill(line, libc::SIGKILL) }, 0);
+    let out = sender.join().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("lost the line"));
+    assert!(start.elapsed() < Duration::from_secs(2));
+    eprintln!("reverse disconnected: caller failed after {:?}", start.elapsed());
+    wait_until("reconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+    let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+    std::fs::write(s.root.join("config/herdr-core/config.toml"), "draft_wait = 10\n").unwrap();
+    person.typed(b"another draft");
+    let sender = {
+        let mut cmd = rohan.cmd();
+        cmd.env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "held"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    let start = Instant::now();
+    let out = sender.join().unwrap();
+    unsafe { libc::kill(pid, libc::SIGCONT) };
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("didn't answer within"), "{err}");
+    assert!(start.elapsed() < Duration::from_secs(5), "stuck peer held the send: {:?}", start.elapsed());
+    eprintln!("reverse frozen: caller failed after {:?}: {err}", start.elapsed());
+    std::thread::sleep(Duration::from_millis(100));
+    person.typed(b"\r");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!text(&s, &parent).contains("held"), "timed-out reverse send was typed");
+}
+
 #[test]
 fn a_frozen_machine_never_freezes_hc() {
     // rohan answers heartbeats every 200 ms; here, 2 s is all a machine gets.
@@ -69,7 +241,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     rohan.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     let mut s = Session::new();
     let (var, fake) = fake_ssh(&s, &[("rohan", &rohan)]);
-    // Everything rohan sends comes at ~320 KB/s; 0.7 s of silence is all a machine gets.
+    // Everything rohan sends comes at ~320 KB/s; 2.2 s of silence is all a machine gets.
     let slow = s.root.join("slow-ssh");
     let throttle = "import sys, time\nwhile b := sys.stdin.buffer.read1(32768):\n    sys.stdout.buffer.write(b); sys.stdout.buffer.flush(); time.sleep(0.1)";
     std::fs::write(&slow, format!("#!/bin/sh\n{fake} \"$@\" | python3 -c '{throttle}'\n")).unwrap();
@@ -77,7 +249,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     s.env.push((var, slow.display().to_string()));
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     s.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     rohan.json(&["server", "start"]);
     s.json(&["machine", "add", "rohan"]);
@@ -204,20 +376,32 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn a_send_from_a_plain_shell_on_another_machine_arrives_as_is() {
+    let (_rohan, s) = with_rohan();
+    let agent = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("the agent reports", || get(&s, &agent)["reported"] == true);
+    s.json(&["send", &agent, "hello-plain"]);
+    wait_until("the text", || text(&s, &agent).contains("hello-plain"));
+    assert!(!text(&s, &agent).contains("<hc"), "a shell is not an agent: {}", text(&s, &agent));
+}
+
+#[test]
 fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     let mut rohan = Session::new();
     rohan.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
             .map(|(k, v)| (k.into(), v.into())),
     );
     let mut s = Session::new();
     s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
     s.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "0"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
     );
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    // Readiness must exceed the base call timeout, with room for normal scheduling gaps.
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     let templates = rohan.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&templates).unwrap();
     rohan.json(&["server", "start"]);

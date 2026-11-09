@@ -298,6 +298,9 @@ impl Listener {
 pub type AsyncRead = tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeServer>;
 pub type AsyncWrite = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeServer>;
 
+// Duplex named pipes cannot half-close: read EOF means the client disconnected.
+pub async fn reply_closed(_read: &AsyncRead) {}
+
 /// The core's pipe for clients.
 pub struct AsyncListener {
     name: PathBuf,
@@ -692,6 +695,11 @@ pub fn machine_id() -> Option<String> {
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let line = text.lines().find(|l| l.contains("MachineGuid"))?;
     line.split_whitespace().last().map(String::from)
+}
+
+/// Windows has no SIGTERM handoff; a requested restart is bounded by its expiry.
+pub fn boot_id() -> io::Result<Option<String>> {
+    Ok(None)
 }
 
 // --- Terminals: ConPTY ----------------------------------------------------

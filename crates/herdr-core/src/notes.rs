@@ -52,9 +52,10 @@ fn last_lines(text: &str) -> Vec<String> {
 }
 
 /// A parent can take a note: a live agent not on a dialog (typing could answer
-/// it). A working agent takes typed text as a message, like any steer.
+/// it), with a program to type into. A working agent takes typed text as a
+/// message, like any steer.
 fn can_take_note(t: &Terminal) -> bool {
-    t.is_live() && t.reported && !blocked(t)
+    t.is_live() && t.reported && !blocked(t) && t.check_program().is_ok()
 }
 
 /// `t7 reviewer`: address, then name or template.
@@ -147,8 +148,8 @@ impl Core {
         let st = self.lock();
         let sender = from.and_then(parse_id).filter(|f| *f != to).and_then(|f| st.reg.terminals.get(&f));
         let target = st.reg.terminals.get(&to);
-        // A child on another machine calling back (`rohan/t7`).
-        if let Some(afar) = from.filter(|f| f.contains('/'))
+        // A child on another machine calling back (`rohan/t7`), not a shell there (`rohan/ppid:12`).
+        if let Some(afar) = from.filter(|f| f.rsplit_once('/').is_some_and(|(_, local)| parse_id(local).is_some()))
             && target.is_some_and(|t| t.reported)
         {
             return format!("<hc from=\"{afar}\">{text}</hc>");
@@ -257,14 +258,11 @@ impl Core {
 
     /// One batch of notes, built at typing time so stale news is dropped.
     async fn type_note(&self, parent: u32) -> Result<bool, RpcError> {
-        let quiet = crate::config::load(&self.paths.config)
-            .ok()
-            .and_then(|c| c.notes_quiet)
-            .map_or_else(crate::input::quiet, |s| Duration::from_secs_f64(s.max(0.0)));
+        let quiet = crate::config::delivery(&self.paths.config).notes_quiet.unwrap_or_else(crate::input::quiet);
         // Notes from other machines were decided there: type them as they are.
         let afar = self.lock().afar_notes.remove(&parent).unwrap_or_default();
         let typed = self
-            .type_in(parent, quiet, |st, t| {
+            .type_in(parent, quiet, true, |st, t| {
                 if !can_take_note(t) {
                     return Err(RpcError::new("busy", "the parent got busy", ""));
                 }
@@ -350,5 +348,26 @@ mod tests {
             note(&r.terminals[&id], "t1", &last),
             "<hc>t1 reviewer exited (exit 3). Last lines:\na\nb[201~\tc\nRead: hc read t1</hc>"
         );
+    }
+
+    #[test]
+    fn a_kept_parent_without_a_program_takes_no_note_until_it_has_one() {
+        let mut r = Registry::default();
+        let id = r.create(NewTerminal { argv: vec!["x".into()], keep: true, ..Default::default() }, 0).unwrap();
+        let t = r.terminals.get_mut(&id).unwrap();
+        t.reported = true;
+        t.pid = Some(42);
+        assert!(can_take_note(t));
+        for reason in ["signaled", "spawn_pending"] {
+            t.pid = None;
+            t.reason = Some(reason.into());
+            assert!(!can_take_note(t), "{reason}: typing would fail, and the delivery loop would retry at once");
+        }
+        t.pid = Some(43);
+        t.reason = None;
+        t.reported = false; // a fresh shell, as recovery leaves it
+        assert!(!can_take_note(t));
+        t.reported = true;
+        assert!(can_take_note(t), "its new program reported");
     }
 }

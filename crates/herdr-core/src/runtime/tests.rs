@@ -199,7 +199,7 @@ fn a_blocked_registry_write_does_not_hold_the_core_lock() {
 }
 
 #[tokio::test]
-async fn a_stop_cannot_interrupt_a_prepared_restart() {
+async fn a_prepared_restart_survives_sigterm_and_rejects_stop() {
     let root = std::env::temp_dir().join(format!("hc-restart-stop-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
@@ -209,15 +209,17 @@ async fn a_stop_cannot_interrupt_a_prepared_restart() {
     };
     paths.create_dirs().unwrap();
     let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
-    crate::restart::prepare(&core).await.unwrap();
     let call = crate::api::Call { core: &core, conn: None, plain: None };
+    crate::api::dispatch(&call, "server.restart", serde_json::json!({})).await.unwrap();
+    crate::restart::on_sigterm(&core);
+    assert!(core.paths.state.join("restart-env.json").exists(), "SIGTERM keeps the explicit restart's note");
     let error = crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap_err();
     assert_eq!(error.kind, "unavailable");
     assert!(!core.lock().stopping, "a prepared handoff keeps its holders");
-    crate::restart::consumed(&core.paths).unwrap();
+    crate::restart::discard(&core.paths);
     core.restart.store(false, std::sync::atomic::Ordering::SeqCst);
     crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap();
-    assert!(crate::restart::prepare(&core).await.is_err(), "a stop already in progress wins");
+    assert!(crate::restart::prepare(&core, None).is_err(), "a stop already in progress wins");
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }

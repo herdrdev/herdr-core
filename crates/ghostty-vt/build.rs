@@ -35,6 +35,12 @@ fn main() {
     if let Some(path) = clean_path {
         build.env("PATH", path);
     }
+    // Only the static library is linked. Ghostty builds the xcframework whenever
+    // it finds xcodebuild, and with only the Command Line Tools installed
+    // /usr/bin/xcodebuild exists but fails.
+    if target.contains("apple") {
+        build.arg("-Demit-xcframework=false");
+    }
     // Building for another target than this machine (the static musl Linux
     // release), or for Windows (its libc must be named): Zig must build for it too.
     if target != host || windows {

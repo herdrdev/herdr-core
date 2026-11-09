@@ -15,6 +15,9 @@ hc machine ls
 hc run --on box --cwd /srv/app cargo test
 ```
 
+Without `--name`, the first host label becomes its name (IPs stay whole), shortened to 32 characters.
+Names that are taken or look like terminal ids get a numbered suffix: `t14` becomes `t14-2`.
+
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
 When the OS and CPU match, it copies your current build. Otherwise it uses this version's released build for that target.
@@ -43,6 +46,21 @@ hc machine add --name sandbox --temp --via 'fly ssh console -a my-app --pty=fals
 The command runs on your local machine. The shell line runs on the destination and connects to hc there.
 Log in with that tool first if it needs credentials.
 The temporary marker only helps clients show short-lived machines apart; it does not delete anything for you.
+
+On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
+no shell), with the remote line appended as one argument, no console window.
+Double quotes keep an executable path or argument with spaces together.
+Unix stays an sh line.
+Name the `.exe` explicitly, or use the full path to a `.cmd` shim; bare names
+do not search Windows' other executable extensions (PATHEXT).
+Type a quoted `--via` command from PowerShell 7 (`pwsh`): Windows PowerShell 5.1
+and cmd mangle embedded quotes.
+
+For a WSL distro, without an SSH server:
+
+```powershell
+hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl
+```
 
 ### Vercel Sandbox
 
