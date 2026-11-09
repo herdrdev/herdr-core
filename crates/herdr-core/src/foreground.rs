@@ -154,7 +154,7 @@ fn shell_root(root: &Foreground) -> bool {
     // Command and script wrappers can share their foreground group with a live agent.
     if root.argv.iter().skip(1).any(|arg| {
         (!arg.starts_with('-') && !arg.starts_with('+'))
-            || arg == "--command"
+            || matches!(arg.split('=').next(), Some("--command" | "--commands"))
             || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('c'))
     }) {
         return false;
@@ -199,6 +199,27 @@ impl Core {
                 if foreground_changed {
                     self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_flags_keep_shell_roots_from_clearing_live_status() {
+        for shell in ["sh", "bash", "zsh", "fish", "nu", "dash", "ksh", "tcsh"] {
+            let mut root = Foreground { pid: 1, name: shell.into(), argv: vec![shell.into()], cwd: "/".into() };
+            assert!(shell_root(&root), "{shell}");
+            for arg in ["-i", "-li", "--login", "--no-config"] {
+                root.argv = vec![shell.into(), arg.into()];
+                assert!(shell_root(&root), "{shell} {arg}");
+            }
+            for arg in ["-c", "-cecho", "-ic echo", "--command", "--command=echo", "--commands", "--commands=echo"] {
+                root.argv = vec![shell.into(), arg.into()];
+                assert!(!shell_root(&root), "{shell} {arg}");
             }
         }
     }
