@@ -38,7 +38,8 @@ pub(super) fn machine(
     let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
     Ok(match action {
         MachineCmd::Add(p) => {
-            let target = p.via.as_ref().or(p.target.as_ref()).cloned().unwrap_or_default();
+            let target =
+                p.via.clone().or_else(|| p.target.clone().map(crate::machines::ssh_target)).unwrap_or_default();
             let reach = crate::machines::Reach { target: &target, via: p.via.is_some() };
             if at_terminal() {
                 crate::machines::login(paths, reach)?;

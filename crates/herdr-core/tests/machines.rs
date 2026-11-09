@@ -374,6 +374,24 @@ fn another_session_on_the_same_box_is_another_machine() {
 }
 
 #[test]
+fn interactive_add_uses_the_same_ssh_target_for_login_and_install() {
+    let mut bare = Session::new();
+    bare.bin = bare.root.join("bin/herdr-core");
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("bare", &bare)]);
+    let wrapper =
+        executable(&s, &format!("#!/bin/sh\n[ \"$1\" = ssh://can@bare:2222 ] || exit 255\nexec {ssh} \"$@\"\n"));
+    s.env.push(("HC_SSH".into(), wrapper));
+    let t = run(&s, &["sh", "-c", &format!("{BIN} machine add can@bare:2222 --install; echo added-$?; sleep 100")]);
+    wait_until("interactive add finished", || text(&s, &t).contains("added-"));
+    let screen = text(&s, &t);
+    assert!(screen.contains("added-0"), "{screen}");
+    assert_eq!(s.json(&["machine", "ls"])["machines"][0]["target"], "ssh://can@bare:2222");
+    bare.bin = bare.root.join(".local/bin/herdr-core");
+    assert!(bare.bin.exists(), "installed through the normalized target");
+}
+
+#[test]
 fn a_box_that_asks_for_a_code_is_added_from_a_terminal() {
     let rohan = Session::new();
     let mut s = Session::new();
