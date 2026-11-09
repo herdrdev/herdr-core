@@ -12,6 +12,80 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 use windows_sys::Win32::System::JobObjects::*;
 use windows_sys::Win32::System::Threading::*;
 
+pub fn split_command_line(mut line: Vec<u16>) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+    line.push(0);
+    let mut argc = 0;
+    let argv = unsafe { CommandLineToArgvW(line.as_ptr(), &mut argc) };
+    if argv.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe {
+        let words = std::slice::from_raw_parts(argv, argc as usize)
+            .iter()
+            .map(|&arg| {
+                let mut len = 0;
+                while *arg.add(len) != 0 {
+                    len += 1;
+                }
+                std::ffi::OsString::from_wide(std::slice::from_raw_parts(arg, len))
+            })
+            .collect::<Vec<_>>();
+        LocalFree(argv.cast());
+        words
+    })
+}
+
+fn via_words(target: &str) -> io::Result<Vec<std::ffi::OsString>> {
+    // CommandLineToArgvW otherwise treats leading spaces as an empty argv[0].
+    let target = target.trim_start_matches(' ');
+    if target.is_empty() || target.chars().any(char::is_control) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "one line, no control characters"));
+    }
+    let words = split_command_line(target.encode_utf16().collect())?;
+    if words.first().is_none_or(|word| word.is_empty()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty executable"));
+    }
+    Ok(words)
+}
+
+pub fn check_via(target: &str) -> io::Result<()> {
+    via_words(target).map(|_| ())
+}
+
+pub fn via_add_hint(target: &str) -> String {
+    format!("hc machine add --via '{}' --name <name>", target.replace('\'', "''"))
+}
+
+pub fn via_command(target: &str, line: &str) -> io::Result<std::process::Command> {
+    use std::os::windows::process::CommandExt;
+    let words = via_words(target)?;
+    let mut cmd = std::process::Command::new(&words[0]);
+    cmd.args(&words[1..]).arg(line).creation_flags(CREATE_NO_WINDOW);
+    Ok(cmd)
+}
+
+#[cfg(test)]
+mod via_tests {
+    use super::*;
+
+    #[test]
+    fn windows_via_preserves_paths_quoted_arguments_and_the_remote_line() {
+        let line = "sh -c 'printf \"%s\\n\" \"$HOME\" | cat'";
+        let cmd = via_command(r#"  "C:\Program Files\bridge.exe" -d "Ubuntu Test" -e sh -c"#, line).unwrap();
+        assert_eq!(cmd.get_program(), r"C:\Program Files\bridge.exe");
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["-d", "Ubuntu Test", "-e", "sh", "-c", line]);
+        let words = via_words(r#"bridge.exe "C:\folder\\" "a\"b" """#).unwrap();
+        assert_eq!(words, ["bridge.exe", "C:\\folder\\", "a\"b", ""]);
+        assert!(check_via(r#""" arg"#).is_err());
+        assert!(check_via("bridge.exe\narg").is_err());
+        assert_eq!(via_add_hint("bridge.exe it's"), "hc machine add --via 'bridge.exe it''s' --name <name>");
+    }
+}
+
 /// This machine's own shell: PowerShell 7 if installed, else Windows PowerShell.
 /// PowerShell's `cd` never tells Windows, so hc couldn't see its folder: each
 /// prompt does, after the person's own prompt ran (it reads `$?`).

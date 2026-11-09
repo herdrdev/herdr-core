@@ -103,3 +103,9 @@ Do not assume every downloaded build is signed.
 
 `hc update --from /path/to/herdr-core` installs a local build instead of downloading one.
 Only use a build you trust. The updater's compatibility checks are not a review of its code.
+
+On macOS, a release that ships `Herdr Core.app` installs as that bundle when hc is installed under your home folder and not as root.
+With the default release service, the installer and `hc update` refuse the bundle unless `codesign` finds it signed by Herdr's Apple team (`2W9652Q7QR`) with identifier `dev.herdr.core`.
+Once hc runs from the bundle, an update will not replace it with a bare executable.
+As root or outside your home folder, they install the plain `herdr-core` executable, checked only by its SHA-256.
+With another `HERDR_RELEASES_URL`, or `hc update --from` a bundle, an ad-hoc signature with that identifier is enough, so that service or file is trusted as it is.

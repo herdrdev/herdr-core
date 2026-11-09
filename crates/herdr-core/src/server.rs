@@ -13,6 +13,30 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+tokio::task_local! {
+    pub(crate) static SEND_CANCELLED: Arc<std::sync::atomic::AtomicBool>;
+}
+
+pub(crate) fn check_cancelled() -> Result<(), RpcError> {
+    if SEND_CANCELLED.try_with(|c| c.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) {
+        Err(RpcError::new("cancelled", "send cancelled before typing", "send again if still needed"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) async fn send_cancelled() -> RpcError {
+    if SEND_CANCELLED.try_with(|_| ()).is_err() {
+        return std::future::pending().await;
+    }
+    loop {
+        if let Err(err) = check_cancelled() {
+            return err;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
@@ -30,6 +54,8 @@ pub fn serve() -> io::Result<()> {
     // Where we listen, for clients whose env points elsewhere.
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;
+    // The winning serve is still single-threaded, including when launched by an old holder.
+    unsafe { crate::restart::restore(&paths) };
     let info = load_identity(&paths.state, platform::machine_id())?;
     let socket = paths.socket.clone();
     let _shutdown_watch = platform::monitor_host_shutdown();
@@ -39,7 +65,7 @@ pub fn serve() -> io::Result<()> {
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;
-        crate::restart::consumed(&core.paths)?;
+        crate::restart::discard(&core.paths);
         let kept = core.clone();
         tokio::spawn(async move {
             kept.clone().recover_kept(true).await;
@@ -63,13 +89,9 @@ pub fn serve() -> io::Result<()> {
                     tokio::spawn(connection(core.clone(), read, write));
                 }
                 _ = core.stop.notified() => break,
-                // SIGTERM is a planned restart: programs stay, screens are saved.
+                // Keep programs/screens, but only an explicit restart preserves environment.
                 _ = &mut term => {
-                    if let Err(error) = crate::restart::prepare(&core).await {
-                        eprintln!("core: cannot restart: {error}");
-                        term.set(platform::termination());
-                        continue;
-                    }
+                    crate::restart::on_sigterm(&core);
                     break;
                 }
             }
@@ -163,12 +185,29 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         }
         let handling = handle(&core, None, Some(&plain), line.as_bytes());
         // An exec ends when its caller goes away.
-        let handled = match is_exec(line.as_bytes()) {
-            true => tokio::select! {
+        let method = serde_json::from_str::<Value>(&line).ok().and_then(|r| r["method"].as_str().map(String::from));
+        let handled = match method.as_deref() {
+            Some("machine.exec") => tokio::select! {
                 handled = handling => handled,
                 () = closed(&mut read, &mut ahead) => return Ok(()),
             },
-            false => handling.await,
+            Some("terminal.send") => {
+                let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let handling = SEND_CANCELLED.scope(cancelled.clone(), handling);
+                tokio::pin!(handling);
+                tokio::select! {
+                    handled = &mut handling => handled,
+                    () = async {
+                        closed(&mut read, &mut ahead).await;
+                        platform::reply_closed(read.get_ref()).await;
+                    } => {
+                        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        handling.await;
+                        return Ok(());
+                    }
+                }
+            }
+            _ => handling.await,
         };
         let wrote = match &handled.reply {
             Some(reply) => write.write_all(format!("{reply}\n").as_bytes()).await,
@@ -206,10 +245,6 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
     crate::remote::peer_left(&core, &conn);
     writer.abort();
     result
-}
-
-fn is_exec(message: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(message).is_ok_and(|m| m["method"] == "machine.exec")
 }
 
 /// Returns once a plain connection is closed; what it sends meanwhile is
@@ -309,6 +344,7 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
     // Execs running for this connection by request id: they end when it
     // closes, or when it gives up on one (`$/cancelRequest`).
     let mut execs = Execs::default();
+    let mut sends = Sends::default();
     while let Some((channel, kind, payload)) = wire::read_frame(read).await? {
         if channel != 0 && crate::remote::relay_in(core, conn, channel, kind, &payload) {
             continue;
@@ -327,11 +363,13 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 if request["method"] == "$/cancelRequest" {
                     let id = request["params"]["id"].to_string();
                     execs.0.iter().filter(|(of, _)| *of == id).for_each(|(_, exec)| exec.abort());
+                    sends.cancel(Some(&id));
                     continue;
                 }
+                let cancelled = sends.track(&request);
                 let (core, conn) = (core.clone(), conn.clone());
                 let task = tokio::spawn(async move {
-                    let handled = handle(&core, Some(&conn), None, &payload).await;
+                    let handled = SEND_CANCELLED.scope(cancelled, handle(&core, Some(&conn), None, &payload)).await;
                     if let Some(reply) = &handled.reply {
                         conn.with(|out| {
                             out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes()));
@@ -375,6 +413,37 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
         }
     }
     Ok(())
+}
+
+/// Only the draft hold observes cancellation; input already being typed must finish.
+#[derive(Default)]
+pub(crate) struct Sends(Vec<(String, std::sync::Weak<std::sync::atomic::AtomicBool>)>);
+
+impl Sends {
+    pub(crate) fn track(&mut self, request: &Value) -> Arc<std::sync::atomic::AtomicBool> {
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if request["method"] == "terminal.send" {
+            self.0.retain(|(_, flag)| flag.strong_count() > 0);
+            self.0.push((request["id"].to_string(), Arc::downgrade(&cancelled)));
+        }
+        cancelled
+    }
+
+    pub(crate) fn cancel(&self, id: Option<&str>) {
+        for (of, flag) in &self.0 {
+            if id.is_none_or(|id| id == of)
+                && let Some(flag) = flag.upgrade()
+            {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+impl Drop for Sends {
+    fn drop(&mut self) {
+        self.cancel(None);
+    }
 }
 
 /// A connection's running execs by request id, ended with it.
