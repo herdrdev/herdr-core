@@ -95,6 +95,29 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
         return Err(err);
     }
     platform::may_autostart(explicit)?;
+    paths.create_dirs().map_err(|e| unavailable(format!("cannot start core: {e}")))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(paths.state.join("core.lock"))
+        .map_err(|e| unavailable(format!("cannot open core lock: {e}")))?;
+    let start = Instant::now();
+    loop {
+        if let Ok(stream) = platform::connect(&paths.socket) {
+            return Ok(stream);
+        }
+        // A closing connection does not mean serve has released its lock yet.
+        // Starting its replacement early would make that process exit immediately.
+        if platform::try_lock(&lock) {
+            break;
+        }
+        if start.elapsed() > START_WAIT {
+            return Err(unavailable(format!("core did not stop or start within {} s", START_WAIT.as_secs())));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(lock);
     spawn_core(paths)?;
     wait_for_socket(&paths.socket, "core").map_err(unavailable)
 }
