@@ -258,10 +258,7 @@ impl Core {
 
     /// One batch of notes, built at typing time so stale news is dropped.
     async fn type_note(&self, parent: u32) -> Result<bool, RpcError> {
-        let quiet = crate::config::load(&self.paths.config)
-            .ok()
-            .and_then(|c| c.notes_quiet)
-            .map_or_else(crate::input::quiet, |s| Duration::from_secs_f64(s.max(0.0)));
+        let quiet = crate::config::delivery(&self.paths.config).notes_quiet.unwrap_or_else(crate::input::quiet);
         // Notes from other machines were decided there: type them as they are.
         let afar = self.lock().afar_notes.remove(&parent).unwrap_or_default();
         let typed = self

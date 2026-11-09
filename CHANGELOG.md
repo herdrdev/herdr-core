@@ -6,7 +6,7 @@
 - `hc server restart --fresh` takes your current shell's environment for new terminals without ending running programs. Run it from a terminal outside Herdr if an agent started Herdr with unwanted settings.
 
 ### Fixed
-- Agent messages and parent notes wait for you to send or clear an unfinished draft, instead of submitting it with their message. A draft left alone holds messages for at most a minute. Sends to another machine wait too. (#64, thanks @pruett)
+- Agent messages and parent notes wait for you to send or clear an unfinished draft, instead of submitting it with their message. A draft left alone holds messages for at most a minute by default; `draft_wait` in config.toml sets the limit in seconds, and `0` keeps only the quiet pause. Sends to another machine wait too. (#64, thanks @pruett)
 
 ## [0.1.19] - 2026-11-07
 

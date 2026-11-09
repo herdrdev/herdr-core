@@ -78,6 +78,23 @@ their behavior. A bad setting reports a config error; a shell that cannot start
 reports `spawn_failed`. Recovery stays pending and retries, with errors in
 `core.log` (config) or `holder.log` (spawn); it never silently falls back to another shell.
 
+## Draft wait
+
+Sends and parent notes wait for you to send or clear an unfinished draft,
+up to 60 seconds after your last key. In the same config.toml:
+
+```toml
+notes_quiet = 3 # seconds of quiet before a parent note
+draft_wait = 60 # seconds a draft holds sends and notes; 0 keeps only the quiet pause
+```
+
+Both settings apply to the next delivery without restarting the core. Values must
+be finite, non-negative seconds that fit in a duration. If the config is invalid,
+delivery uses defaults and logs the config error once in `core.log`.
+Reverse sends allow at least the default 60-second draft hold.
+A parent configured above 60 seconds can still outwait a child configured below
+that parent's limit and cause its reverse send to time out.
+
 ## Agents run agents
 
 Give an agent `hc --skill`. It prints the agent docs in one read, including how to delegate, wait, report back, and clean up.

@@ -1024,9 +1024,12 @@ pub async fn forward_to(core: &Core, to: &To, method: &str, params: Value) -> Re
                 .ok_or_else(|| RpcError::new("unavailable", format!("{name} is not connected"), "try again later"))?;
             let calls_me = core.lock().peers.get(id).map(|p| p.calls_me.clone()).unwrap_or_default();
             // Reverse calls have no incoming heartbeat monitor: leave room for
-            // a walked-away draft, but still bound a stuck peer.
+            // a walked-away draft, but still bound a stuck peer. Its config may
+            // differ: never shorten the default allowance using our local cap.
             let draft = if method == "terminal.send" {
-                crate::input::draft_timeout().max(crate::input::quiet())
+                crate::input::draft_timeout(&core.paths.config)
+                    .max(crate::input::default_draft_timeout())
+                    .max(crate::input::quiet())
                     + crate::server::heartbeat_every().min(Duration::from_secs(5))
             } else {
                 Duration::ZERO

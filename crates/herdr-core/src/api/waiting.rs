@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn wait_timeout(core: &Core, given: Option<f64>) -> Result<Duration, RpcError> {
     let secs = match given {
         Some(s) => s,
-        None => crate::config::load(&core.paths.config)?.wait_timeout.unwrap_or(180.0),
+        None => crate::config::delivery(&core.paths.config).wait_timeout.unwrap_or(180.0),
     };
     Ok(seconds(Some(secs))?.unwrap_or_default())
 }

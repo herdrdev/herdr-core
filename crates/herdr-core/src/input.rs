@@ -34,12 +34,12 @@ pub struct Gate {
 
 impl Gate {
     /// Submitting input also waits for the draft, bounded since the last human key.
-    fn wait(&self, quiet: Duration, submits: bool) -> Duration {
+    fn wait(&self, quiet: Duration, submits: bool, draft: Duration) -> Duration {
         let Some(at) = self.last_human else { return Duration::ZERO };
         if submits && self.draft_ended {
             return PASTE_GAP.saturating_sub(at.elapsed());
         }
-        let hold = if submits && self.draft > 0 { quiet.max(draft_timeout()) } else { quiet };
+        let hold = if submits && self.draft > 0 { quiet.max(draft) } else { quiet };
         hold.saturating_sub(at.elapsed())
     }
 
@@ -180,8 +180,12 @@ pub fn quiet() -> Duration {
     env_ms("HC_QUIET_MS", 3000)
 }
 
-pub(crate) fn draft_timeout() -> Duration {
+pub(crate) fn default_draft_timeout() -> Duration {
     env_ms("HC_DRAFT_MS", 60_000)
+}
+
+pub(crate) fn draft_timeout(config: &std::path::Path) -> Duration {
+    crate::config::delivery(config).draft_wait.unwrap_or_else(default_draft_timeout)
 }
 
 /// How long `send` watches for the program to start working.
@@ -228,6 +232,7 @@ impl Core {
         submits: bool,
         prepare: impl FnOnce(&State, &Terminal) -> Result<(T, Vec<Step>), RpcError>,
     ) -> Result<T, RpcError> {
+        let draft = draft_timeout(&self.paths.config);
         let queue = self.lock().queues.entry(id).or_default().clone();
         let sends = self.lock().sends.entry(id).or_default().clone();
         let _send_turn = if submits { Some(sends.lock().await) } else { None };
@@ -235,7 +240,7 @@ impl Core {
             if submits {
                 loop {
                     crate::server::check_cancelled()?;
-                    let left = self.lock().gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, true));
+                    let left = self.lock().gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, true, draft));
                     if left.is_zero() || !self.lock().reg.terminals.get(&id).is_some_and(|t| t.is_live()) {
                         break;
                     }
@@ -257,7 +262,7 @@ impl Core {
                         )
                     })?;
                     t.check_program()?;
-                    let left = st.gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, submits));
+                    let left = st.gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, submits, draft));
                     if left.is_zero() {
                         let prepared = prepare(&st, t)?;
                         let gate = st.gates.entry(id).or_default();
@@ -548,17 +553,26 @@ mod tests {
         g.viewer(b"x", true);
         g.viewer(b"\r", false);
         assert_eq!(g.draft, 1);
-        assert!(!g.wait(Duration::ZERO, true).is_zero());
+        assert!(!g.wait(Duration::ZERO, true, Duration::from_secs(60)).is_zero());
         g.viewer(b"\x1b[99;5u", true);
-        assert!(!g.wait(Duration::from_secs(3), true).is_zero());
+        assert!(!g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero());
         g.last_human = Some(Instant::now() - PASTE_GAP);
-        assert!(g.wait(Duration::from_secs(3), true).is_zero());
-        assert!(!g.wait(Duration::from_secs(3), false).is_zero(), "keys keep their quiet wait");
+        assert!(g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero());
+        assert!(
+            !g.wait(Duration::from_secs(3), false, Duration::from_secs(60)).is_zero(),
+            "keys keep their quiet wait"
+        );
         g.viewer(b"\x1b[A", true);
-        assert!(!g.wait(Duration::from_secs(3), true).is_zero(), "other keys keep the quiet wait");
+        assert!(
+            !g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(),
+            "other keys keep the quiet wait"
+        );
         g.viewer(b"x", true);
         g.last_human = Some(Instant::now() - Duration::from_secs(61));
-        assert!(g.wait(Duration::from_secs(3), true).is_zero(), "a draft expires after the last key");
+        assert!(
+            g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(),
+            "a draft expires after the last key"
+        );
     }
 
     #[test]

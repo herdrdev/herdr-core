@@ -120,7 +120,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     use std::time::{Duration, Instant};
     let mut rohan = Session::new();
     rohan.env.extend(
-        [("HC_DRAFT_MS", "1200"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+        [("HC_DRAFT_MS", "4000"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
             .map(|(k, v)| (k.into(), v.into())),
     );
     let mut s = Session::new();
@@ -131,7 +131,10 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     );
     let config = rohan.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\ndraft_wait = 0\n").unwrap();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "draft_wait = 3\n").unwrap();
     rohan.json(&["server", "start"]);
     s.json(&["machine", "add", "rohan"]);
     let (parent, _) = parent_with_child_on_rohan(&s, &script(&rohan, "r state=working; sleep 100"));
@@ -146,10 +149,10 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     };
     std::thread::sleep(Duration::from_millis(1100));
     assert!(!sender.is_finished());
-    person.typed(b"\r");
     let out = sender.join().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(start.elapsed() >= Duration::from_millis(1100));
+    assert!(start.elapsed() >= Duration::from_millis(2900));
+    eprintln!("reverse with parent draft_wait=3 and child=0: {:?}", start.elapsed());
     person.typed(b"draft before disconnect");
     let sender = {
         let mut cmd = rohan.cmd();
@@ -167,6 +170,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     eprintln!("reverse disconnected: caller failed after {:?}", start.elapsed());
     wait_until("reconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
     let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+    std::fs::write(s.root.join("config/herdr-core/config.toml"), "draft_wait = 10\n").unwrap();
     person.typed(b"another draft");
     let sender = {
         let mut cmd = rohan.cmd();
@@ -181,7 +185,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("didn't answer within"), "{err}");
-    assert!(start.elapsed() < Duration::from_secs(3), "stuck peer held the send: {:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(5), "stuck peer held the send: {:?}", start.elapsed());
     eprintln!("reverse frozen: caller failed after {:?}: {err}", start.elapsed());
     std::thread::sleep(Duration::from_millis(100));
     person.typed(b"\r");

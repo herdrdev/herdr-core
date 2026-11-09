@@ -101,7 +101,16 @@ children finish:
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
 Sends and parent notes wait for an unfinished draft, up to 60 seconds since
-the person's last key. Sends to an added machine keep waiting while its line is alive.
+the person's last key. Set `draft_wait = 5` (seconds) in
+`~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
+to change that limit; `0` keeps only the quiet pause. Like `notes_quiet`,
+it is read for each delivery and takes precedence over the test environment
+fallback (`HC_DRAFT_MS`). Both settings require finite, non-negative seconds
+that fit in a duration. If the config is invalid, delivery uses defaults and
+logs the config error once in `core.log`. Reverse sends allow at least the
+default 60-second hold, but a parent configured above that
+can still outwait a child with a shorter limit. Sends to an added machine keep
+waiting while its line is alive.
 
 Reports arrive tagged, for example:
 
