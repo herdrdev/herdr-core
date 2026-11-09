@@ -1,4 +1,5 @@
-# Every master push and PR: native Linux x86_64, macOS and Windows
+# Every master push and PR: native Linux x86_64, macOS, Windows x64 and
+# Windows Arm64 (an Arm runner, not emulation)
 # clippy/tests, plus upgrade from the last release. Updates must keep terminals.
 #
 # Rust caches use one pinned toolchain and only master runs save, so PR
@@ -48,7 +49,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
-          targets: x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: lint
@@ -60,7 +61,9 @@ jobs:
         with:
           command: check
       - run: mkdir -p vendor/ghostty
-      - run: cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+      - run: |
+          cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+          cargo clippy --locked --target aarch64-pc-windows-msvc --all-targets -- -D warnings
         env:
           ZIG: ${{ github.workspace }}/scripts/zig-stub.sh
 
@@ -76,6 +79,7 @@ jobs:
           - { os: linux, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, threads: 4 }
           - { os: macos, runner: macos-15, target: aarch64-apple-darwin, threads: 2 }
           - { os: windows, runner: windows-2025, target: x86_64-pc-windows-msvc, threads: 2 }
+          - { os: windows, runner: windows-11-arm, target: aarch64-pc-windows-msvc, threads: 2, slow_powershell: '1' }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -91,6 +95,23 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      # Zig 0.16.0's own Arm64 Windows build crashes (0xc0000005) building
+      # libghostty-vt; its x64 build, emulated, makes the same native Arm64
+      # library. Only Zig itself runs emulated: hc and its tests are Arm64.
+      - name: x64 Zig on Arm Windows
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          $name = "zig-x86_64-windows-0.16.0"
+          Invoke-WebRequest -UseBasicParsing "https://ziglang.org/download/0.16.0/$name.zip" -OutFile "$env:RUNNER_TEMP\zig.zip"
+          $sha = (Get-FileHash "$env:RUNNER_TEMP\zig.zip" -Algorithm SHA256).Hash
+          if ($sha -ne "68659EB5F1E4EB1437A722F1DD889C5A322C9954607F5EDCF337BC3684A75A7E") { throw "zig download: sha256 $sha" }
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" $env:RUNNER_TEMP
+          & "$env:RUNNER_TEMP\$name\zig.exe" version
+          if ($LASTEXITCODE) { throw "x64 zig does not run" }
+          "ZIG=$env:RUNNER_TEMP\$name\zig.exe" >> $env:GITHUB_ENV
+          # Its own cache: setup-zig's shared one was left by the crashing native Zig.
+          "ZIG_GLOBAL_CACHE_DIR=$env:RUNNER_TEMP\zig-x64-cache" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}-dev
@@ -102,10 +123,26 @@ jobs:
       - if: matrix.os == 'windows'
         shell: pwsh
         run: scripts/fetch-conpty.ps1 -Dest target/${{ matrix.target }}/debug
+      # Built for the runner's own CPU, so the Arm leg tests Arm, not emulation.
+      - name: The build is native
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          cargo build --locked --target ${{ matrix.target }}
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $native = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine")
+          $b = [IO.File]::ReadAllBytes("target/${{ matrix.target }}/debug/herdr-core.exe")
+          $machine = [BitConverter]::ToUInt16($b, [BitConverter]::ToInt32($b, 0x3c) + 4)
+          "Windows on $native; herdr-core.exe for machine 0x{0:X4}" -f $machine
+          $want = @{ AMD64 = 0x8664; ARM64 = 0xAA64 }[$native]
+          if ($machine -ne $want) { throw "herdr-core.exe isn't built for this machine's own CPU" }
       # cli_docs runs the built binary's help: generated reference freshness
       # and README/docs command/flag checks, with file:line failures.
       - name: Tests (including human docs)
         shell: bash
+        env:
+          HC_TEST_SLOW_POWERSHELL: ${{ matrix.slow_powershell }}
+          HC_TEST_WATCHDOG_S: ${{ matrix.slow_powershell && '600' || '120' }}
         run: |
           # Full-screen scrolling tests are disabled on macOS CI because runner timing is unreliable.
           only=()

@@ -65,6 +65,17 @@ pub fn prefer_release_bundle() -> bool {
     true
 }
 
+/// The CPU the OS itself runs on, as release targets name it (`x86_64`,
+/// `aarch64`): on an Arm PC, an x64 hc running emulated says `aarch64`.
+pub fn native_arch() -> &'static str {
+    #[cfg(windows)]
+    {
+        windows::native_arch()
+    }
+    #[cfg(not(windows))]
+    std::env::consts::ARCH
+}
+
 pub fn needs_bundle_update() -> bool {
     #[cfg(target_os = "macos")]
     {

@@ -25,9 +25,17 @@ function Fail($why) { throw "hc: $why" }
 
 $releases = if ($env:HERDR_RELEASES_URL) { $env:HERDR_RELEASES_URL.TrimEnd("/") } else { "https://releases.herdr.dev" }
 $dir = if ($env:HC_INSTALL_DIR) { $env:HC_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\herdr-core" }
-$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-if ($arch -ne "AMD64") { Fail "no build for $arch Windows yet (x64 only)" }
-$target = "windows-x86_64"
+# Windows' own CPU, from the machine's settings: an x64 program on an Arm PC
+# (Herdr, or the PowerShell it starts) says AMD64 for itself.
+$arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine")
+if (-not $arch) { $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE } }
+# Best first. An Arm PC takes the x64 build (it runs emulated) only when a
+# version has no Arm one.
+$targets = switch ($arch) {
+    "ARM64" { "windows-aarch64", "windows-x86_64" }
+    "AMD64" { "windows-x86_64" }
+    default { Fail "no build for $arch Windows (x64 and Arm64 only)" }
+}
 # Windows' own tar opens zips; Git Bash's, often first on PATH, can't.
 $tar = Join-Path $env:SystemRoot "System32\tar.exe"
 if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue) -or -not (Test-Path $tar)) {
@@ -44,8 +52,9 @@ try {
     curl.exe -fsSL $manifest -o "$tmp\manifest.json"
     if ($LASTEXITCODE) { Fail "cannot reach $manifest" }
     $m = Get-Content -Raw "$tmp\manifest.json" | ConvertFrom-Json
+    $target = $targets | Where-Object { $m.targets.$_.url -and $m.targets.$_.sha256 } | Select-Object -First 1
+    if (-not $target) { Fail "no build for $($targets[0]) in $manifest" }
     $t = $m.targets.$target
-    if (-not $t.url -or -not $t.sha256) { Fail "no build for $target in $manifest" }
 
     # Tells the release server's download counter a new install from an
     # update; the file is the same either way. Only plain URLs on the release
@@ -74,6 +83,16 @@ try {
         # Swapped the planned way, so its terminals keep running.
         & $exe update --from $new | Out-Null
         if ($LASTEXITCODE) { Fail "updating $exe failed (see above)" }
+        # An older hc swaps only the ConPTY files it knows: add the rest
+        # (the arm64 OpenConsole). Missing files aren't in use.
+        $from = (Get-Item "$tmp\hc").FullName.TrimEnd("\") + "\"
+        Get-ChildItem -Recurse -File (Join-Path $from "conpty") | ForEach-Object {
+            $to = Join-Path $dir $_.FullName.Substring($from.Length)
+            if (-not (Test-Path $to)) {
+                New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
+                Copy-Item $_.FullName $to
+            }
+        }
         Write-Host "hc updated to $version."
     } else {
         Copy-Item -Recurse -Force "$tmp\hc\herdr-core.exe", "$tmp\hc\conpty" $dir
