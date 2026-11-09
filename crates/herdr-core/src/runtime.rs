@@ -509,8 +509,10 @@ impl Core {
     /// Resize down and back so full-screen programs repaint.
     fn nudge(&self, terminals: Vec<(u32, u16, u16)>) {
         let send = |id, cols, rows| {
-            if let Some(link) = self.lock().link(id) {
-                link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
+            let st = self.lock();
+            let cell = st.screens.get(&id).map_or((0, 0), |s| s.cell());
+            if let Some(link) = st.link(id) {
+                link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size::of(cols, rows, cell)));
             }
         };
         for &(id, cols, rows) in &terminals {

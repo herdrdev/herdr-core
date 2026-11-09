@@ -614,6 +614,11 @@ impl Terminal {
         screen == 1
     }
 
+    /// The cell size in pixels set by `set_display` ((0, 0) until then).
+    pub fn cell(&self) -> (u32, u32) {
+        self.hooks.cell
+    }
+
     /// A DEC private mode (e.g. 1004 focus reporting).
     pub fn dec_mode(&self, mode: u16) -> bool {
         let mut cfg = ffi::ModeConfig { mode: mode & 0x7FFF, value: false };

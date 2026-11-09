@@ -278,14 +278,15 @@ impl Core {
         v.display.bg = display.bg.or(v.display.bg.take());
         v.display.cursor = display.cursor.or(v.display.cursor.take());
         v.display.cell = display.cell.or(v.display.cell);
-        let display = st.viewers[&id]
+        let leads = st.viewers[&id]
             .iter()
             .filter(|v| !v.observe)
             .max_by_key(|v| v.active_at)
             .filter(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
-            .map(|v| v.display.clone());
-        if let Some(display) = display {
-            self.apply_display(&mut st, id, Some(&display));
+            .is_some();
+        // Through the size: a new cell changes the PTY's pixel size.
+        if leads {
+            self.apply_size(&mut st, id);
         }
     }
 
@@ -329,19 +330,25 @@ impl Core {
         let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
         let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
         let display = leader.map(|v| v.display.clone());
-        if !st.screens.contains_key(&id) {
-            return;
-        }
+        let Some(before) = st.screens.get(&id).map(|s| s.cell()) else { return };
         self.apply_display(st, id, display.as_ref());
+        let cell = st.screens[&id].cell();
         let rec = st.reg.terminals.get_mut(&id).expect("live terminal");
-        if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
+        let resized = (rec.cols, rec.rows) != (cols, rows);
+        if (!resized && cell == before) || cols == 0 || rows == 0 {
             return;
         }
-        st.screens.get_mut(&id).expect("live screen").resize(cols, rows);
-        rec.cols = cols;
-        rec.rows = rows;
+        if resized {
+            st.screens.get_mut(&id).expect("live screen").resize(cols, rows);
+            rec.cols = cols;
+            rec.rows = rows;
+        }
         if let Some(link) = st.link(id) {
-            link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
+            link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size::of(cols, rows, cell)));
+        }
+        // A new cell alone changes only the PTY's pixels: viewers keep their size.
+        if !resized {
+            return;
         }
         let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
         for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
