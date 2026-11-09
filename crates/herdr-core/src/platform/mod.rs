@@ -19,6 +19,11 @@ mod macos_responsibility;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
 
+/// Whether foreground observations can distinguish a shell from its jobs.
+pub fn foreground_tracks_jobs() -> bool {
+    cfg!(unix)
+}
+
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
 pub fn daemon_startup() -> bool {
     #[cfg(target_os = "macos")]
