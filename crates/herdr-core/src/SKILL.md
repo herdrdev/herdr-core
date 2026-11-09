@@ -217,6 +217,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
   `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
   connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
+- A terminal started for a person at another machine (a call over a machine's
+  line, or a caller there) also carries `HERDR_REMOTE_VIEWER=1`, `HERDR_ENV=1`
+  and `SSH_CONNECTION`/`SSH_CLIENT` with zero addresses. They say the viewer is
+  remote, so programs that check them copy through the terminal (OSC 52) and
+  the copy lands on the viewer's clipboard, not this host's. Values you pass in
+  `env` win. A terminal started here carries none of them.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
