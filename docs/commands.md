@@ -59,6 +59,9 @@ Per command: hc <command> --help
 Settings: ~/.config/herdr-core/config.toml. notes = false: hc types nothing
 on its own (no notes to parent agents, no <hc> tags on messages).
 shell = ["nu"] overrides the shell for new terminals and keep recovery.
+shell_mode = "login" makes that shell a login shell, so it reads the profile
+files too ("auto", the default, leaves it to the platform; "non_login" keeps
+it from being one).
 
 Examples
   hc run --on vps "cd app && npm test"     like ssh, in a terminal that stays
@@ -498,6 +501,7 @@ Options:
       --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
       --rm                 Remove it right after it exits (once a waiting parent has the exit code)
       --keep               Replace lost programs with a shell in place, never re-run the original command
+      --login              Start it as a login shell: it reads the profile files too
       --bg                 Start it and come back at once (a server, several workers)
       --timeout <TIMEOUT>  Seconds before a wait checks in, leaving it running (default: config `wait_timeout`, else 180)
   -h, --help               Print help

@@ -266,6 +266,10 @@ pub struct RunParams {
     #[arg(long)]
     #[serde(default)]
     pub keep: bool,
+    /// Start it as a login shell: it reads the profile files too.
+    #[arg(long)]
+    #[serde(default)]
+    pub login: bool,
     /// Then wait until it is not working, like `terminal.wait`, and return its
     /// output (the CLI waits unless --bg).
     #[arg(skip)]
