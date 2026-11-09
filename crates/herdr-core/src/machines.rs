@@ -122,10 +122,12 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
     if name.len() > 32 {
         name = name.chars().take(32).collect::<String>().trim_end_matches('-').into();
     }
-    check_name(&name).ok()?;
+    if !crate::terminals::id_shaped(&name) {
+        check_name(&name).ok()?;
+    }
     let base = name.clone();
     let mut number = 1;
-    while taken(&name) {
+    while crate::terminals::id_shaped(&name) || taken(&name) {
         number += 1;
         let suffix = format!("-{number}");
         name = format!("{}{}", base[..base.len().min(32 - suffix.len())].trim_end_matches('-'), suffix);
@@ -629,6 +631,19 @@ mod tests {
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
         assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
+    }
+
+    #[test]
+    fn id_shaped_hosts_get_a_free_name() {
+        for host in ["t440s", "t14", &format!("t1{}", "b".repeat(30))] {
+            let expected = format!("{}-2", &host[..host.len().min(30)]);
+            assert_eq!(default_name(host, |_| false), Some(expected));
+            assert_eq!(
+                default_name(host, |name| name.ends_with("-2")),
+                Some(format!("{}-3", &host[..host.len().min(30)]))
+            );
+        }
+        assert_eq!(default_name("t14!", |_| false), None);
     }
 
     #[test]

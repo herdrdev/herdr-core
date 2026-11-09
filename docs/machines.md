@@ -15,6 +15,9 @@ hc machine ls
 hc run --on box --cwd /srv/app cargo test
 ```
 
+Without `--name`, the first host label becomes its name (IPs stay whole), shortened to 32 characters.
+Names that are taken or look like terminal ids get a numbered suffix: `t14` becomes `t14-2`.
+
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
 When the OS and CPU match, it copies your current build. Otherwise it uses this version's released build for that target.

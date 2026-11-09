@@ -172,7 +172,8 @@ Your harness's own file tools touch only the machine you run on. Use hc for
 remote files and commands. `hc machine ls` lists configured machines; see
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
 Without `--name`, SSH machines use the first host label (IPs stay whole),
-shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
+shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken
+or looks like a terminal id (`t14` becomes `t14-2`).
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
