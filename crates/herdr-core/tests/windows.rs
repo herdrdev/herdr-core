@@ -677,6 +677,32 @@ fn planned_restarts_preserve_the_environment_for_new_terminals() {
 }
 
 #[test]
+fn fresh_restart_uses_the_callers_environment_and_keeps_running_programs() {
+    let s = Session::new();
+    let started = cmd(&s.name, &s.root)
+        .env("NO_COLOR", "1")
+        .env("HC_SESSION_VALUE", "dirty")
+        .args(["server", "start"])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    let t = s.bg(&["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 100"]);
+    let pid = s.json(&["get", &t])["pid"].clone();
+    let out = cmd(&s.name, &s.root)
+        .env_remove("NO_COLOR")
+        .env("HC_SESSION_VALUE", "fresh")
+        .args(["server", "restart", "--fresh"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(s.json(&["get", &t])["pid"], pid);
+    let probe = s.file("fresh.ps1", r#"Write-Output "ENV:$env:NO_COLOR|$env:HC_SESSION_VALUE""#);
+    let (code, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("ENV:|fresh"), "{out}");
+}
+
+#[test]
 fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
     let s = Session::new();
     let machine = herdr_core::platform::machine_id().expect("Windows machine ID");

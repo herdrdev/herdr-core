@@ -13,8 +13,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] =
-    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
+pub const FEATURES: &[&str] = &[
+    "framed",
+    "attach",
+    "events",
+    "status",
+    "shell",
+    "resize_notifications",
+    "automatic_input",
+    "restart_environment",
+];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -63,7 +71,7 @@ methods! { Ctx<'_>;
     "server.stop" => server_stop, Empty => StopResult,
         "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
         errors [];
-    "server.restart" => server_restart, Empty => StopResult,
+    "server.restart" => server_restart, RestartParams => StopResult,
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
         errors [];
     "terminal.run" => terminal_run, RunParams => RunResult,
@@ -226,8 +234,14 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     Ok(StopResult { stopped: true })
 }
 
-async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    crate::restart::prepare(core).map_err(|e| RpcError::internal(e.to_string()))?;
+async fn server_restart(core: Ctx<'_>, p: RestartParams) -> Result<StopResult, RpcError> {
+    crate::restart::prepare(core, p.environment).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidInput {
+            RpcError::invalid_params(e.to_string())
+        } else {
+            RpcError::internal(e.to_string())
+        }
+    })?;
     Ok(StopResult { stopped: true })
 }
 

@@ -44,6 +44,128 @@ fn raw_core(s: &Session) -> std::process::Child {
 }
 
 #[test]
+fn fresh_restart_replaces_the_base_without_losing_live_programs() {
+    let mut s = Session::new();
+    s.env.push(("NO_COLOR".into(), "1".into()));
+    s.env.push(("FOO".into(), "dirty".into()));
+    let t = run(&s, &["sleep", "100"]);
+    let pid = get(&s, &t)["pid"].as_i64().unwrap();
+    let core_pid = s.json(&["server", "status"])["pid"].clone();
+    s.env.retain(|(key, _)| key != "NO_COLOR" && key != "FOO");
+    let probe = "printf '%s|%s' \"${NO_COLOR-unset}\" \"${FOO-unset}\"";
+    s.json(&["server", "restart"]);
+    assert_eq!(String::from_utf8_lossy(&s.hc(&["exec", probe]).stdout), "1|dirty");
+    s.json(&["server", "restart", "--fresh"]);
+    assert_ne!(s.json(&["server", "status"])["pid"], core_pid);
+    assert_eq!(String::from_utf8_lossy(&s.hc(&["exec", probe]).stdout), "unset|unset");
+    assert_eq!(get(&s, &t)["pid"], pid);
+}
+
+#[test]
+fn fresh_restart_without_a_running_core_uses_the_caller_environment() {
+    let mut s = Session::new();
+    s.env.push(("FOO".into(), "abandoned".into()));
+    saved_restart(&s);
+    s.env.retain(|(key, _)| key != "FOO");
+    s.json(&["server", "restart", "--fresh"]);
+    let out = s.hc(&["exec", "printf '%s' \"${FOO-unset}\""]);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "unset");
+}
+
+#[test]
+fn a_holder_winning_the_restart_race_restores_the_callers_environment() {
+    let mut s = Session::new();
+    s.env.push(("HC_RESTART_VALUE".into(), "old-holder".into()));
+    s.env.push(("HC_HOLDER_GRACE_MS".into(), "100".into()));
+    let t = run(&s, &["sleep", "100"]);
+    let pid = get(&s, &t)["pid"].clone();
+    let core_pid = s.json(&["server", "status"])["pid"].clone();
+    let mut environment: std::collections::BTreeMap<_, _> = s
+        .cmd()
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_str()?.to_owned(), value?.to_str()?.to_owned())))
+        .collect();
+    environment.remove("HC_RESTART_VALUE");
+    environment.insert("HC_CALLER_ONLY".to_owned(), "fresh".to_owned());
+    let reply = s.connect().call(1, "server.restart", serde_json::json!({"environment": environment}));
+    assert!(reply.get("error").is_none(), "{reply}");
+    // Connect only: the holder must launch the successor, never this test.
+    wait_until("holder starts the replacement core", || {
+        let Ok(stream) = herdr_core::platform::connect(&s.socket()) else { return false };
+        herdr_core::client::call(&stream, "server.status", serde_json::json!({}))
+            .is_ok_and(|status| status["pid"] != core_pid)
+    });
+    assert_eq!(get(&s, &t)["pid"], pid);
+    let out = s.hc(&["exec", "printf '%s|%s' \"$HC_RESTART_VALUE\" \"$HC_CALLER_ONLY\""]);
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "|fresh");
+}
+
+#[test]
+fn fresh_restart_refuses_a_core_without_environment_handoff_support() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let s = Session::new();
+    std::fs::create_dir_all(s.socket().parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(s.socket()).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(req["method"], "hello");
+        writeln!(stream, "{}", serde_json::json!({"id": 1, "result": {"features": []}})).unwrap();
+        line.clear();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 0, "the older core must keep running");
+    });
+    let out = s.hc(&["server", "restart", "--fresh"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--fresh needs a newer running core"));
+    server.join().unwrap();
+    std::fs::remove_file(s.socket()).unwrap();
+}
+
+#[test]
+fn fresh_restart_refuses_an_in_progress_handoff_without_a_socket() {
+    let s = Session::new();
+    let state = s.root.join("state/herdr-core/test");
+    std::fs::create_dir_all(&state).unwrap();
+    let lock = std::fs::File::create(state.join("core.lock")).unwrap();
+    assert!(herdr_core::platform::try_lock(&lock));
+    let out = s.hc(&["server", "restart", "--fresh"]);
+    drop(lock);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("starting or restarting"), "{out:?}");
+}
+
+#[test]
+fn fresh_restart_warns_inside_a_herdr_terminal() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let out = s.cmd().env("HC_TERMINAL_ID", "t99").args(["server", "restart", "--fresh"]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("from a terminal outside Herdr"), "{out:?}");
+}
+
+#[test]
+fn a_replacement_environment_is_validated_before_restarting() {
+    let s = Session::new();
+    let pid = s.json(&["server", "start"])["pid"].clone();
+    for env in [
+        serde_json::json!({}),
+        serde_json::json!({"FOO": "missing PATH"}),
+        serde_json::json!({"PATH": "/bin", "BAD=KEY": "value"}),
+        serde_json::json!({"PATH": "/bin", "BAD": "nul\0value"}),
+    ] {
+        let reply = s.connect().call(1, "server.restart", serde_json::json!({"environment": env}));
+        assert_eq!(reply["error"]["data"]["kind"], "invalid_params", "{reply}");
+        assert_eq!(s.json(&["server", "status"])["pid"], pid);
+    }
+}
+
+#[test]
 fn inherited_drive_entries_do_not_break_saving_or_restoring_environment() {
     for restore in [false, true] {
         let mut s = Session::new();

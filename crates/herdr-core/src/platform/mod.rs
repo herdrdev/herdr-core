@@ -170,15 +170,35 @@ pub fn utf8_vars() -> impl Iterator<Item = (String, String)> {
     std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
 }
 
+pub(crate) fn environment_key_eq(key: &std::ffi::OsStr, name: &str) -> bool {
+    if cfg!(windows) { key.eq_ignore_ascii_case(std::ffi::OsStr::new(name)) } else { key == name }
+}
+
 /// Application settings survive a restart; session paths and lifecycle marks do not move.
 pub(crate) fn restored_environment(
     saved: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
     current: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    fresh: bool,
 ) -> std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> {
     use std::ffi::OsStr;
-    let named = |key: &OsStr, name: &str| {
-        if cfg!(windows) { key.eq_ignore_ascii_case(OsStr::new(name)) } else { key == name }
-    };
+    let current: std::collections::BTreeMap<_, _> = current.into_iter().collect();
+    #[allow(unused_mut)]
+    let mut saved: Vec<_> = saved.into_iter().collect();
+    #[cfg(target_os = "linux")]
+    let service = fresh
+        && current.contains_key(OsStr::new("INVOCATION_ID"))
+        && current.get(OsStr::new("XDG_RUNTIME_DIR")).is_some_and(|dir| dir == systemd::runtime_dir().as_os_str());
+    #[cfg(target_os = "linux")]
+    let ssh = service && saved.iter().any(|(k, _)| SSH_LOGIN.iter().any(|name| k == name));
+    #[cfg(target_os = "linux")]
+    if service {
+        let utf8 =
+            saved.into_iter().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+        saved = systemd::service_env(utf8).into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = fresh;
+    let named = environment_key_eq;
     let local = |key: &OsStr| {
         let paths = [
             "HOME",
@@ -197,6 +217,7 @@ pub(crate) fn restored_environment(
         #[cfg(target_os = "linux")]
         {
             keep |= systemd::SERVICE.iter().any(|name| named(key, name));
+            keep |= ssh && systemd::SESSION.iter().any(|name| named(key, name));
         }
         #[cfg(target_os = "macos")]
         {

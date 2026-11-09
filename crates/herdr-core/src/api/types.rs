@@ -180,6 +180,14 @@ pub struct DocSetResult {
     pub version: u64,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct RestartParams {
+    /// Replacement environment for the next core; requires PATH. Omit to preserve
+    /// this core's environment. Normal startup filtering applies; session paths
+    /// and service bookkeeping still belong to the next launcher.
+    pub environment: Option<BTreeMap<String, String>>,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub struct StopResult {
     pub stopped: bool,

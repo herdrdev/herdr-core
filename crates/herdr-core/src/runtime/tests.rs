@@ -219,7 +219,7 @@ async fn a_prepared_restart_survives_sigterm_and_rejects_stop() {
     crate::restart::discard(&core.paths);
     core.restart.store(false, std::sync::atomic::Ordering::SeqCst);
     crate::api::dispatch(&call, "server.stop", serde_json::json!({})).await.unwrap();
-    assert!(crate::restart::prepare(&core).is_err(), "a stop already in progress wins");
+    assert!(crate::restart::prepare(&core, None).is_err(), "a stop already in progress wins");
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }

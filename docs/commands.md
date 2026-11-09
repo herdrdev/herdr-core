@@ -562,8 +562,9 @@ Restart the core (e.g. after an update); programs keep running
 Usage: hc server restart [OPTIONS]
 
 Options:
-      --json  JSON output even in a terminal
-  -h, --help  Print help
+      --fresh  Take this shell's environment for new terminals; run from a terminal outside Herdr
+      --json   JSON output even in a terminal
+  -h, --help   Print help
 ```
 
 ## hc server start

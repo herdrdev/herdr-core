@@ -1554,7 +1554,23 @@
       "errors": [],
       "name": "server.restart",
       "paramStructure": "by-name",
-      "params": [],
+      "params": [
+        {
+          "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+          "name": "environment",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      ],
       "result": {
         "name": "result",
         "schema": {

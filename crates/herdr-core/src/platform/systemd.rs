@@ -15,7 +15,7 @@ use std::str::Bytes;
 /// What the login session decides. Programs get it from the user manager as
 /// it is now; a service takes the caller's only when the caller isn't an ssh
 /// login (desktops that don't share theirs with systemd: i3, startx).
-const SESSION: &[&str] = &[
+pub(super) const SESSION: &[&str] = &[
     "DISPLAY",
     "WAYLAND_DISPLAY",
     "XAUTHORITY",
@@ -48,11 +48,15 @@ pub const SERVICE: &[&str] = &[
     "LISTEN_FDNAMES",
 ];
 
+pub(super) fn runtime_dir() -> PathBuf {
+    PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }))
+}
+
 /// The user's runtime dir when this process uses it and a user manager runs
 /// there. Err(true): the default runtime dir but no manager (warn); Err(false):
 /// a custom runtime dir (isolated sessions, tests), which stays on its own.
 fn manager() -> Result<PathBuf, bool> {
-    let run = PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }));
+    let run = runtime_dir();
     let ours = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).map_or_else(|| run.clone(), PathBuf::from);
     match (ours == run, run.join("systemd/private").exists()) {
         (true, true) => Ok(run),
@@ -216,7 +220,7 @@ fn write_environment(run: &Path, name: &str, env: &BTreeMap<String, String>) -> 
 
 /// The caller's environment as a service gets it: no ssh login's session, no
 /// service's, and only names systemd accepts (a bash function's isn't one).
-fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
+pub(super) fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let ssh = super::SSH_LOGIN.iter().any(|k| env.contains_key(*k));
     let valid = |k: &str| {
         k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')

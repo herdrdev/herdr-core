@@ -120,7 +120,11 @@ enum ServerCmd {
     Stop,
     Status,
     /// Restart the core (e.g. after an update); programs keep running.
-    Restart,
+    Restart {
+        /// Take this shell's environment for new terminals; run from a terminal outside Herdr.
+        #[arg(long)]
+        fresh: bool,
+    },
 }
 
 const HELP: &str = include_str!("help.txt");
@@ -544,12 +548,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = serde_json::to_string_pretty(&r).unwrap_or_default();
             Out { json: r, human }
         }
-        Cmd::Server { action: action @ (ServerCmd::Start | ServerCmd::Status | ServerCmd::Restart) } => {
-            if matches!(action, ServerCmd::Restart)
-                && let Some(stream) = client::connect_existing(&paths)
-            {
-                client::call(&stream, "server.restart", json!({}))?;
-                wait_closed(&stream);
+        Cmd::Server { action: action @ (ServerCmd::Start | ServerCmd::Status | ServerCmd::Restart { .. }) } => {
+            if let ServerCmd::Restart { fresh } = action {
+                restart(&paths, fresh)?;
             }
             let r = if crate::platform::status_may_start_core() {
                 call("server.status", json!({}))?
@@ -764,6 +765,40 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
+    if fresh && std::env::var_os("HC_TERMINAL_ID").is_some() {
+        eprintln!(
+            "hc: this shell carries Herdr's environment; run --fresh from a terminal outside Herdr or unset unwanted variables first"
+        );
+    }
+    let environment: std::collections::BTreeMap<_, _> =
+        crate::platform::utf8_vars().filter(|(k, _)| !k.starts_with('=')).collect();
+    let Some(stream) = client::connect_existing(paths) else {
+        if fresh {
+            crate::restart::prepare_start(paths, environment).map_err(|e| {
+                RpcError::new("unavailable", e.to_string(), "retry hc server restart --fresh once the core is running")
+            })?;
+        }
+        return Ok(());
+    };
+    let params = if fresh {
+        let hello = client::call(&stream, "hello", json!({}))?;
+        if !hello["features"].as_array().is_some_and(|f| f.contains(&json!("restart_environment"))) {
+            return Err(RpcError::new(
+                "refused",
+                "--fresh needs a newer running core",
+                "run hc update, then retry hc server restart --fresh",
+            ));
+        }
+        json!({"environment": environment})
+    } else {
+        json!({})
+    };
+    client::call(&stream, "server.restart", params)?;
+    wait_closed(&stream);
     Ok(())
 }
 

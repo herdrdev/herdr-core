@@ -262,11 +262,15 @@ paths start at your current folder. Prefer explicit paths for remote work.
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
   end with its launching app.
-- Updates and `hc server restart` keep the environment the core started with;
-  stopping and starting takes a fresh one. Per-terminal API `env` overrides still
-  apply, as do Linux session and Windows registry refreshes. SIGTERM hands over
-  terminals/screens but does not save an environment. Preservation is best effort:
-  a failed save never blocks a restart. The private handoff expires after three
+- Updates and `hc server restart` keep the environment the core started with.
+  Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
+  environment for new terminals without ending running programs. Existing
+  programs keep their environment; kept terminals use the fresh one after
+  recovery. Stopping and starting also takes a fresh environment. Per-terminal
+  API `env` overrides still apply, as do Linux session and Windows registry
+  refreshes. SIGTERM hands over terminals/screens but does not save an environment.
+  Preservation is best effort: a failed save never blocks a restart.
+  The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:
   a requested restart interrupted by a fast reboot can reuse it once. Session
   paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
