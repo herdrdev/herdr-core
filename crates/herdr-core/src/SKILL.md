@@ -199,6 +199,10 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - State is `live` or `finished`. Status comes from the program's OSC 7501
   reports: `idle`, `working`, `done`, `blocked`, `error`; plain programs
   report none. Do not guess status from screen text.
+  On Unix, status clears when the root interactive shell returns to the foreground.
+  Direct programs and shell command/script wrappers keep status while their tools run.
+  Returning to a nested shell is not detected; a shell's own status and a backgrounded
+  agent's status clear. Windows and Unix PowerShell do not clear on shell return yet.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.

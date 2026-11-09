@@ -283,6 +283,15 @@ pub fn script(s: &Session, body: &str) -> String {
     )
 }
 
+/// A named executable fixture, so reporting agents are distinct from root shells.
+pub fn executable(s: &Session, source: &str) -> String {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let path = s.root.join(format!("program-{}", N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::write(&path, source).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    path.to_str().unwrap().into()
+}
+
 /// Creates the file a script's `w <name>` waits for.
 pub fn touch(s: &Session, name: &str) {
     std::fs::write(s.root.join(name), "").unwrap();
