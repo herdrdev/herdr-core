@@ -344,13 +344,14 @@ fn a_program_that_never_reads_its_input_stalls_nobody() {
 #[test]
 fn keys_follow_the_programs_keyboard_modes() {
     let s = session();
-    let t = s.json(&["run", "--bg", "sh", "-c", "stty raw -echo; printf '\\033[?1hready\\n'; od -An -c"])["address"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // One byte at a time: uutils od (Ubuntu 26.04) holds its output until EOF.
+    // Unquoted $c drops the padding BSD od (macOS) puts before each byte.
+    let probe = "stty raw -echo; printf '\\033[?1hready\\n'; \
+                 while c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1) && [ -n \"$c\" ]; do printf ' %s' $c; done";
+    let t = s.json(&["run", "--bg", "sh", "-c", probe])["address"].as_str().unwrap().to_string();
     shows(&s, &t, "ready");
     s.json(&["keys", &t, "up", "ctrl+c", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a"]);
-    shows(&s, &t, "033   O   A 003   a");
+    shows(&s, &t, "1b 4f 41 03 61");
     let (code, err) = s.err(&["keys", &t, "hyper+q"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (6, Some("invalid_params")));
 }
