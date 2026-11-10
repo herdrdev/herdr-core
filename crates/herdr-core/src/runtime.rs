@@ -449,6 +449,11 @@ impl Core {
                 continue;
             }
             adopted.push(id);
+            if let Some(saved) = st.reg.drafts.remove(&id)
+                && handover
+            {
+                st.gates.insert(id, crate::input::Gate::restore(saved));
+            }
             st.reg.terminals.get_mut(&id).expect("ours").holder = Some(instance.to_string());
             let tail = tails.remove(&id).unwrap_or_default();
             let saved = handover
@@ -927,6 +932,12 @@ impl Core {
         {
             let mut st = self.lock();
             st.holders.clear();
+            st.reg.drafts = st
+                .gates
+                .iter()
+                .filter(|(id, _)| st.reg.terminals.get(*id).is_some_and(|t| t.is_live()))
+                .filter_map(|(id, gate)| Some((*id, gate.snapshot()?)))
+                .collect();
             let State { screens, relays, .. } = &mut *st;
             for (id, screen) in screens.iter_mut() {
                 if let Some(relay) = relays.get_mut(id) {

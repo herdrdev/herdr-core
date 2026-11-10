@@ -73,7 +73,7 @@ methods! { Ctx<'_>;
         errors [];
     "server.restart" => server_restart, RestartParams => StopResult,
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-        errors [];
+        errors ["invalid_params"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
         errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
@@ -105,7 +105,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
         "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config"];
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
         errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];

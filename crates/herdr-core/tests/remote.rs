@@ -73,11 +73,14 @@ fn remote_sends_outlive_a_draft_but_not_a_lost_or_frozen_line() {
     std::thread::sleep(Duration::from_millis(400));
     assert!(!text(&rohan, &t).contains("5e"), "killed forward caller still typed");
 
-    for failure in ["removed", "killed", "frozen"] {
+    for failure in ["removed", "killed", "frozen", "wait"] {
         person.typed(b"draft");
         let sender = {
             let mut cmd = s.cmd();
             cmd.args(["send", &remote, "y"]);
+            if failure == "wait" {
+                cmd.args(["--wait", "--timeout", "2"]);
+            }
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(200));
@@ -87,7 +90,7 @@ fn remote_sends_outlive_a_draft_but_not_a_lost_or_frozen_line() {
             "frozen" => {
                 unsafe { libc::kill(pid, libc::SIGSTOP) };
             }
-            "killed" => {
+            "killed" | "wait" => {
                 let line: i32 = std::fs::read_to_string(&line_pid).unwrap().trim().parse().unwrap();
                 assert_eq!(unsafe { libc::kill(line, libc::SIGKILL) }, 0);
             }

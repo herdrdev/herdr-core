@@ -11,6 +11,31 @@ use common::*;
 use serde_json::Value;
 
 #[test]
+fn draft_handover_works_with_a_previous_core_in_both_directions() {
+    let Some(old) = std::env::var_os("HC_OLD_BIN").map(std::path::PathBuf::from) else {
+        eprintln!("skipped: no HC_OLD_BIN (run scripts/upgrade-test.sh <previous release>)");
+        return;
+    };
+    let mut s = Session::new();
+    s.env.extend([("HC_QUIET_MS".into(), "0".into()), ("HC_DRAFT_MS".into(), "60000".into())]);
+    install(&mut s, std::path::Path::new(BIN));
+    let t = start(&s, &["sh", "-c", BYTES]);
+    let mut person = common::framed::Viewer::attach(&s, &t, 80, 24, serde_json::json!({}));
+    person.typed(b"draft");
+    install(&mut s, &old);
+    s.json(&["server", "restart"]);
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    s.json(&["send", &t, "x"]);
+    install(&mut s, std::path::Path::new(BIN));
+    s.json(&["server", "restart"]);
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    let start = std::time::Instant::now();
+    s.json(&["send", &t, "y"]);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2), "missing draft field must mean no draft");
+    assert!(text(&s, &t).contains("79"));
+}
+
+#[test]
 fn an_old_retained_holder_restores_the_new_cores_environment_after_raw_restart() {
     let Some(old) = std::env::var_os("HC_OLD_BIN").map(std::path::PathBuf::from) else {
         eprintln!("skipped: no HC_OLD_BIN (run scripts/upgrade-test.sh <previous release>)");

@@ -211,6 +211,9 @@ pub struct Registry {
     /// The holder these terminals run under.
     pub holder: Option<String>,
     pub terminals: BTreeMap<u32, Terminal>,
+    /// Viewer drafts saved only for planned handover; older cores ignore this field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drafts: BTreeMap<u32, crate::input::SavedGate>,
 }
 
 #[derive(Default)]

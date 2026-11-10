@@ -1589,7 +1589,15 @@
     },
     {
       "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-      "errors": [],
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
       "name": "server.restart",
       "paramStructure": "by-name",
       "params": [
@@ -2493,6 +2501,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "cancelled"
+          },
+          "message": "cancelled"
         }
       ],
       "name": "terminal.send",

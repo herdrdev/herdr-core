@@ -32,7 +32,39 @@ pub struct Gate {
     draft_ended: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SavedGate {
+    last_human_ms: u64,
+    draft: usize,
+    pasting: bool,
+    sequence: Vec<u8>,
+    draft_ended: bool,
+}
+
 impl Gate {
+    pub fn snapshot(&self) -> Option<SavedGate> {
+        let elapsed = self.last_human?.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        Some(SavedGate {
+            last_human_ms: crate::runtime::now_ms().saturating_sub(elapsed),
+            draft: self.draft,
+            pasting: self.pasting,
+            sequence: self.sequence.clone(),
+            draft_ended: self.draft_ended,
+        })
+    }
+
+    pub fn restore(saved: SavedGate) -> Self {
+        let elapsed = Duration::from_millis(crate::runtime::now_ms().saturating_sub(saved.last_human_ms));
+        Self {
+            last_human: Instant::now().checked_sub(elapsed),
+            draft: saved.draft,
+            pasting: saved.pasting,
+            sequence: saved.sequence,
+            draft_ended: saved.draft_ended,
+            ..Self::default()
+        }
+    }
+
     /// Submitting input also waits for the draft, bounded since the last human key.
     fn wait(&self, quiet: Duration, submits: bool, draft: Duration) -> Duration {
         let Some(at) = self.last_human else { return Duration::ZERO };
@@ -61,11 +93,49 @@ impl Gate {
         }
     }
 
-    /// Only the common CSI-u press forms; other terminal sequences type no text.
+    /// Common CSI-u and Win32 press forms; other terminal sequences type no text.
     fn escape(&mut self) {
         let seq = &self.sequence;
         if seq == b"\x1b[200~" {
             self.pasting = true;
+        } else if seq.starts_with(b"\x1b[") && seq.ends_with(b"_") {
+            let Ok(body) = std::str::from_utf8(&seq[2..seq.len() - 1]) else { return };
+            // Omitted fields default to zero, the repeat count to one.
+            let mut params = [0, 0, 0, 0, 0, 1];
+            let mut fields = body.split(';');
+            for (param, field) in params.iter_mut().zip(&mut fields) {
+                if !field.is_empty() {
+                    let Ok(value) = field.parse::<u32>() else { return };
+                    *param = value;
+                }
+            }
+            if fields.next().is_some() {
+                return;
+            }
+            let [_, _, code, down, control, repeat] = &params;
+            if *down == 0 || *repeat == 0 || (0xdc00..=0xdfff).contains(code) {
+                return;
+            }
+            // UnicodeChar can be a UTF-16 pair: count its leading event once.
+            let code = if (0xd800..=0xdbff).contains(code) { 0xfffd } else { *code };
+            // AltGr arrives as Ctrl+Alt with the character it typed.
+            let altgr = control & 3 != 0 && control & 12 != 0 && code >= 32;
+            let modifiers = if altgr {
+                1
+            } else {
+                1 + u32::from(control & 16 != 0)
+                    + 2 * u32::from(control & 3 != 0)
+                    + 4 * u32::from(control & 12 != 0 && !matches!(code, 3 | 21))
+            };
+            let before = self.draft;
+            self.key(code, modifiers);
+            let repeats = (*repeat - 1) as usize;
+            if self.draft > before {
+                self.draft = self.draft.saturating_add(repeats);
+            } else if self.draft < before && !self.draft_ended {
+                self.draft = self.draft.saturating_sub(repeats);
+            }
+            return;
         } else if seq.starts_with(b"\x1b[") && seq.ends_with(b"u") {
             let Ok(body) = std::str::from_utf8(&seq[2..seq.len() - 1]) else { return };
             let mut params = body.split(';');
@@ -94,9 +164,14 @@ impl Gate {
                         self.pasting = false;
                         self.sequence.clear();
                     } else if !b"\x1b[201~".starts_with(&self.sequence) {
-                        self.draft =
-                            self.draft.saturating_add(self.sequence.iter().filter(|b| **b & 0xc0 != 0x80).count());
+                        let restart = b == 0x1b;
+                        self.draft = self.draft.saturating_add(
+                            self.sequence.iter().filter(|b| **b & 0xc0 != 0x80).count() - usize::from(restart),
+                        );
                         self.sequence.clear();
+                        if restart {
+                            self.sequence.push(b);
+                        }
                     }
                 } else if b & 0xc0 != 0x80 {
                     self.draft = self.draft.saturating_add(1);
@@ -546,6 +621,7 @@ mod tests {
         assert_eq!(draft(&[b"\x1b[A\x1bOB\x1bb\x1b[120;3u\x1b[13;2u\x1b[I\x1b[<0;1;1M"]), 0);
         assert_eq!(draft(&[b"\x1b[M !!"]), 0, "legacy mouse report");
         assert_eq!(draft(&[b"\x1b[200~a\rb\x1b[201~"]), 3, "pasted Enter does not submit");
+        assert_eq!(draft(&[b"\x1b[200~a\x1b\x1b[201~\r"]), 0, "pasted Esc before end");
         assert_eq!(draft(&[b"\x1b[20", b"0~ab\x1b[20", b"1~\x1b[13", b"u"]), 0, "fragmented sequences");
         let mut g = Gate::default();
         g.viewer(b"automatic", false);
@@ -573,6 +649,48 @@ mod tests {
             g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(),
             "a draft expires after the last key"
         );
+    }
+
+    #[test]
+    fn handover_restores_partial_input_and_elapsed_quiet() {
+        let mut g = Gate::default();
+        g.viewer(b"\x1b[200~draft\x1b[20", true);
+        g.last_human = Some(Instant::now() - Duration::from_secs(20));
+        let saved = serde_json::to_vec(&g.snapshot().unwrap()).unwrap();
+        let mut restored = Gate::restore(serde_json::from_slice(&saved).unwrap());
+        let left = restored.wait(Duration::ZERO, true, Duration::from_secs(60));
+        assert!(left > Duration::from_secs(39) && left <= Duration::from_secs(40));
+        restored.viewer(b"1~\r", true);
+        assert_eq!(restored.draft, 0);
+        assert!(!restored.pasting);
+        assert!(restored.draft_ended);
+    }
+
+    #[test]
+    fn win32_key_events_track_text_repeats_and_clear_controls() {
+        let mut g = Gate::default();
+        for chunk in [b"\x1b[65;30;97;1;0;1_\x1b[0;0;".as_slice(), b"233;1;0;3_\x1b[65;30;97;0;0;1_"] {
+            g.viewer(chunk, true);
+        }
+        assert_eq!(g.draft, 4);
+        g.viewer(b"\x1b[0;0;55357;1;0;1_\x1b[0;0;56832;1;0;1_", true);
+        assert_eq!(g.draft, 5, "a UTF-16 surrogate pair types one character");
+        g.viewer(b"\x1b[8;14;8;1;0;3_", true);
+        assert_eq!(g.draft, 2);
+        for clear in [b"\x1b[13;28;13;1;0;1_".as_slice(), b"\x1b[67;46;3;1;8;1_", b"\x1b[85;22;21;1;4;1_"] {
+            g.viewer(b"x", true);
+            g.viewer(clear, true);
+            assert_eq!(g.draft, 0);
+            assert!(g.draft_ended);
+        }
+        g.viewer(b"\x1b[13;28;13;0;0;1_", true);
+        assert!(g.draft_ended, "key-up preserves the submit");
+        g.viewer(b"\x1b[81;16;64;1;9;1_x\x7f", true);
+        assert_eq!(g.draft, 1, "AltGr types its character");
+        g.viewer(b"\x1b[;;100;1_", true);
+        assert_eq!(g.draft, 2, "omitted fields take their defaults");
+        g.viewer(b"\x1b[;;13;1_", true);
+        assert!(g.draft_ended);
     }
 
     #[test]

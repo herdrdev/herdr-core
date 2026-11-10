@@ -9,6 +9,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 
 #[test]
+fn delivery_and_restart_errors_are_discoverable() {
+    let doc = herdr_core::api::openrpc();
+    for (method, kind) in [("terminal.send", "cancelled"), ("server.restart", "invalid_params")] {
+        let method = doc["methods"].as_array().unwrap().iter().find(|m| m["name"] == method).unwrap();
+        assert!(method["errors"].as_array().unwrap().iter().any(|e| e["data"]["kind"] == kind), "{method}");
+    }
+}
+
+#[test]
 fn invalid_utf8_arguments_are_usage_errors_not_panics() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;

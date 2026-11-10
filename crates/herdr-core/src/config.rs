@@ -37,8 +37,11 @@ pub struct Config {
 fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
     Option::<f64>::deserialize(d)?
         .map(|s| {
-            Duration::try_from_secs_f64(s)
-                .map_err(|_| serde::de::Error::custom("seconds must be finite, non-negative, and fit in a duration"))
+            if !s.is_finite() {
+                return Err(serde::de::Error::custom("seconds must be finite and fit in a duration"));
+            }
+            Duration::try_from_secs_f64(s.max(0.0))
+                .map_err(|_| serde::de::Error::custom("seconds must be finite and fit in a duration"))
         })
         .transpose()
 }
@@ -119,6 +122,18 @@ mod tests {
 
     fn key(spec: &str) -> Result<DetachKey, RpcError> {
         Config { detach_key: Some(spec.into()), ..Default::default() }.detach_key()
+    }
+
+    #[test]
+    fn delivery_seconds_keep_negative_quiet_compatible_and_reject_nonfinite_or_overflow() {
+        let c: Config = toml::from_str("notes_quiet = -1\nshell = ['sh']").unwrap();
+        assert_eq!(c.notes_quiet, Some(Duration::ZERO));
+        assert_eq!(c.shell().unwrap(), ["sh"]);
+        for setting in ["notes_quiet", "draft_wait"] {
+            for value in ["nan", "inf", "-inf", "1e100"] {
+                assert!(toml::from_str::<Config>(&format!("{setting} = {value}")).is_err());
+            }
+        }
     }
 
     #[test]

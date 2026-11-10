@@ -201,13 +201,38 @@ fn a_send_waits_for_the_person_to_send_or_clear_their_draft() {
 }
 
 #[test]
+fn planned_restart_keeps_the_draft_and_its_original_deadline() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "4000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"draft");
+    let start = Instant::now();
+    std::thread::sleep(Duration::from_millis(1800));
+    s.json(&["server", "restart"]);
+    let sending = Instant::now();
+    s.json(&["send", &t, "x"]);
+    assert!(sending.elapsed() >= Duration::from_millis(1200), "forgot the draft");
+    assert!(start.elapsed() >= Duration::from_millis(3900), "released before its deadline");
+    assert!(start.elapsed() < Duration::from_millis(5200), "restarted the draft clock");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"next");
+    s.json(&["server", "restart"]);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"\r");
+    let start = Instant::now();
+    s.json(&["send", &t, "y"]);
+    assert!(start.elapsed() < Duration::from_millis(1200), "could not submit the restored draft");
+}
+
+#[test]
 fn invalid_delivery_durations_use_defaults_without_losing_the_terminal() {
     let s = session();
     let t = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     for setting in ["draft_wait", "notes_quiet"] {
-        for value in ["inf", "-inf", "nan", "-1", "1e100"] {
+        for value in ["inf", "-inf", "nan", "1e100"] {
             std::fs::write(&config, format!("{setting} = {value}\n")).unwrap();
             s.json(&["send", &t, "delivered"]);
         }
