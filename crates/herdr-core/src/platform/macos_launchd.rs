@@ -210,6 +210,11 @@ fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
     }
     job.loaded = true;
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    // RunAtLoad is disabled: a second trigger could relaunch the short-lived
+    // parent after it has already detached the core.
+    if let Err(error) = job.request("kickstart", deadline) {
+        return Err(job.failure("kickstart", error));
+    }
     loop {
         match listener.accept() {
             Ok((mut ready, _)) => {
@@ -223,16 +228,24 @@ fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
                 serde_json::to_writer(&mut ready, &inherited)?;
                 ready.shutdown(std::net::Shutdown::Write)?;
                 let mut ack = [0];
-                ready.read_exact(&mut ack)?;
+                ready.read_exact(&mut ack).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{}: waiting for inherited-state acknowledgement (job removed): {error}", job.target),
+                    )
+                })?;
                 return Ok(());
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "launchd process did not complete the detach handshake within 10 s (it may be an older binary); removing the job before direct startup",
+                return Err(job.failure(
+                    "waiting for detach connection",
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "no detach connection within 10 s (the target may be an older binary)",
+                    ),
                 ));
             }
             Err(e) => return Err(e),
@@ -277,6 +290,34 @@ struct Job {
     loaded: bool,
 }
 impl Job {
+    fn request(&self, action: &str, deadline: Instant) -> io::Result<String> {
+        // A private file avoids pipe backpressure while the bounded wait runs.
+        let path = self.dir.join("launchctl.out");
+        let output = std::fs::File::create(&path)?;
+        let mut child = Command::new(LAUNCHCTL)
+            .args([action, &self.target])
+            .stdin(Stdio::null())
+            .stderr(output.try_clone()?)
+            .stdout(output)
+            .spawn()?;
+        let status = wait_startup_command(&mut child, deadline)?;
+        let mut output = String::new();
+        std::fs::File::open(path)?.take(64 * 1024).read_to_string(&mut output)?;
+        if status.success() {
+            Ok(output)
+        } else {
+            Err(io::Error::other(format!("launchctl {action}: {} ({status})", output.trim())))
+        }
+    }
+
+    fn failure(&self, phase: &str, error: io::Error) -> io::Error {
+        let state = match self.request("print", Instant::now() + Duration::from_secs(1)) {
+            Ok(output) => job_state(&output),
+            Err(error) => format!("job state unavailable: {error}"),
+        };
+        io::Error::new(error.kind(), format!("{}: {phase}: {error}; {state}", self.target))
+    }
+
     fn remove(&mut self) -> io::Result<()> {
         if self.loaded {
             launchctl(&[OsStr::new("bootout"), OsStr::new(&self.target)])?;
@@ -284,6 +325,36 @@ impl Job {
         }
         Ok(())
     }
+}
+
+fn wait_startup_command(child: &mut std::process::Child, deadline: Instant) -> io::Result<std::process::ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(result.err().unwrap_or_else(|| {
+                    io::Error::new(io::ErrorKind::TimedOut, "launchctl startup command exceeded its deadline")
+                }));
+            }
+        }
+    }
+}
+
+fn job_state(output: &str) -> String {
+    let fields: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with('\t') && !line.starts_with("\t\t"))
+        .map(str::trim)
+        .filter(|line| {
+            ["state =", "pid =", "runs =", "last exit code =", "last terminating signal ="]
+                .iter()
+                .any(|key| line.starts_with(key))
+        })
+        .collect();
+    if fields.is_empty() { "no spawn state reported".into() } else { fields.join("; ") }
 }
 impl Drop for Job {
     fn drop(&mut self) {
@@ -388,7 +459,7 @@ fn plist(cmd: &Command, log: &Path, label: &str, socket: &Path, mask: libc::mode
     ] {
         result.push_str(&pair(key, value)?);
     }
-    result.push_str(&format!("<key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>AbandonProcessGroup</key><true/><key>Umask</key><integer>{mask}</integer></dict></plist>"));
+    result.push_str(&format!("<key>RunAtLoad</key><false/><key>KeepAlive</key><false/><key>AbandonProcessGroup</key><true/><key>Umask</key><integer>{mask}</integer></dict></plist>"));
     Ok(result)
 }
 
@@ -421,6 +492,66 @@ fn xml(value: &OsStr) -> io::Result<String> {
 mod tests {
     use super::*;
     use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn startup_command_timeout_reaps_only_its_child() {
+        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let start = Instant::now();
+        let error = wait_startup_command(&mut child, start + Duration::from_millis(30)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_some());
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1, "child was reaped");
+    }
+
+    #[test]
+    fn job_diagnostics_report_spawn_state_without_environment() {
+        let state = "job = {\n\tstate = spawn scheduled\n\truns = 0\n\tpid = 42\n\tenvironment = {\n\t\tSECRET = private\n\t}\n\tlast exit code = 1\n}";
+        assert_eq!(job_state(state), "state = spawn scheduled; runs = 0; pid = 42; last exit code = 1");
+        assert_eq!(job_state("job = {\n}"), "no spawn state reported");
+    }
+
+    #[test]
+    fn one_shot_job_waits_for_demand_and_starts_once() {
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        if launchctl(&[OsStr::new("print"), OsStr::new(&domain)]).is_err() {
+            return;
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let label = format!("{PREFIX}{}.{}", std::process::id(), now.as_nanos());
+        let dir = PathBuf::from(format!("/var/tmp/hc-demand-{}", super::super::random_hex()));
+        super::super::private_dir(&dir).unwrap();
+        let mut job = Job { dir, target: format!("{domain}/{label}"), loaded: false };
+        let contents =
+            plist(&Command::new("/usr/bin/true"), &job.dir.join("core.log"), &label, &job.dir.join("ready"), 0o077)
+                .unwrap();
+        let file = job.dir.join("job.plist");
+        std::fs::write(&file, contents).unwrap();
+        if let Err(error) = launchctl(&[OsStr::new("bootstrap"), OsStr::new(&domain), file.as_os_str()]) {
+            eprintln!("skipping: bootstrap denied: {error}");
+            return;
+        }
+        job.loaded = true;
+        std::thread::sleep(Duration::from_millis(100));
+        let state = job.request("print", Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(job_state(&state).contains("runs = 0"), "job must wait for demand: {state}");
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        job.request("kickstart", deadline).unwrap();
+        loop {
+            let state = job.request("print", deadline).unwrap();
+            if job_state(&state).contains("runs = 1") && !job_state(&state).contains("pid =") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "one demand must run the job once: {state}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let state = job.request("print", deadline).unwrap();
+        assert!(job_state(&state).contains("runs = 1"), "finished job must not relaunch: {state}");
+        job.remove().unwrap();
+        assert!(job.request("print", deadline).is_err(), "one-shot job was removed");
+    }
 
     #[test]
     fn job_preserves_the_command_and_never_relaunches() {
