@@ -633,7 +633,9 @@ impl IoState {
 
 /// Ends a read or write blocked on a master: its handler does nothing and
 /// doesn't restart the call, which fails with EINTR or returns what it moved.
-/// Ignored by default, so one that comes from elsewhere changes nothing.
+/// Once the handler is set, one sent to the whole process from elsewhere makes
+/// a single blocking call in some thread fail with EINTR. Every holder path
+/// retries that (accept in std, `read_exact`, `write_all`, the pump, `wait`).
 const WAKE: libc::c_int = libc::SIGURG;
 
 /// How long a release keeps signalling threads that don't leave the master.
@@ -666,6 +668,8 @@ impl PtyIo {
     }
 }
 
+/// A read or write can fail with `Interrupted` (any signal, `WAKE` included):
+/// callers retry it, and the retry sees a release.
 impl Read for PtyIo {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let read = self.interruptible(|mut master| master.read(buf));
@@ -693,7 +697,9 @@ impl Drop for Pty {
     /// program may have made exclusive (`TIOCEXCL`): each thread inside a read or
     /// write is signalled until it leaves. A signal that lands just before the
     /// call starts is lost, so it repeats. The list is locked while signalling,
-    /// so no listed thread can have exited.
+    /// so no listed thread can have exited. The master closes, hanging up the
+    /// slave, once the reader and writer let go of their clones: a reader
+    /// waiting on a slow core's backlog keeps its clone until that drains.
     fn drop(&mut self) {
         self.io.released.store(true, Ordering::Release);
         let deadline = Instant::now() + WAKE_FOR;
@@ -899,7 +905,7 @@ mod pty_io_tests {
     #[test]
     fn a_writer_blocked_on_a_full_terminal_ends_on_release() {
         let marker = marker("excl-write");
-        for script in ["exec sleep 30".to_string(), exclusive(&marker, "time.sleep(30)")] {
+        for script in std::iter::once("exec sleep 30".to_string()).chain(exclusive(&marker, "time.sleep(30)")) {
             let (_child, pty) = start(&script);
             if script.contains("TIOCEXCL") {
                 assert!(wait_for(&marker.with_extension("ready")), "the program never made its terminal exclusive");
@@ -921,16 +927,23 @@ mod pty_io_tests {
     /// A detached job (it ignores SIGHUP, like `nohup`) that makes its terminal
     /// exclusive, then runs `then`. Linux then refuses to open the slave to anyone
     /// but root, through its name or `TIOCGPTPEER`; macOS doesn't for a PTY.
-    /// `<marker>.ready` appears once the terminal is exclusive.
-    fn exclusive(marker: &Path, then: &str) -> String {
+    /// `<marker>.ready` appears once the terminal is exclusive. None, and a note
+    /// that the test is skipped, without `/usr/bin/python3`.
+    fn exclusive(marker: &Path, then: &str) -> Option<String> {
+        if !Path::new(PYTHON).exists() {
+            eprintln!("skipped: an exclusive terminal needs {PYTHON}");
+            return None;
+        }
         let _ = std::fs::remove_file(marker);
         let _ = std::fs::remove_file(marker.with_extension("ready"));
         let setup = "import fcntl, os, signal, sys, termios, time\n\
                      signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
                      fcntl.ioctl(0, termios.TIOCEXCL)\n\
                      open(sys.argv[1] + \".ready\", \"w\").close()\n";
-        format!("exec python3 -c '{setup}{then}' {}", marker.display())
+        Some(format!("exec {PYTHON} -c '{setup}{then}' {}", marker.display()))
     }
+
+    const PYTHON: &str = "/usr/bin/python3";
 
     fn marker(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("hc-pty-{name}-{}", std::process::id()))
@@ -952,7 +965,8 @@ mod pty_io_tests {
         let marker = marker("excl-read");
         let read_input = "try:\n    got = repr(os.read(0, 1))\nexcept OSError as e:\n    got = \"errno %d\" % e.errno\n\
                           open(sys.argv[1], \"w\").write(got)";
-        let (_child, pty) = start(&exclusive(&marker, read_input));
+        let Some(script) = exclusive(&marker, read_input) else { return };
+        let (_child, pty) = start(&script);
         let ended = drain(pty.reader().unwrap());
         assert!(wait_for(&marker.with_extension("ready")), "the program never made its terminal exclusive");
         std::thread::sleep(Duration::from_millis(100));
