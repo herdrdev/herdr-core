@@ -38,6 +38,7 @@ impl Inherited {
         }
         env.remove(OsStr::new(DETACH));
         env.remove(OsStr::new(DIRECT));
+        env.remove(OsStr::new("XPC_FLAGS"));
         env.insert("XPC_SERVICE_NAME".into(), "0".into());
         let mut limits = Vec::new();
         // Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the
@@ -574,14 +575,15 @@ mod tests {
         cmd.env("LESS_TERMCAP_md", OsStr::from_bytes(b"\x1b[1m\r\xff"))
             .env_remove("HOME")
             .env(DETACH, "old")
-            .env(DIRECT, "1");
+            .env(DIRECT, "1")
+            .env("XPC_FLAGS", "0x2");
         let captured = Inherited::capture(&cmd).unwrap();
         let received: Inherited = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         assert_eq!(received.limits, captured.limits);
         assert!(received.limits.len() > libc::RLIMIT_NOFILE as usize);
         let env: BTreeMap<_, _> = received.env.into_iter().collect();
         assert_eq!(env.get(b"LESS_TERMCAP_md".as_slice()), Some(&b"\x1b[1m\r\xff".to_vec()));
-        for name in [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes()] {
+        for name in [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()] {
             assert!(!env.contains_key(name));
         }
         assert_eq!(env.get(b"XPC_SERVICE_NAME".as_slice()), Some(&b"0".to_vec()));

@@ -93,6 +93,29 @@ fn windows_path_keys_are_matched_without_case() {
 }
 
 #[cfg(target_os = "macos")]
+#[test]
+fn a_restart_refreshes_only_a_dead_saved_ssh_agent_socket() {
+    use std::ffi::OsStr;
+    let path = std::path::PathBuf::from(format!("/var/tmp/hc-agent-{}", super::random_hex()));
+    let socket = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let restore = |current| {
+        super::restored_environment([("SSH_AUTH_SOCK".into(), path.clone().into_os_string())], current, false)
+    };
+    let launcher = vec![("SSH_AUTH_SOCK".into(), "/new-agent".into())];
+    let live = restore(launcher.clone());
+    assert_eq!(live.get(OsStr::new("SSH_AUTH_SOCK")), Some(&path.clone().into_os_string()));
+    // The file stays behind, as after a logout, but nothing answers.
+    drop(socket);
+    let stale = restore(launcher.clone());
+    assert_eq!(stale.get(OsStr::new("SSH_AUTH_SOCK")).unwrap(), "/new-agent");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(restore(launcher.clone()).get(OsStr::new("SSH_AUTH_SOCK")).unwrap(), "/new-agent");
+    let over_ssh = launcher.into_iter().chain([("SSH_CONNECTION".into(), "1 2 3 4".into())]).collect::<Vec<_>>();
+    assert!(!restore(over_ssh).contains_key(OsStr::new("SSH_AUTH_SOCK")), "a forwarded agent is not adopted");
+    assert!(!restore(Vec::new()).contains_key(OsStr::new("SSH_AUTH_SOCK")));
+}
+
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn xpc_flags_belong_to_neither_a_replacement_core_nor_its_programs() {
     use std::ffi::OsStr;

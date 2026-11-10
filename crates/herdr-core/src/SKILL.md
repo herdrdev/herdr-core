@@ -290,7 +290,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   programs keep their environment; kept terminals use the fresh one after
   recovery. Stopping and starting also takes a fresh environment. Per-terminal
   API `env` overrides still apply, as do Linux session and Windows registry
-  refreshes. SIGTERM hands over terminals/screens but does not save an environment.
+  refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
+  by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.
   Preservation is best effort: a failed save never blocks a restart.
   The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:

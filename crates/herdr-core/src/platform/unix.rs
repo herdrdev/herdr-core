@@ -203,6 +203,8 @@ mod nofile_tests {
 /// won't end it), stdin/stdout to /dev/null, stderr to `log`.
 pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
     use std::process::Stdio;
+    #[cfg(target_os = "macos")]
+    cmd.env_remove("XPC_FLAGS");
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     unsafe {
         cmd.pre_exec(|| {

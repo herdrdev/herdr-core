@@ -31,14 +31,14 @@ pub fn check_in() -> io::Result<()> {
         let class: unsafe extern "C" fn(*const c_char) -> *mut c_void = std::mem::transmute(class);
         let selector: unsafe extern "C" fn(*const c_char) -> *mut c_void = std::mem::transmute(selector);
         let object: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void = std::mem::transmute(send);
-        let policy: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) -> bool = std::mem::transmute(send);
+        let policy: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) -> i8 = std::mem::transmute(send);
         let finish: unsafe extern "C" fn(*mut c_void, *mut c_void) = std::mem::transmute(send);
         let pool = object(class(c"NSAutoreleasePool".as_ptr()), selector(c"new".as_ptr()));
         let app = object(class(c"NSApplication".as_ptr()), selector(c"sharedApplication".as_ptr()));
-        let accessory = policy(app, selector(c"setActivationPolicy:".as_ptr()), 1);
+        policy(app, selector(c"setActivationPolicy:".as_ptr()), 1);
         finish(app, selector(c"finishLaunching".as_ptr()));
         finish(pool, selector(c"drain".as_ptr()));
-        if app.is_null() || !accessory {
+        if app.is_null() {
             return Err(io::Error::other("cannot register holder as an accessory application"));
         }
     }

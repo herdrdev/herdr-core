@@ -249,6 +249,14 @@ pub(crate) fn restored_environment(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = fresh;
+    #[cfg(target_os = "macos")]
+    // A logged-out login leaves its agent socket on disk with nobody listening.
+    let stale_agent = saved
+        .iter()
+        .any(|(key, value)| key == "SSH_AUTH_SOCK" && std::os::unix::net::UnixStream::connect(value).is_err());
+    // An SSH launcher's agent is forwarded: it ends with that connection.
+    #[cfg(target_os = "macos")]
+    let forwarded = SSH_LOGIN.iter().any(|name| current.contains_key(OsStr::new(name)));
     let named = environment_key_eq;
     let local = |key: &OsStr| {
         let paths = [
@@ -273,6 +281,7 @@ pub(crate) fn restored_environment(
         #[cfg(target_os = "macos")]
         {
             keep |= named(key, "XPC_SERVICE_NAME");
+            keep |= stale_agent && named(key, "SSH_AUTH_SOCK");
         }
         keep
     };
@@ -288,6 +297,10 @@ pub(crate) fn restored_environment(
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();
     env.extend(current.into_iter().filter(|(key, _)| local(key) && !discarded(key)));
+    #[cfg(target_os = "macos")]
+    if stale_agent && forwarded {
+        env.remove(OsStr::new("SSH_AUTH_SOCK"));
+    }
     env.insert(crate::sweep::RUNTIME.into(), "1".into());
     env
 }
