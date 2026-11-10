@@ -322,6 +322,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "login_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoginSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OS login inherited by this core. Absent when unavailable or unsupported."
+          },
           "methods": {
             "items": {
               "type": "string"
@@ -464,6 +475,33 @@
           "terminals",
           "hidden_finished",
           "machines"
+        ],
+        "type": "object"
+      },
+      "LoginSession": {
+        "description": "The OS login a process inherited, rather than text restored from its environment.",
+        "properties": {
+          "gui": {
+            "description": "Unknown provenance never triggers automatic replacement.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user"
         ],
         "type": "object"
       },
@@ -1433,7 +1471,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.19"
+    "version": "0.1.20"
   },
   "methods": [
     {
@@ -1551,10 +1589,34 @@
     },
     {
       "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-      "errors": [],
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
       "name": "server.restart",
       "paramStructure": "by-name",
-      "params": [],
+      "params": [
+        {
+          "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+          "name": "environment",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Replacement environment for the next core; requires PATH. Omit to preserve\nthis core's environment. Normal startup filtering applies; session paths\nand service bookkeeping still belong to the next launcher.",
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      ],
       "result": {
         "name": "result",
         "schema": {
@@ -1689,7 +1751,7 @@
           }
         },
         {
-          "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+          "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
           "name": "env",
           "required": false,
           "schema": {
@@ -1697,7 +1759,7 @@
               "type": "string"
             },
             "default": {},
-            "description": "Set on top of the core's environment. Clients pass their terminal\nidentity here (TERM, TERM_PROGRAM, COLORTERM).",
+            "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
             "type": "object"
           }
         },
@@ -2382,7 +2444,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
       "errors": [
         {
           "code": -32000,
@@ -2439,6 +2501,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "cancelled"
+          },
+          "message": "cancelled"
         }
       ],
       "name": "terminal.send",
@@ -2647,7 +2716,7 @@
       }
     },
     {
-      "description": "Press named keys, encoded for the program's current keyboard modes. Same quiet rule as send.",
+      "description": "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
       "errors": [
         {
           "code": -32000,
@@ -3657,11 +3726,11 @@
           }
         },
         {
-          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+          "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
           "name": "via",
           "required": false,
           "schema": {
-            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name.",
+            "description": "Reach it with this command instead of ssh: it is given a shell line to\nrun there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`,\n`fly ssh console -a app --pty=false -C`). It must pass bytes both ways\nuntouched and ask nothing. Needs --name. On Windows, a program and its\narguments (CommandLineToArgvW split, no shell), with the remote line\nappended as one argument, no console window; Unix stays an sh line.\nWSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl.",
             "type": [
               "string",
               "null"

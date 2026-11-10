@@ -89,7 +89,7 @@ draft_wait = 60 # seconds a draft holds sends and notes; 0 keeps only the quiet 
 ```
 
 Both settings apply to the next delivery without restarting the core. Values must
-be finite, non-negative seconds that fit in a duration. If the config is invalid,
+be finite seconds that fit in a duration (a negative value means 0). If the config is invalid,
 delivery uses defaults and logs the config error once in `core.log`.
 Reverse sends allow at least the default 60-second draft hold.
 A parent configured above 60 seconds can still outwait a child configured below
