@@ -121,6 +121,7 @@ impl Core {
         let holder = holders.iter().find(|l| Some(&l.instance) == instance.as_ref());
         let Some(screen) = screens.get_mut(&id) else { return };
         let relay = relays.entry(id).or_default();
+        relay.viewers_answer = viewers.get(&id).into_iter().flatten().any(|v| !v.observe);
         let recovering = viewers.get(&id).into_iter().flatten().any(|v| v.recovering);
         let (out, recovered) =
             if recovering { relay.feed_to_ground(screen, bytes) } else { (relay.feed(screen, bytes), None) };

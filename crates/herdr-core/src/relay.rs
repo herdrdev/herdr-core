@@ -22,6 +22,10 @@ pub struct Relay {
     /// The program's latest win32-input-mode request (DEC 9001, ConPTY's ask
     /// for key events), until taken. The screen doesn't keep it.
     pub win32_input: Option<bool>,
+    /// A viewer that types is attached, so it answers what it is shown.
+    pub viewers_answer: bool,
+    /// Queries since the last image: left to the viewer, which answers in order.
+    after_image: bool,
 }
 
 enum Seq {
@@ -58,7 +62,7 @@ impl Relay {
         for (i, &b) in input.iter().enumerate() {
             if self.held.is_empty() {
                 if b == ESC {
-                    pass(screen, &mut out, &input[run..i]);
+                    self.text(screen, &mut out, &input[run..i]);
                     self.held.push(b);
                 }
                 continue;
@@ -69,7 +73,10 @@ impl Relay {
                 if maybe_query {
                     let before = screen.pending_responses();
                     screen.write(&seq);
-                    if screen.pending_responses() == before {
+                    if self.after_image && self.viewers_answer {
+                        screen.drop_responses_after(before);
+                        out.extend_from_slice(&seq);
+                    } else if screen.pending_responses() == before {
                         out.extend_from_slice(&seq); // not answered here: the viewer may
                     }
                 } else {
@@ -85,15 +92,23 @@ impl Relay {
                         && let Some(keep) = self.apc.take()
                     {
                         screen.drop_responses_after(keep);
+                        self.after_image = true;
                     }
                 }
                 run = i + 1;
             }
         }
         if self.held.is_empty() {
-            pass(screen, &mut out, &input[run..]);
+            self.text(screen, &mut out, &input[run..]);
         }
         out
+    }
+
+    fn text(&mut self, screen: &mut Screen, out: &mut Vec<u8>, bytes: &[u8]) {
+        if !bytes.is_empty() && self.apc.is_none() {
+            self.after_image = false;
+        }
+        pass(screen, out, bytes);
     }
 
     /// A viewer missed a sequence too large to replay. Consume just its tail,
@@ -223,6 +238,29 @@ mod tests {
             );
             let replies = String::from_utf8_lossy(&screen.take_responses()).into_owned();
             assert!(replies.ends_with('R') && !replies.contains("_G"), "only the cursor report: {replies:?}");
+        }
+    }
+
+    #[test]
+    fn a_query_behind_an_image_query_is_answered_after_it() {
+        // Claude Code sends DA1 behind its graphics query and takes DA1 as the last reply.
+        let probe = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+        for split in [false, true] {
+            let mut screen = Screen::new(80, 24, 1 << 20);
+            let mut relay = Relay { viewers_answer: true, ..Default::default() };
+            let mut input = probe.to_vec();
+            input.extend_from_slice(b"text\x1b[c");
+            let out =
+                if split { feed_bytewise(&mut relay, &mut screen, &input) } else { relay.feed(&mut screen, &input) };
+            assert_eq!(out, [&probe[..], b"text"].concat(), "split={split}: the viewer answers the probe's DA1");
+            assert_eq!(screen.take_responses(), b"\x1b[?62;22c", "split={split}: only the DA1 after text");
+
+            let mut screen = Screen::new(80, 24, 1 << 20);
+            let mut alone = Relay::default();
+            let out =
+                if split { feed_bytewise(&mut alone, &mut screen, probe) } else { alone.feed(&mut screen, probe) };
+            assert_eq!(out, &probe[..probe.len() - 3], "split={split}: no viewer types, so the screen answers DA1");
+            assert_eq!(screen.take_responses(), b"\x1b[?62;22c");
         }
     }
 
