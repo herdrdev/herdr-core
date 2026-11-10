@@ -171,7 +171,10 @@ impl Core {
                         Some("status") => {
                             let new = event["data"]["status"]["state"].as_str().map(String::from);
                             let stop = if spec.output.is_some() { stuck(new.as_deref()) } else { ends(prev.as_deref(), new.as_deref()) };
-                            if stop {
+                            // A finish clears the status just before it says how the program
+                            // ended: that is an exit, and its finished or lost event follows.
+                            let gone = || !self.lock().reg.terminals.get(&id).is_some_and(|t| t.is_live() && !t.program_lost());
+                            if stop && !(new.is_none() && gone()) {
                                 return result(true, "status", Some(new));
                             }
                             prev = new;
