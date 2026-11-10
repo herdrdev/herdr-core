@@ -260,8 +260,9 @@ impl Holder {
                     self.to_core(&mut st, &proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
                 proto::RELEASE => {
-                    // Taken out of the state first: dropping it wakes its IO through
-                    // the terminal, which must not happen under the state lock.
+                    // Taken out of the state first: dropping it waits for its IO
+                    // threads to leave the terminal, which must not happen under the
+                    // state lock.
                     let released = self.lock().terms.remove(&id);
                     if let Some(t) = &released
                         && !t.reader_done
