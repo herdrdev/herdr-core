@@ -422,7 +422,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     line.close();
     // Viewers here hear that the line is gone and stay open; the programs keep
     // running there, and the viewers get them back with the line.
-    let notice = format!("\r\n[line to {} lost; reconnecting...]\r\n", m.name);
+    let notice = lost_notice(&m.name);
     for (_, (conn, here)) in lock(&line.streams).drain() {
         conn.with(|out| {
             out.data(here, notice.as_bytes());
@@ -431,6 +431,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     // Killed, not waited for: a Mac core once never heard the old ssh had
     // died and stayed "connecting" for good. It is reaped in the background.
     let _ = d.child.start_kill();
+}
+
+/// CAN first: the line may have dropped mid-sequence, which would swallow this.
+fn lost_notice(machine: &str) -> String {
+    format!("\x18\r\n[line to {machine} lost; reconnecting...]\r\n")
 }
 
 /// A machine's terminals now (after a connect, or after it says we missed

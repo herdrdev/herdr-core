@@ -314,3 +314,11 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn the_line_lost_notice_shows_even_if_the_line_dropped_mid_sequence() {
+    let mut screen = ghostty_vt::Terminal::new(80, 24, 0);
+    screen.write(b"\x1b_Gm=1;AAAA");
+    screen.write(lost_notice("rohan").as_bytes());
+    assert!(screen.plain_text().contains("[line to rohan lost"));
+}
