@@ -8,7 +8,7 @@ thread_local! {
 
 #[test]
 fn resize_drags_serialize_nothing_without_observers_and_only_latest_when_stalled() {
-    let root = std::path::PathBuf::from(format!("/var/tmp/hc-resize-{}", crate::platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-resize-{}", crate::platform::random_hex()));
     let paths = crate::paths::Paths {
         socket: root.join("core.sock"),
         holder_socket: root.join("holder.sock"),

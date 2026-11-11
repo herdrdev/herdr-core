@@ -35,3 +35,10 @@ pub mod terminals;
 pub mod viewers;
 pub mod wait;
 pub mod wire;
+
+/// The folder tests put their scratch data in: `HC_TEST_TMPDIR` if set, else
+/// /var/tmp, whose short path keeps socket paths under the macOS limit.
+#[cfg(test)]
+pub(crate) fn test_tmp() -> std::path::PathBuf {
+    std::env::var_os("HC_TEST_TMPDIR").map_or_else(|| "/var/tmp".into(), Into::into)
+}

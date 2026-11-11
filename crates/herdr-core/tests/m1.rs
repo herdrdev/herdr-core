@@ -166,17 +166,18 @@ fn runs_a_program_and_keeps_its_result_after_exit() {
 fn child_gets_core_env_terminal_identity_cwd_and_its_own_address() {
     let s = Session::new();
     s.json(&["server", "start"]);
+    let here = test_tmp();
     let out = s
         .cmd()
         .args(["run", "--bg", "sh", "-c", "echo id=$HC_TERMINAL_ID foo=$FOO tp=$TERM_PROGRAM pwd=$PWD; sleep 100"])
         .env("FOO", "bar")
         .env("TERM_PROGRAM", "WezTerm")
-        .current_dir("/var/tmp")
-        .env("PWD", "/var/tmp") // as a shell sets it (on macOS the real path is /private/var/tmp)
+        .current_dir(&here)
+        .env("PWD", &here) // as a shell sets it (on macOS the real path is /private/var/tmp)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    wait_text(&s, "t1", "id=t1 foo= tp=ghostty pwd=/var/tmp");
+    wait_text(&s, "t1", &format!("id=t1 foo= tp=ghostty pwd={}", here.display()));
 
     // Never herdr: a program started from inside Herdr sees plain ghostty.
     let out = s

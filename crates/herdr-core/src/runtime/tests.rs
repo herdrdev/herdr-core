@@ -163,7 +163,7 @@ async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
 #[test]
 fn a_blocked_registry_write_does_not_hold_the_core_lock() {
     use std::os::unix::ffi::OsStrExt;
-    let root = PathBuf::from(format!("/var/tmp/hc-save-lock-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-save-lock-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
@@ -243,7 +243,7 @@ fn host_shutdown_is_lost_without_overriding_explicit_actions() {
 #[cfg(unix)]
 #[test]
 fn a_new_holder_of_another_build_reports_both_identities() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-build-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-build-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
@@ -362,7 +362,7 @@ fn still_live(core: &Core, id: u32) -> bool {
 #[cfg(unix)]
 #[test]
 fn a_link_whose_reading_fails_reconnects_but_not_twice_in_a_row() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "welcome garbage", ""]);
     assert_eq!(
         reported(&reports, 5),
@@ -378,7 +378,7 @@ fn a_link_whose_reading_fails_reconnects_but_not_twice_in_a_row() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_the_holder_never_answers_gives_up_and_frees_holder_start() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", ""]);
     assert_eq!(reported(&reports, 4), ["0 closed", "0 hello", "1 closed", "1 hello"]);
     let start = Instant::now();
@@ -394,7 +394,7 @@ fn a_reconnect_the_holder_never_answers_gives_up_and_frees_holder_start() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "welcome"]);
     while reports.recv_timeout(Duration::from_secs(5)).unwrap() != "1 hello" {}
     // Adopting waits for this lock: slow, but after the welcome came in time.
@@ -416,7 +416,7 @@ fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_that_fails_leaves_the_holders_terminals_live() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "garbage"]);
     assert_eq!(reported(&reports, 4), ["0 closed", "0 hello", "1 closed", "1 hello"]);
     assert!(core.lock().holders.is_empty());
@@ -428,7 +428,7 @@ fn a_reconnect_that_fails_leaves_the_holders_terminals_live() {
 #[cfg(unix)]
 #[tokio::test]
 async fn waiting_for_holder_start_does_not_block_the_core_executor() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-start-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-start-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
