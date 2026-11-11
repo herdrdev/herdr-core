@@ -894,7 +894,7 @@
             ]
           },
           "submit": {
-            "description": "Template overrides: the key that submits a message, the stop key, the pause\nbetween paste and submit.",
+            "description": "Template overrides: the keys that submit a message, the stop key, the pause\nbetween paste and submit.",
             "type": [
               "string",
               "null"
@@ -1361,7 +1361,7 @@
             ]
           },
           "submit": {
-            "description": "Template overrides: the key that submits a message, the stop key, the pause\nbetween paste and submit.",
+            "description": "Template overrides: the keys that submit a message, the stop key, the pause\nbetween paste and submit.",
             "type": [
               "string",
               "null"
