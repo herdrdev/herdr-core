@@ -99,6 +99,7 @@ fn failed_shell_restart_stays_live_and_retries() {
     s.env.push(("SHELL".into(), shell.display().to_string()));
     let t = run(&s, &["--keep", "--rm", "sleep", "100"]);
     s.json(&["server", "stop"]);
+    s.json(&["server", "start"]); // recovers with this SHELL
     let r = get(&s, &t);
     assert_eq!(r["state"], "live");
     assert!(r["finished_ms"].is_null());
@@ -179,6 +180,7 @@ fn paused_replacement() -> (Session, String, PausedHolder) {
     s.env.push(("SHELL".into(), s.root.join("missing-shell").display().to_string()));
     let t = run(&s, &["--keep", "sleep", "100"]);
     s.json(&["server", "stop"]);
+    s.json(&["server", "start"]); // recovers with this SHELL
     get(&s, &t); // Startup's first replacement fails; pause its holder before the retry.
     let mut holder = 0;
     wait_until("replacement holder", || {

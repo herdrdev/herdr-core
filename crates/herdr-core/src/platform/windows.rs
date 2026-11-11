@@ -538,7 +538,11 @@ pub fn file_identity(m: &std::fs::Metadata) -> String {
 /// handles: std's spawn hands down every inheritable one, and a pipe of an
 /// ssh session living on in the daemon keeps that session from ending.
 pub fn spawn_detached(cmd: Command, log: File) -> io::Result<()> {
-    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    let mut env: BTreeMap<String, String> = if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
+        super::windows_env::service_base()
+    } else {
+        std::env::vars().collect()
+    };
     for (k, v) in cmd.get_envs() {
         let k = k.to_string_lossy().into_owned();
         match v {

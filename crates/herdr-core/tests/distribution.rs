@@ -644,6 +644,8 @@ fn a_machine_of_another_cpu_gets_the_released_build_for_it() {
     let r = Releases::new(&s, THIS, &[&target]);
     s.env.push(fake_ssh(&s, &[("odd", &odd)]));
     s.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
+    // The terminal below needs this PATH (the fake ssh) and releases URL.
+    s.json(&["server", "start"]);
     let t = run(&s, &["sh", "-c", &format!("{BIN} machine add odd; echo added-$?; sleep 100")]);
     wait_until("the offer", || text(&s, &t).contains("[Y/n]"));
     s.json(&["send", &t, "y"]);

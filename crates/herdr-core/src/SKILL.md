@@ -288,7 +288,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
   Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
   environment for new terminals without ending running programs. Existing
   programs keep their environment; kept terminals use the fresh one after
-  recovery. Stopping and starting also takes a fresh environment. Per-terminal
+  recovery. `hc server start` gives a new core that shell's environment; a core started any other way (an `hc` command, the app or a plugin finding none running) takes the service manager's: launchd's, the systemd user manager's, or Windows' user settings, plus hc's own `HC_*` settings and session paths. Without a service manager (an ssh login on macOS, Linux without a systemd user manager) it still takes its starter's. Per-terminal
   API `env` overrides still apply, as do Linux session and Windows registry
   refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
   by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.

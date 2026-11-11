@@ -545,10 +545,10 @@ Start, stop or inspect the core
 Usage: hc server [OPTIONS] <COMMAND>
 
 Commands:
-  start    
+  start    Start the core with this shell's environment for new terminals
   stop     
   status   
-  restart  Restart the core (e.g. after an update); programs keep running
+  restart  Restart the core (e.g. after an update) with its own environment; programs keep running
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -559,7 +559,7 @@ Options:
 ## hc server restart
 
 ```text
-Restart the core (e.g. after an update); programs keep running
+Restart the core (e.g. after an update) with its own environment; programs keep running
 
 Usage: hc server restart [OPTIONS]
 
@@ -572,11 +572,18 @@ Options:
 ## hc server start
 
 ```text
+Start the core with this shell's environment for new terminals.
+
+A core that any other command, the app or a plugin starts takes the service manager's environment instead: launchd's on macOS, the systemd user manager's on Linux, the user's settings on Windows. Where no service manager starts it (an ssh login on macOS, Linux without a systemd user manager), it takes its starter's.
+
 Usage: hc server start [OPTIONS]
 
 Options:
-      --json  JSON output even in a terminal
-  -h, --help  Print help
+      --json
+          JSON output even in a terminal
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## hc server status

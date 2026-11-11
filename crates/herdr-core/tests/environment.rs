@@ -48,6 +48,7 @@ fn fresh_restart_replaces_the_base_without_losing_live_programs() {
     let mut s = Session::new();
     s.env.push(("NO_COLOR".into(), "1".into()));
     s.env.push(("FOO".into(), "dirty".into()));
+    s.json(&["server", "start"]);
     let t = run(&s, &["sleep", "100"]);
     let pid = get(&s, &t)["pid"].as_i64().unwrap();
     let core_pid = s.json(&["server", "status"])["pid"].clone();
@@ -375,6 +376,7 @@ fn sigterm_leaves_no_environment_for_the_next_fresh_start() {
 fn a_program_gets_no_display_whose_server_is_gone() {
     let mut s = Session::new();
     s.env.push(("DISPLAY".into(), ":99999".into()));
+    s.json(&["server", "start"]);
     let out = s.hc(&["exec", "echo \"[${DISPLAY-unset}]\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "[unset]\n", "the dead display was handed out");
 }
@@ -384,6 +386,106 @@ fn a_program_gets_no_display_whose_server_is_gone() {
 fn a_display_on_another_machine_stays() {
     let mut s = Session::new();
     s.env.push(("DISPLAY".into(), "otherhost:0".into()));
+    s.json(&["server", "start"]);
     let out = s.hc(&["exec", "echo \"[${DISPLAY-unset}]\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "[otherhost:0]\n");
+}
+
+/// What a polluted starter (an agent's tool shell, a TUI plugin) carries.
+const POLLUTION: &[(&str, &str)] =
+    &[("FOO_LEAK", "1"), ("CLAUDE_CODE_CHILD_SESSION", "1"), ("HERDR_PANE_ID", "wBE:p2"), ("NO_COLOR", "1")];
+const POLLUTION_PROBE: &str = "printf '%s|%s|%s|%s|%s|%s' \"${FOO_LEAK-unset}\" \"${CLAUDE_CODE_CHILD_SESSION-unset}\" \"${HERDR_PANE_ID-unset}\" \"${NO_COLOR-unset}\" \"$HOME\" \"$HC_SESSION\"";
+
+fn pollute(s: &mut Session) {
+    s.env.extend(POLLUTION.iter().map(|(k, v)| ((*k).into(), (*v).into())));
+}
+
+fn clean(s: &mut Session) {
+    s.env.retain(|(key, _)| !POLLUTION.iter().any(|(k, _)| key == k));
+}
+
+fn probe(s: &Session) -> String {
+    let out = s.hc(&["exec", POLLUTION_PROBE]);
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Only a service manager has an environment of its own to start from: tests
+/// get launchd on macOS. Linux tests use their own runtime dir, so no user manager.
+#[cfg(target_os = "macos")]
+fn started_by_launchd(s: &Session) -> bool {
+    let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap_or_default();
+    let direct = log.contains("launchd startup failed");
+    if direct {
+        eprintln!("skipping: launchd refused the core here: {log}");
+    }
+    !direct
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_core_a_command_starts_takes_launchds_environment_not_the_callers() {
+    let mut s = Session::new();
+    pollute(&mut s);
+    s.json(&["ls"]);
+    if !started_by_launchd(&s) {
+        return;
+    }
+    clean(&mut s);
+    assert_eq!(probe(&s), format!("unset|unset|unset|unset|{}|test", s.root.display()));
+    let out = s.hc(&["exec", "--env", "FOO_LEAK=asked", "printf '%s' \"$FOO_LEAK\""]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "asked", "per-terminal --env still applies");
+    s.json(&["server", "restart"]);
+    assert_eq!(probe(&s), format!("unset|unset|unset|unset|{}|test", s.root.display()), "a restart keeps it");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_core_the_app_connection_starts_takes_launchds_environment_not_the_callers() {
+    use std::io::{BufRead, Write};
+    let mut s = Session::new();
+    pollute(&mut s);
+    let mut connect = s
+        .cmd()
+        .arg("connect")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = connect.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
+    let mut hello = String::new();
+    std::io::BufReader::new(connect.stdout.take().unwrap()).read_line(&mut hello).unwrap();
+    assert!(hello.contains("\"framed\":true"), "{hello}");
+    drop(stdin);
+    assert!(connect.wait().unwrap().success());
+    if !started_by_launchd(&s) {
+        return;
+    }
+    clean(&mut s);
+    assert_eq!(probe(&s), format!("unset|unset|unset|unset|{}|test", s.root.display()));
+}
+
+#[test]
+fn an_explicit_start_takes_the_callers_environment_and_restarts_keep_it() {
+    let mut s = Session::new();
+    pollute(&mut s);
+    s.json(&["server", "start"]);
+    clean(&mut s);
+    let chosen = format!("1|1|wBE:p2|1|{}|test", s.root.display());
+    assert_eq!(probe(&s), chosen);
+    s.env.push(("FOO_LEAK".into(), "restarter".into()));
+    s.json(&["server", "restart"]);
+    clean(&mut s);
+    assert_eq!(probe(&s), chosen, "a planned restart keeps the retiring core's environment");
+}
+
+#[test]
+fn starting_a_running_core_leaves_its_environment_alone() {
+    let mut s = Session::new();
+    s.json(&["server", "start"]);
+    pollute(&mut s);
+    s.json(&["server", "start"]);
+    clean(&mut s);
+    assert_eq!(probe(&s), format!("unset|unset|unset|unset|{}|test", s.root.display()));
 }

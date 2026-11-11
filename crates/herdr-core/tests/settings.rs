@@ -149,6 +149,7 @@ fn events_can_follow_one_parents_children() {
 fn configured_shell_runs_its_arguments_and_leaves_explicit_programs_alone() {
     let mut s = Session::new();
     s.env.push(("SHELL".into(), "/bin/sh".into()));
+    s.json(&["server", "start"]);
     let t = run(&s, &[]);
     s.json(&["send", &t, "echo default-shell-works"]);
     wait_until("default shell", || text(&s, &t).contains("default-shell-works"));

@@ -46,6 +46,21 @@ pub(super) fn refresh(env: &mut BTreeMap<String, String>) -> io::Result<()> {
     Ok(())
 }
 
+/// A core's base: the user's settings as a new login gets them, plus hc's own
+/// settings from this process. Only an explicit start or restart hands over more.
+pub(super) fn service_base() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if let Err(error) = refresh(&mut env) {
+        eprintln!("cannot read the Windows user environment; the core takes this one: {error}");
+        return std::env::vars().collect();
+    }
+    for (key, value) in std::env::vars().filter(|(key, _)| super::starter_setting(key.as_ref())) {
+        env.retain(|k, _| !k.eq_ignore_ascii_case(&key));
+        env.insert(key, value);
+    }
+    env
+}
+
 fn expand_path(path: &str, token: HANDLE) -> io::Result<String> {
     let source: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
     let mut expanded = vec![0u16; 32768];

@@ -136,6 +136,7 @@ fn reconnect_completes_a_launch_whose_acknowledgement_was_lost() {
 fn reconnect_completes_a_kept_replacement_whose_acknowledgement_was_lost() {
     let mut s = Session::new();
     s.env.push(("SHELL".into(), "/bin/sh".into()));
+    s.json(&["server", "start"]);
     s.json(&["run", "--bg", "--keep", "sleep", "100"]);
     let original = s.json(&["get", "t1"])["pid"].as_u64().unwrap() as u32;
     let fault = Fault::new(&s, false);

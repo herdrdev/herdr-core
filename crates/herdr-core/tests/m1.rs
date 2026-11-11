@@ -22,6 +22,7 @@ fn default_shells_load_the_login_environment_but_explicit_programs_do_not() {
     let mut s = Session::new();
     s.env.push(("SHELL".into(), "/bin/zsh".into()));
     std::fs::write(s.root.join(".zprofile"), "export HC_LOGIN_TEST=loaded\n").unwrap();
+    s.json(&["server", "start"]);
     let t = run(&s, &[]);
     s.json(&["send", &t, "print -r -- login=$options[login] profile=$HC_LOGIN_TEST"]);
     wait_text(&s, &t, "login=on profile=loaded");
@@ -44,6 +45,7 @@ fn programs_get_a_utf8_language_when_the_core_has_none() {
     assert!(lang(&s).contains(".UTF-8]"), "{}", lang(&s));
     let mut s = Session::new();
     s.env.push(("LANG".into(), "C".into()));
+    s.json(&["server", "start"]);
     assert!(lang(&s).contains("lang=[C]"), "the user's choice stays");
 }
 

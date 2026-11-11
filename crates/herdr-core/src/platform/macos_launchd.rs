@@ -17,29 +17,39 @@ const LAUNCHCTL: &str = "/bin/launchctl";
 const PREFIX: &str = "dev.herdr.core.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A variable to set, or with no value to unset.
+type Setting = (Vec<u8>, Option<Vec<u8>>);
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Inherited {
+    /// The launcher's whole environment. A core given no `settings` (and any
+    /// core older than them) replaces launchd's environment with it.
     env: Vec<(Vec<u8>, Vec<u8>)>,
+    /// An autostart's: set (or, with no value, unset) on top of launchd's
+    /// environment instead, so the launcher's own variables never become the core's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settings: Option<Vec<Setting>>,
     limits: Vec<(libc::c_int, libc::rlim_t, libc::rlim_t)>,
 }
 
 impl Inherited {
-    fn capture(cmd: &Command) -> io::Result<Self> {
-        let mut env: BTreeMap<_, _> = std::env::vars_os().collect();
+    /// `whole`: the core takes this process's environment; otherwise only what
+    /// `starter_setting` names, on top of launchd's.
+    fn capture(cmd: &Command, whole: bool) -> io::Result<Self> {
+        let mut env: BTreeMap<_, _> = std::env::vars_os().map(|(key, value)| (key, Some(value))).collect();
+        let mut settings: BTreeMap<_, _> =
+            env.iter().filter(|(key, _)| super::starter_setting(key)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut set = |key: OsString, value: Option<OsString>| {
+            env.insert(key.clone(), value.clone());
+            settings.insert(key, value);
+        };
         for (key, value) in cmd.get_envs() {
-            match value {
-                Some(value) => {
-                    env.insert(key.to_owned(), value.to_owned());
-                }
-                None => {
-                    env.remove(key);
-                }
-            }
+            set(key.to_owned(), value.map(OsStr::to_owned));
         }
-        env.remove(OsStr::new(DETACH));
-        env.remove(OsStr::new(DIRECT));
-        env.remove(OsStr::new("XPC_FLAGS"));
-        env.insert("XPC_SERVICE_NAME".into(), "0".into());
+        for key in [DETACH, DIRECT, "XPC_FLAGS"] {
+            set(key.into(), None);
+        }
+        set("XPC_SERVICE_NAME".into(), Some("0".into()));
         let mut limits = Vec::new();
         // Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the
         // running kernel for every slot rather than baking in a header's count.
@@ -54,7 +64,10 @@ impl Inherited {
             }
             limits.push((resource, limit.rlim_cur, limit.rlim_max));
         }
-        Ok(Self { env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(), limits })
+        let env = env.into_iter().filter_map(|(k, v)| Some((k.into_vec(), v?.into_vec()))).collect();
+        let settings =
+            (!whole).then(|| settings.into_iter().map(|(k, v)| (k.into_vec(), v.map(OsString::into_vec))).collect());
+        Ok(Self { env, settings, limits })
     }
 
     /// Runs only in the newly forked core, before it creates any threads.
@@ -83,12 +96,24 @@ impl Inherited {
                 return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
             }
         }
-        unsafe {
-            for (key, _) in std::env::vars_os() {
-                std::env::remove_var(key);
+        let settings = match self.settings {
+            Some(settings) => settings,
+            None => {
+                unsafe {
+                    for (key, _) in std::env::vars_os() {
+                        std::env::remove_var(key);
+                    }
+                }
+                self.env.into_iter().map(|(k, v)| (k, Some(v))).collect()
             }
-            for (key, value) in self.env {
-                std::env::set_var(OsString::from_vec(key), OsString::from_vec(value));
+        };
+        for (key, value) in settings {
+            let key = OsString::from_vec(key);
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, OsString::from_vec(value)),
+                    None => std::env::remove_var(key),
+                }
             }
         }
         Ok(())
@@ -131,7 +156,8 @@ pub fn prepare_core() {
         paths.create_dirs()?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("serve");
-        launch(&cmd, &paths.state.join("core.log"))
+        // Whoever ran `serve` itself chose its environment.
+        launch(&cmd, &paths.state.join("core.log"), true)
     })();
     match result {
         Ok(()) => std::process::exit(0),
@@ -155,7 +181,7 @@ pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
     if ssh() {
         return false;
     }
-    match launch(cmd, log) {
+    match launch(cmd, log, false) {
         Ok(()) => true,
         Err(error) => {
             fallback(log, &error);
@@ -174,9 +200,9 @@ fn fallback(log: &Path, error: &io::Error) {
     }
 }
 
-fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
+fn launch(cmd: &Command, log: &Path, whole: bool) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let inherited = Inherited::capture(cmd)?;
+    let inherited = Inherited::capture(cmd, whole)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     remove_stale(&domain, now);
@@ -577,16 +603,43 @@ mod tests {
             .env(DETACH, "old")
             .env(DIRECT, "1")
             .env("XPC_FLAGS", "0x2");
-        let captured = Inherited::capture(&cmd).unwrap();
+        let captured = Inherited::capture(&cmd, true).unwrap();
         let received: Inherited = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         assert_eq!(received.limits, captured.limits);
         assert!(received.limits.len() > libc::RLIMIT_NOFILE as usize);
+        assert!(received.settings.is_none(), "a whole handoff replaces launchd's environment");
         let env: BTreeMap<_, _> = received.env.into_iter().collect();
+        assert!(env.contains_key(b"PATH".as_slice()), "the whole environment");
         assert_eq!(env.get(b"LESS_TERMCAP_md".as_slice()), Some(&b"\x1b[1m\r\xff".to_vec()));
         for name in [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()] {
             assert!(!env.contains_key(name));
         }
         assert_eq!(env.get(b"XPC_SERVICE_NAME".as_slice()), Some(&b"0".to_vec()));
+    }
+
+    #[test]
+    fn an_autostart_hands_over_only_hc_settings_and_an_older_core_takes_the_whole_environment() {
+        let mut cmd = Command::new("hc");
+        cmd.env("HC_SESSION", "dev").env("HC_RUNTIME", "1").env_remove("HC_SCOPE").env(DETACH, "old");
+        let bytes = serde_json::to_vec(&Inherited::capture(&cmd, false).unwrap()).unwrap();
+        let received: Inherited = serde_json::from_slice(&bytes).unwrap();
+        let settings: BTreeMap<_, _> = received.settings.unwrap().into_iter().collect();
+        assert!(!settings.contains_key(b"PATH".as_slice()), "PATH is launchd's");
+        assert_eq!(settings.get(b"HC_SESSION".as_slice()), Some(&Some(b"dev".to_vec())));
+        assert_eq!(settings.get(b"HC_RUNTIME".as_slice()), Some(&Some(b"1".to_vec())));
+        for name in [b"HC_SCOPE".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()] {
+            assert_eq!(settings.get(name), Some(&None), "{}", String::from_utf8_lossy(name));
+        }
+        assert_eq!(settings.get(b"XPC_SERVICE_NAME".as_slice()), Some(&Some(b"0".to_vec())));
+        // A core from before `settings` still detaches, with the launcher's environment as it always did.
+        #[derive(serde::Deserialize)]
+        struct Older {
+            env: Vec<(Vec<u8>, Vec<u8>)>,
+        }
+        let older: BTreeMap<_, _> = serde_json::from_slice::<Older>(&bytes).unwrap().env.into_iter().collect();
+        assert!(older.contains_key(b"PATH".as_slice()));
+        assert_eq!(older.get(b"HC_SESSION".as_slice()), Some(&b"dev".to_vec()));
+        assert!(!older.contains_key(DETACH.as_bytes()));
     }
 
     #[test]
@@ -652,7 +705,7 @@ mod tests {
         let log = scratch.dir.join("core.log");
         let mut cmd = Command::new(old);
         cmd.arg("serve");
-        let error = launch(&cmd, &log).unwrap_err();
+        let error = launch(&cmd, &log, false).unwrap_err();
         if error.to_string().contains("launchctl bootstrap") {
             eprintln!("skipping: bootstrap denied: {error}");
             return;

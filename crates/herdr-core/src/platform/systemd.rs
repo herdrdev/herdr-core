@@ -85,7 +85,8 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
             false
         }
     };
-    let mut caller: BTreeMap<String, String> = super::utf8_vars().collect();
+    let core = cmd.get_args().next() == Some(OsStr::new("serve"));
+    let mut caller = starter_env(super::utf8_vars(), core);
     let mut unset: Vec<&str> = super::SSH_LOGIN.to_vec();
     for (k, v) in cmd.get_envs() {
         let Some(k) = k.to_str() else { continue };
@@ -119,6 +120,8 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let out = Command::new("systemd-run")
         .env_clear()
         .envs(&env)
+        // Found on our PATH; a core's EnvironmentFile leaves PATH to the manager.
+        .envs(std::env::var_os("PATH").map(|path| ("PATH", path)))
         .args(unit_args(&name, &dir.join("environment"), &unset, log, &here, version))
         .args(guarded.then(|| shutdown_order(cmd, log)).into_iter().flat_map(|order| [OsString::from("-p"), order]))
         .args(command_arguments.iter().map(|argument| literal(argument)))
@@ -216,6 +219,16 @@ fn write_environment(run: &Path, name: &str, env: &BTreeMap<String, String>) -> 
         return Err(e);
     }
     Ok(dir)
+}
+
+/// What a service takes from the process starting it. A core's base is the
+/// user manager's environment, plus hc's settings and the login session's
+/// variables (see SESSION). A holder is started by its core and takes the core's.
+/// The ssh markers stay so `service_env` can tell an ssh login, then drops them.
+fn starter_env(vars: impl Iterator<Item = (String, String)>, core: bool) -> BTreeMap<String, String> {
+    let wanted =
+        |k: &str| super::starter_setting(OsStr::new(k)) || SESSION.contains(&k) || super::SSH_LOGIN.contains(&k);
+    vars.filter(|(k, _)| !core || wanted(k)).collect()
 }
 
 /// The caller's environment as a service gets it: no ssh login's session, no
@@ -485,6 +498,34 @@ mod tests {
         assert_eq!(ssh.keys().collect::<Vec<_>>(), ["HC_SESSION", "PATH"]);
         let desktop = super::service_env(map(&[("DISPLAY", ":0"), ("PATH", "/usr/bin")]));
         assert!(desktop.contains_key("DISPLAY"), "a desktop that doesn't tell systemd keeps its display");
+    }
+
+    #[test]
+    fn a_core_takes_the_managers_environment_but_a_holder_takes_its_cores() {
+        let vars = || {
+            map(&[
+                ("HC_SESSION", "dev"),
+                ("HC_HEARTBEAT_MS", "50"),
+                ("HC_TERMINAL_ID", "t3"),
+                ("HC_SCOPE", "caller-sweep"),
+                ("XDG_STATE_HOME", "/home/u/.state"),
+                ("DISPLAY", ":0"),
+                ("PATH", "/home/u/.local/bin"),
+                ("CLAUDE_CODE_CHILD_SESSION", "1"),
+                ("HERDR_PANE_ID", "wBE:p2"),
+            ])
+            .into_iter()
+        };
+        let core = super::service_env(super::starter_env(vars(), true));
+        assert_eq!(core.keys().collect::<Vec<_>>(), ["DISPLAY", "HC_HEARTBEAT_MS", "HC_SESSION", "XDG_STATE_HOME"]);
+        assert_eq!(super::starter_env(vars(), false), vars().collect());
+        let over_ssh = vars().chain([("SSH_CONNECTION".to_owned(), "100.1.1.1 1 100.2.2.2 22".to_owned())]);
+        let core = super::service_env(super::starter_env(over_ssh, true));
+        assert_eq!(
+            core.keys().collect::<Vec<_>>(),
+            ["HC_HEARTBEAT_MS", "HC_SESSION", "XDG_STATE_HOME"],
+            "no ssh login's display"
+        );
     }
 
     #[test]

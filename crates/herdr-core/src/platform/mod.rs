@@ -225,6 +225,36 @@ pub(crate) fn environment_key_eq(key: &std::ffi::OsStr, name: &str) -> bool {
     if cfg!(windows) { key.eq_ignore_ascii_case(std::ffi::OsStr::new(name)) } else { key == name }
 }
 
+/// Which session a core is and where it keeps its state.
+const SESSION_PATHS: &[&str] = &[
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "HC_SESSION",
+    "HC_SOCKET",
+];
+
+/// What a client hands the core it starts: its session's paths and hc's own
+/// settings (`HC_*`, `HERDR_RELEASES_URL`), never the terminal it runs in.
+/// Everything else in an autostarted core's environment is the service
+/// manager's; only an explicit start or restart hands over a whole environment
+/// (see `restart`). Without a service manager the core keeps its starter's.
+pub(crate) fn starter_setting(key: &std::ffi::OsStr) -> bool {
+    const TERMINAL: &[&str] = &["HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", crate::sweep::VAR];
+    let hc = key
+        .as_encoded_bytes()
+        .get(..3)
+        .is_some_and(|prefix| if cfg!(windows) { prefix.eq_ignore_ascii_case(b"HC_") } else { prefix == b"HC_" });
+    SESSION_PATHS.iter().any(|name| environment_key_eq(key, name))
+        || environment_key_eq(key, "HERDR_RELEASES_URL")
+        || (hc && !TERMINAL.iter().any(|name| environment_key_eq(key, name)))
+}
+
 /// Application settings survive a restart; session paths and lifecycle marks do not move.
 pub(crate) fn restored_environment(
     saved: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
@@ -259,20 +289,8 @@ pub(crate) fn restored_environment(
     let forwarded = SSH_LOGIN.iter().any(|name| current.contains_key(OsStr::new(name)));
     let named = environment_key_eq;
     let local = |key: &OsStr| {
-        let paths = [
-            "HOME",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "XDG_STATE_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_RUNTIME_DIR",
-            "HC_SESSION",
-            "HC_SOCKET",
-        ];
         #[allow(unused_mut)]
-        let mut keep = paths.iter().any(|name| named(key, name));
+        let mut keep = SESSION_PATHS.iter().any(|name| named(key, name));
         #[cfg(target_os = "linux")]
         {
             keep |= systemd::SERVICE.iter().any(|name| named(key, name));

@@ -147,7 +147,9 @@ fn launchd_preserves_environment_bytes_and_hard_file_limit_without_its_own_varia
     }
     let s = Session::new();
     let mut cmd = s.cmd();
+    // An autostart hands over only hc's settings; launchd's environment is the rest.
     cmd.args(["server", "status"])
+        .env("HC_TEST_TERMCAP", "\x1b[1m\r")
         .env("LESS_TERMCAP_md", "\x1b[1m\r")
         .env("HC_TEST_NONUTF8", OsString::from_vec(vec![0xff]));
     let limit = libc::rlimit { rlim_cur: 512, rlim_max: 1024 };
@@ -165,9 +167,9 @@ fn launchd_preserves_environment_bytes_and_hard_file_limit_without_its_own_varia
     if !independent(&s, status["pid"].as_i64().unwrap()) {
         return;
     }
-    let out = s.hc(&["exec", "sh", "-c", "ulimit -Sn; ulimit -Hn; printf '%s' \"$LESS_TERMCAP_md\"; printf '\\n%s %s %s' \"${HC_LAUNCHD_DETACH-unset}\" \"${HC_LAUNCHD_DIRECT-unset}\" \"$XPC_SERVICE_NAME\""]);
+    let out = s.hc(&["exec", "sh", "-c", "ulimit -Sn; ulimit -Hn; printf '%s' \"$HC_TEST_TERMCAP\"; printf '\\n%s %s %s %s' \"${LESS_TERMCAP_md-unset}\" \"${HC_LAUNCHD_DETACH-unset}\" \"${HC_LAUNCHD_DIRECT-unset}\" \"$XPC_SERVICE_NAME\""]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(out.stdout, b"1024\n1024\n\x1b[1m\r\nunset unset 0");
+    assert_eq!(out.stdout, b"1024\n1024\n\x1b[1m\r\nunset unset unset 0");
 }
 
 #[test]
