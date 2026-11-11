@@ -382,13 +382,6 @@
         ],
         "type": "object"
       },
-      "IdleOrWorking": {
-        "enum": [
-          "idle",
-          "working"
-        ],
-        "type": "string"
-      },
       "InitialSize": {
         "properties": {
           "cols": {
@@ -943,6 +936,14 @@
           "rows"
         ],
         "type": "object"
+      },
+      "SendIf": {
+        "enum": [
+          "idle",
+          "working",
+          "done"
+        ],
+        "type": "string"
       },
       "SendResult": {
         "properties": {
@@ -2542,7 +2543,7 @@
           "schema": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/IdleOrWorking"
+                "$ref": "#/components/schemas/SendIf"
               },
               {
                 "type": "null"
