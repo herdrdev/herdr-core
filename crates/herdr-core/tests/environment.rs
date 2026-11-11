@@ -102,6 +102,37 @@ fn a_holder_winning_the_restart_race_restores_the_callers_environment() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "|fresh");
 }
 
+/// The install recipe's restart: a build shell's variables never reach terminals.
+fn script_restart(s: &Session) {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/restart-core.sh");
+    let out = s.program("sh").arg(script).arg(&s.bin).stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn the_install_restart_starts_a_missing_core_without_the_callers_environment() {
+    let mut s = Session::new();
+    s.env.push(("FOO_LEAK".into(), "1".into()));
+    script_restart(&s);
+    let probe = "printf '%s|%s' \"${FOO_LEAK-unset}\" \"$HOME\"";
+    let out = s.hc(&["exec", probe]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("unset|{}", s.root.display()));
+}
+
+#[test]
+fn the_install_restart_keeps_a_running_cores_environment() {
+    let mut s = Session::new();
+    s.env.push(("FOO_KEPT".into(), "1".into()));
+    let core_pid = s.json(&["server", "start"])["pid"].clone();
+    s.env.retain(|(key, _)| key != "FOO_KEPT");
+    s.env.push(("FOO_LEAK".into(), "1".into()));
+    script_restart(&s);
+    assert_ne!(s.json(&["server", "status"])["pid"], core_pid);
+    let out = s.hc(&["exec", "printf '%s|%s' \"${FOO_KEPT-unset}\" \"${FOO_LEAK-unset}\""]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1|unset");
+}
+
 #[test]
 fn fresh_restart_refuses_a_core_without_environment_handoff_support() {
     use std::io::{BufRead, BufReader, Write};

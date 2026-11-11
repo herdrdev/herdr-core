@@ -168,7 +168,7 @@ cargo build --locked -p herdr-core
 just check
 ```
 
-`just install` installs this checkout and restarts your core. Running terminals keep running.
+`just install` installs this checkout and restarts your core. Running terminals keep running. A running core keeps its environment; if none is running, the one it starts gets only the login's own variables (PATH, HOME, USER, SHELL, locale, SSH agent and markers, display, session paths; see `scripts/restart-core.sh`), never the rest of the build shell's.
 
 `just docs` refreshes the command reference. `just docs-check` checks it and the examples; CI runs the same tests.
 
