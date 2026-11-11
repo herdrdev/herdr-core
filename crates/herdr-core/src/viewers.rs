@@ -2,7 +2,7 @@
 //! bytes (minus answered queries), input, and who sets the size.
 
 use crate::holder_proto as proto;
-use crate::relay::Relay;
+use crate::relay::image_answer_wait;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use crate::wire::Conn;
@@ -108,7 +108,7 @@ impl Core {
 
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
-    pub fn output(&self, st: &mut State, id: u32, bytes: &[u8]) {
+    pub fn output(self: &Arc<Self>, st: &mut State, id: u32, bytes: &[u8]) {
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {
@@ -128,8 +128,20 @@ impl Core {
         if let Some(watchers) = output_watch.get_mut(&id).filter(|_| !scrolling) {
             watchers.retain(|w| w.send(out.clone()).is_ok());
         }
+        let (replies, wait) = relay.take_replies(screen, answering(viewers.get(&id)));
         if let Some(link) = holder {
-            link.input(id, &Relay::take_responses(screen));
+            link.input(id, &replies);
+        }
+        if let Some(wait) = wait {
+            let core = self.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(image_answer_wait());
+                let mut st = core.lock();
+                let late = st.relays.get_mut(&id).map(|r| r.expire(wait)).unwrap_or_default();
+                if let Some(link) = st.link(id) {
+                    link.input(id, &late);
+                }
+            });
         }
         let reports = screen.take_status_reports();
         let title = screen.take_title_changed().then(|| screen.title());
@@ -259,7 +271,12 @@ impl Core {
             self.touch(&mut st, conn, channel, |_| {})
         };
         if let Some(id) = id {
-            let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
+            let mut now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
+            // Typed too: `hc attach` passes its terminal's answers on as typing.
+            if let Some(relay) = st.relays.get_mut(&id) {
+                let waited = relay.answered(&now);
+                now.extend(waited);
+            }
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
@@ -381,16 +398,24 @@ impl Core {
     }
 
     fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
-        let Some(screen) = st.screens.get_mut(&id) else { return };
+        let answering = answering(st.viewers.get(&id));
+        let State { screens, relays, .. } = st;
+        let Some(screen) = screens.get_mut(&id) else { return };
         if let Some(d) = display {
             d.apply(screen);
         }
         // Display changes can notify an idle program, even without a resize or output.
-        let replies = Relay::take_responses(screen);
+        // In order behind a viewer's image answer; only output begins a wait.
+        let (replies, _) = relays.entry(id).or_default().take_replies(screen, answering);
         if let Some(link) = st.link(id) {
             link.input(id, &replies);
         }
     }
+}
+
+/// Whether a viewer could answer an image: observers' replies never reach the program.
+fn answering(viewers: Option<&Vec<Viewer>>) -> bool {
+    viewers.is_some_and(|vs| vs.iter().any(|v| !v.observe))
 }
 
 /// The screen, then the latest 7501 report of every record and whether the

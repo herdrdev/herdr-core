@@ -246,7 +246,7 @@ pub enum Step {
     EndDraft(Vec<u8>),
 }
 
-fn env_ms(var: &str, default: u64) -> Duration {
+pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
 }
 
