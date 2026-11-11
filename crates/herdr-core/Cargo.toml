@@ -46,6 +46,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+ghostty-vt = { path = "../ghostty-vt", features = ["test-hooks"] }
 
 [lints]
 workspace = true

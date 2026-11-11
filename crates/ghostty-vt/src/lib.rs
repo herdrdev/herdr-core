@@ -3,6 +3,10 @@
 use std::ffi::c_void;
 use std::ptr;
 
+mod kitty;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod testing;
+
 mod ffi {
     use std::ffi::c_void;
 
@@ -48,6 +52,7 @@ mod ffi {
     pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 27;
     pub const OPT_CONTINUATION_MAX_BYTES: i32 = 31;
     pub const OPT_MODE_DEFAULT: i32 = 33;
+    pub const OPT_KITTY_IMAGE_STORAGE_LIMIT: i32 = 15;
     pub const DATA_COLS: i32 = 1;
     pub const DATA_ROWS: i32 = 2;
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
@@ -310,6 +315,9 @@ struct Hooks {
 pub struct Terminal {
     raw: ffi::Terminal,
     hooks: Box<Hooks>,
+    /// Image commands by image generation (unique across the process), for the main
+    /// screen and the alternate one: painting one doesn't make the other's go.
+    encoded: [std::cell::RefCell<std::collections::HashMap<u64, kitty::Encoded>>; 2],
 }
 
 // The handle is only touched through `&mut self` / `&self`; libghostty keeps no thread state.
@@ -403,13 +411,16 @@ impl Terminal {
             cell: DEFAULT_CELL,
             dark: true,
         });
-        let term = Terminal { raw, hooks };
+        kitty::install_decoder();
+        let term = Terminal { raw, hooks, encoded: Default::default() };
         let ud: *const Hooks = &*term.hooks;
         let continuation = CONTINUATION_MAX_BYTES;
+        let image_limit = kitty::STORAGE_BYTES;
         unsafe {
             let set = |opt, value: *const c_void| ffi::ghostty_terminal_set(raw, opt, value);
             set(ffi::OPT_SCROLLBACK_MAX_BYTES, (&raw const scrollback_bytes).cast());
             set(ffi::OPT_CONTINUATION_MAX_BYTES, (&raw const continuation).cast());
+            set(ffi::OPT_KITTY_IMAGE_STORAGE_LIMIT, (&raw const image_limit).cast());
             // On from the start, as in Ghostty and the app: VS16 makes ✍️ two cells wide.
             let cluster = ffi::ModeConfig { mode: 2027, value: true };
             set(ffi::OPT_MODE_DEFAULT, (&raw const cluster).cast());
@@ -424,6 +435,9 @@ impl Terminal {
         }
         let mut term = term;
         term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        // Images without a size take theirs from the cell's pixels.
+        let (cols, rows) = term.size();
+        term.resize(cols, rows);
         term
     }
 
@@ -579,8 +593,10 @@ impl Terminal {
         if let Some([r, g, b]) = bg {
             self.hooks.dark = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 128;
         }
-        if let Some(cell) = cell {
+        if let Some(cell) = cell.filter(|cell| *cell != self.hooks.cell) {
             self.hooks.cell = cell;
+            let (cols, rows) = self.size();
+            self.resize(cols, rows);
         }
         if changed && self.dec_mode(2031) {
             let mut buf = [0u8; 16];
@@ -700,26 +716,41 @@ impl Terminal {
 
     /// Bytes that repaint this terminal on a fresh viewer: up to `history`
     /// scrollback lines (main screen only), then the screen with its modes,
-    /// cursor and title.
+    /// cursor, title and images.
     pub fn paint(&self, history: usize) -> Vec<u8> {
+        self.paint_with(history, self.images_walk(kitty::PAINT_BYTES), Clearing::Images)
+    }
+
+    /// `paint` without images, for when they'd only have to be sent again. A
+    /// viewer keeps the placeholder ones it has; direct ones in view are cleared.
+    pub fn paint_text(&self, history: usize) -> Vec<u8> {
+        self.paint_with(history, kitty::Replay::default(), Clearing::Screen)
+    }
+
+    pub(crate) fn paint_with(&self, history: usize, images: kitty::Replay, clearing: Clearing) -> Vec<u8> {
         let (cols, rows) = self.size();
         let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
         // A soft reset leaves mouse, focus, paste, sync and key modes alone: turn
         // them off too, so a viewer that missed their "off" (a dropped backlog)
         // ends up with exactly the screen's own modes, replayed below.
         let mut out = b"\x1b[!p\x1b[?2026l\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\
-\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
-\x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J"
+\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u"
             .to_vec();
+        // A first paint with no image to bring has no call on what a used terminal holds.
+        let clearing = if clearing == Clearing::Images && !self.has_images() { Clearing::Screen } else { clearing };
         // The formatter only exposes the active screen. Leave alternate mode
         // on a snapshot so the viewer also gets its hidden primary screen,
         // without changing the live terminal or consuming its partial VT input.
+        // Its text only: a paint brings the images of the screen in view.
         if self.alt_screen()
             && let Some(snapshot) = self.snapshot()
             && let Some(mut primary) = Self::restore(&snapshot, usize::MAX)
         {
             primary.write(b"\x18\x1b[?1049l");
-            out = primary.paint(history);
+            out = primary.paint_text(history);
+        } else {
+            out.extend(b"\x1b[?1049l\x1b[?1047l\x1b[?47l");
+            start_screen(&mut out, if self.alt_screen() { Clearing::Screen } else { clearing });
         }
         let available = self.history_rows();
         if history > 0 && available > 0 && !self.alt_screen() {
@@ -734,18 +765,29 @@ impl Terminal {
         if self.alt_screen() {
             // The primary screen's pen, margins and charsets must not leak into this one.
             out.extend(b"\x1b[?1049h\x1b[!p");
+            start_screen(&mut out, clearing);
         }
-        if let Some(sel) = self.select(ffi::POINT_ACTIVE, (0, 0), last) {
-            let screen = self.format(ffi::FORMAT_VT, Some(&sel), true);
+        let screen = self.select(ffi::POINT_ACTIVE, (0, 0), last);
+        if let Some(sel) = screen.as_ref().filter(|_| !images.direct.is_empty()) {
+            // Text first, so it never waits for images: plain, as modes and state
+            // belong after them, and placing an image needs the cursor free of margins.
+            out.extend(self.format(ffi::FORMAT_VT, Some(sel), false));
+            out.extend(images.direct);
+            // Only `CSI 2J` would take the images with it.
+            out.extend(b"\x1b[H\x1b[J");
+        }
+        if let Some(sel) = screen {
+            let formatted = self.format(ffi::FORMAT_VT, Some(&sel), true);
             // Alternate-screen aliases can disagree with the active screen. Replay
             // only the screen chosen above, not the formatter's independent mode bits.
             // Synchronized output belongs to the old viewer and would freeze a new one.
-            out.extend(strip(&screen, &[b"\x1b[?2026h", b"\x1b[?47h", b"\x1b[?1047h", b"\x1b[?1049h"]));
+            out.extend(strip(&formatted, &[b"\x1b[?2026h", b"\x1b[?47h", b"\x1b[?1047h", b"\x1b[?1049h"]));
         }
         let title = self.title();
         if !title.is_empty() {
             out.extend(format!("\x1b]2;{title}\x1b\\").as_bytes());
         }
+        out.extend(images.placeholder);
         out
     }
 
@@ -795,6 +837,28 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         unsafe { ffi::ghostty_terminal_free(self.raw) }
     }
+}
+
+/// Clears a screen a viewer may have left mid-way (a dropped backlog). Before the
+/// clear: a load this happens to complete leaves nothing behind, and an open link
+/// would spread over all that follows.
+fn start_screen(out: &mut Vec<u8>, clearing: Clearing) {
+    out.extend(kitty::END_LOAD);
+    if clearing == Clearing::Images {
+        // By id: `d=A` only takes what's visible, and placeholder images aren't.
+        out.extend(b"\x1b_Ga=d,d=R,x=1,y=4294967295,q=2\x1b\\");
+    }
+    out.extend(b"\x1b]8;;\x1b\\\x1b[H\x1b[2J");
+}
+
+/// What a paint clears besides the text it replaces.
+#[derive(Clone, Copy, PartialEq)]
+enum Clearing {
+    /// What's in view goes with the screen, as it would for a program's own clear.
+    Screen,
+    /// Every image: the paint brings those that fit, and of one it can't
+    /// bring, no picture beats an older one by that id.
+    Images,
 }
 
 fn strip(haystack: &[u8], needles: &[&[u8]]) -> Vec<u8> {
