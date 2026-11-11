@@ -51,7 +51,7 @@ fn root_agent_keeps_status_when_a_foreground_tool_returns() {
             )
         ),
     );
-    let t = run(&s, &[&agent]);
+    let t = run(&s, &["bash", &agent]);
     wait_until("root status", || get(&s, &t)["status"]["state"] == "working");
     touch(&s, "tool");
     wait_until("tool foreground", || {
