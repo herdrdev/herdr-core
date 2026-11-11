@@ -3,9 +3,17 @@
 //! the screen answered itself: a viewer seeing them would answer a second time.
 //! Images (APC: kitty graphics) are the other way round: the screen takes
 //! them (they move the cursor) but its replies are dropped, since it can't
-//! show them; a viewer that can answers.
+//! show them; a viewer that can answers. Programs read replies in order (DA1
+//! after kitty's query is how they learn images don't work), so the screen's
+//! replies after an image wait for the viewer's answer, briefly.
 
 use ghostty_vt::Terminal as Screen;
+use std::time::Duration;
+
+/// How long the screen's replies wait behind an image for a viewer's answer.
+pub fn image_answer_wait() -> Duration {
+    crate::input::env_ms("HC_IMAGE_ANSWER_MS", 100)
+}
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
@@ -22,6 +30,15 @@ pub struct Relay {
     /// The program's latest win32-input-mode request (DEC 9001, ConPTY's ask
     /// for key events), until taken. The screen doesn't keep it.
     pub win32_input: Option<bool>,
+    /// An image the screen answered went to viewers, and none has answered yet.
+    waiting: bool,
+    /// Where, in the screen's pending replies, those after that image begin.
+    behind_from: Option<usize>,
+    /// The screen's replies waiting for a viewer's answer.
+    behind: Vec<u8>,
+    /// Counts waits, so a deadline only ends the wait it was set for.
+    wait: u64,
+    wait_started: bool,
 }
 
 enum Seq {
@@ -33,21 +50,47 @@ impl Relay {
     /// In-band resize belongs to the viewer, which knows the pixel geometry.
     /// Ghostty also emits it when 2048 is enabled and when its screen resizes.
     pub fn take_responses(screen: &mut Screen) -> Vec<u8> {
+        without_resize_reports(&screen.take_responses())
+    }
+
+    /// The screen's replies to send now: those after an image wait until a
+    /// viewer answers or the wait ends. With no viewer to answer (`answering`
+    /// false), everything goes. Returns the wait that began, which the caller
+    /// ends with `expire` after `image_answer_wait()`.
+    pub fn take_replies(&mut self, screen: &mut Screen, answering: bool) -> (Vec<u8>, Option<u64>) {
         let replies = screen.take_responses();
-        let mut out = Vec::with_capacity(replies.len());
-        let mut i = 0;
-        while i < replies.len() {
-            if let Some(rest) = replies[i..].strip_prefix(b"\x1b[48;") {
-                let n = rest.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
-                if rest.get(n) == Some(&b't') {
-                    i += 5 + n + 1;
-                    continue;
-                }
-            }
-            out.push(replies[i]);
-            i += 1;
+        let split = match self.behind_from.take() {
+            Some(at) => at.min(replies.len()),
+            None if self.waiting => 0,
+            None => replies.len(),
+        };
+        let mut now = without_resize_reports(&replies[..split]);
+        self.behind.extend(without_resize_reports(&replies[split..]));
+        let started = std::mem::take(&mut self.wait_started).then_some(self.wait);
+        if !answering {
+            now.extend(self.end_wait());
+            return (now, None);
         }
-        out
+        (now, started)
+    }
+
+    /// A viewer's input, as it went to the program. Its first image
+    /// answer lets the waiting replies go: a viewer answers in stream order, and
+    /// it may skip some images the screen answered (feature queries), so
+    /// counting answers would wait out the deadline.
+    pub fn answered(&mut self, input: &[u8]) -> Vec<u8> {
+        if self.waiting && input.windows(3).any(|w| w == b"\x1b_G") { self.end_wait() } else { Vec::new() }
+    }
+
+    /// Ends `wait` if it is still going: no viewer answered in time.
+    pub fn expire(&mut self, wait: u64) -> Vec<u8> {
+        if self.wait == wait && self.waiting { self.end_wait() } else { Vec::new() }
+    }
+
+    fn end_wait(&mut self) -> Vec<u8> {
+        self.waiting = false;
+        self.behind_from = None;
+        std::mem::take(&mut self.behind)
     }
 
     /// Feeds program output; returns what viewers should get. Replies the
@@ -80,10 +123,17 @@ impl Relay {
                         self.apc = Some(screen.pending_responses());
                     }
                     pass(screen, &mut out, &seq);
-                    // An APC ends with ST; whatever the screen answered to it goes.
+                    // An APC ends with ST; whatever the screen answered to it goes,
+                    // and an answer means a viewer that shows images answers too.
                     if seq == b"\x1b\\"
                         && let Some(keep) = self.apc.take()
                     {
+                        if screen.pending_responses() > keep && !self.waiting {
+                            self.waiting = true;
+                            self.wait += 1;
+                            self.wait_started = true;
+                            self.behind_from = Some(keep);
+                        }
                         screen.drop_responses_after(keep);
                     }
                 }
@@ -146,6 +196,23 @@ impl Relay {
             Some(_) => Seq::Done { maybe_query: false },
         }
     }
+}
+
+fn without_resize_reports(replies: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(replies.len());
+    let mut i = 0;
+    while i < replies.len() {
+        if let Some(rest) = replies[i..].strip_prefix(b"\x1b[48;") {
+            let n = rest.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+            if rest.get(n) == Some(&b't') {
+                i += 5 + n + 1;
+                continue;
+            }
+        }
+        out.push(replies[i]);
+        i += 1;
+    }
+    out
 }
 
 /// `CSI ? … 9001 … h` or `l`: whether it turns win32-input-mode on.
@@ -224,6 +291,27 @@ mod tests {
             let replies = String::from_utf8_lossy(&screen.take_responses()).into_owned();
             assert!(replies.ends_with('R') && !replies.contains("_G"), "only the cursor report: {replies:?}");
         }
+    }
+
+    #[test]
+    fn replies_after_an_image_wait_for_a_viewer_to_answer() {
+        // Kitty's query, then a feature query viewers may leave unanswered, then DA1.
+        let probe = b"\x1b[6n\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Ga=q,i=32,e=T,U=1\x1b\\\x1b[c";
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        relay.feed(&mut screen, probe);
+        assert_eq!(relay.take_replies(&mut screen, false), (b"\x1b[1;1R\x1b[?62;22c".to_vec(), None), "no viewer");
+        // A viewer: the reply before the image goes, DA1 waits for its answer.
+        relay.feed(&mut screen, probe);
+        let (now, wait) = relay.take_replies(&mut screen, true);
+        assert_eq!(now, b"\x1b[1;1R");
+        assert_eq!(relay.answered(b"\x1b_Gi=31;OK\x1b\\"), b"\x1b[?62;22c");
+        assert!(relay.expire(wait.expect("a wait began")).is_empty(), "nothing left once answered");
+        // No answer in time: DA1 goes when the wait ends.
+        relay.feed(&mut screen, probe);
+        let (now, wait) = relay.take_replies(&mut screen, true);
+        assert_eq!(now, b"\x1b[1;1R");
+        assert_eq!(relay.expire(wait.expect("a wait began")), b"\x1b[?62;22c");
     }
 
     #[test]

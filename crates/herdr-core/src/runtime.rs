@@ -635,7 +635,7 @@ impl Core {
     }
 
     /// Handles the holder's frames until it says goodbye (true) or the link ends (false).
-    fn holder_frames(&self, stream: &mut UnixStream, instance: &str) -> io::Result<bool> {
+    fn holder_frames(self: &Arc<Self>, stream: &mut UnixStream, instance: &str) -> io::Result<bool> {
         while let Some((kind, id, payload)) = proto::read(stream)? {
             let mut st = self.lock();
             match kind {
