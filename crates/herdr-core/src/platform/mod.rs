@@ -11,7 +11,16 @@ mod unix;
 pub use unix::*;
 
 #[cfg(target_os = "linux")]
+mod linux_login;
+#[cfg(target_os = "linux")]
 pub mod systemd;
+
+/// Only a new SSH-started Linux core imports login settings; holders inherit the core.
+#[allow(unused_variables)]
+pub fn core_environment(cmd: &mut std::process::Command, state: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    linux_login::apply(cmd, state);
+}
 
 #[cfg(target_os = "macos")]
 mod macos_appkit;

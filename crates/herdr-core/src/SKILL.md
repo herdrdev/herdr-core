@@ -222,6 +222,14 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
+- A new Linux core started over SSH loads the account shell's non-interactive
+  login environment once, so remote terminals and commands can find programs
+  from login PATH settings. Local Linux starts, macOS and Windows are unchanged.
+  Reconnecting and crash recovery keep the loaded environment. Profiles have five
+  seconds and a combined 1 MiB output limit; remaining profile jobs are ended after
+  capture. A failed or blocked profile falls back to the incoming environment and records
+  the shell and reason in `core.log`. To refresh an existing remote core, run
+  `hc server restart --fresh` from a normal SSH login outside Herdr.
 - `hc run` without a command starts this machine's own shell. On macOS,
   this is a login shell so it loads the login environment; explicit commands
   are unchanged. Recovery shells use the same rule.
