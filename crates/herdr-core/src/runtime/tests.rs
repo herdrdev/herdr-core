@@ -106,6 +106,29 @@ async fn server_stop_succeeds_even_when_the_registry_flush_times_out() {
     assert_eq!(stop.unwrap()["stopped"], true);
 }
 
+#[tokio::test]
+async fn a_wait_leaves_nothing_registered_however_it_ends() {
+    let (core, root) = test_core();
+    let spec = || crate::wait::WaitSpec { output: Some("never".into()), timeout: Duration::ZERO, after_turn: None };
+    let new = || crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() };
+    let (done, quiet) = {
+        let mut st = core.lock();
+        let done = st.reg.create(new(), now_ms()).unwrap();
+        st.reg.finish(done, Some(0), None, "exited", now_ms());
+        (done, st.reg.create(new(), now_ms()).unwrap())
+    };
+    // Neither sends anything afterwards that would clear a stale registration.
+    assert_eq!(core.wait(done, spec(), None).await.reason, "exit");
+    assert_eq!(core.wait(quiet, spec(), None).await.reason, "timeout");
+    let left = {
+        let st = core.lock();
+        (st.events.subs.len(), st.output_watch.values().map(Vec::len).sum::<usize>())
+    };
+    drop(core);
+    remove_root(&root);
+    assert_eq!(left, (0, 0), "(event subscriptions, output watchers) left behind");
+}
+
 fn test_core() -> (Arc<Core>, PathBuf) {
     let root = std::env::temp_dir().join(format!("hc-persistence-{}", platform::random_hex()));
     let paths = Paths {
