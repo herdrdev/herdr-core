@@ -118,6 +118,54 @@ fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
 }
 
 #[test]
+fn attaching_on_alternate_screen_preserves_primary_when_the_program_exits() {
+    for mode in [47, 1047, 1049] {
+        for history in [0, 3] {
+            let mut source = Terminal::new(30, 4, 1 << 20);
+            for i in 0..8 {
+                source.write(format!("line {i}\r\n").as_bytes());
+            }
+            source.write(format!("\x1b[31mprompt> \x1b[?{mode}h\x1b[2;3HALT").as_bytes());
+            source.write(b"\x1b[");
+            let before = source.snapshot().unwrap();
+            let mut viewer = Terminal::new(30, 4, 1 << 20);
+            viewer.write(b"stale primary\x1b[?1049hSTALE ALT");
+            viewer.write(&source.paint(history));
+            assert_eq!(source.snapshot().unwrap(), before, "painting must not change the live terminal");
+            assert_eq!(viewer.screen_rows(), source.screen_rows());
+            viewer.write(&source.continuation().unwrap());
+            source.write(b"0m");
+            viewer.write(b"0m");
+            let exit = format!("\x1b[?{mode}lafter\r\n");
+            source.write(exit.as_bytes());
+            viewer.write(exit.as_bytes());
+            assert_eq!(viewer.screen_rows(), source.screen_rows(), "mode {mode}, history {history}");
+            if history > 0 {
+                assert!(viewer.plain_text().contains("line 3"), "primary history must also be replayed");
+            } else {
+                assert!(!viewer.plain_text().contains("line 3"), "history zero must not replay scrollback");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_primary_screens_pen_margins_and_charset_stay_out_of_the_alternate_replay() {
+    let mut source = Terminal::new(30, 6, 1 << 20);
+    // Red pen, a 2-4 scroll region and DEC line drawing on the primary screen.
+    source.write(b"one\r\ntwo\r\n\x1b[31m\x1b[2;4r\x1b(0\x1b[?1049h\x1b[0m\x1b(B\x1b[r\x1b[Hqwerty\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+    let mut viewer = Terminal::new(30, 6, 1 << 20);
+    viewer.write(&source.paint(0));
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert_eq!(viewer.format(ffi::FORMAT_VT, None, false), source.format(ffi::FORMAT_VT, None, false));
+    for t in [&mut source, &mut viewer] {
+        t.write(b"\x1b[?1049lx\r\ny\r\nz");
+    }
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert_eq!(viewer.format(ffi::FORMAT_VT, None, false), source.format(ffi::FORMAT_VT, None, false));
+}
+
+#[test]
 fn repaint_uses_the_active_screen_not_stale_alternate_screen_modes() {
     let mut t = Terminal::new(30, 4, 1 << 20);
     t.write(b"main\r\n\x1b[?47h\x1b[?1049hALT\x1b[?1049lDONE");
