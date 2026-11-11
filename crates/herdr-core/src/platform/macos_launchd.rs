@@ -39,6 +39,10 @@ impl Inherited {
         env.remove(OsStr::new(DETACH));
         env.remove(OsStr::new(DIRECT));
         env.remove(OsStr::new("XPC_FLAGS"));
+        // An ssh login's agent dies with its connection; the job outlives it.
+        if super::SSH_LOGIN.iter().any(|key| env.contains_key(OsStr::new(key))) {
+            env.remove(OsStr::new(AGENT));
+        }
         for key in super::SSH_LOGIN {
             env.remove(OsStr::new(key));
         }
@@ -86,16 +90,27 @@ impl Inherited {
                 return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
             }
         }
+        let own = std::env::var_os(AGENT).map(OsStringExt::into_vec);
         unsafe {
             for (key, _) in std::env::vars_os() {
                 std::env::remove_var(key);
             }
-            for (key, value) in self.env {
+            for (key, value) in with_job_agent(self.env, own) {
                 std::env::set_var(OsString::from_vec(key), OsString::from_vec(value));
             }
         }
         Ok(())
     }
+}
+
+const AGENT: &str = "SSH_AUTH_SOCK";
+
+/// The job's own agent is the GUI session's, like the Linux service using the user manager's.
+fn with_job_agent(mut env: Vec<(Vec<u8>, Vec<u8>)>, own: Option<Vec<u8>>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    if let Some(own) = own.filter(|_| !env.iter().any(|(key, _)| key == AGENT.as_bytes())) {
+        env.push((AGENT.as_bytes().to_vec(), own));
+    }
+    env
 }
 
 /// Detach only the internal launchd sentinel before any CLI/runtime setup.
@@ -609,7 +624,8 @@ mod tests {
             .env("XPC_FLAGS", "0x2")
             .env("SSH_CONNECTION", "1 2 3 4")
             .env("SSH_CLIENT", "1 2 3")
-            .env("SSH_TTY", "/dev/ttys9");
+            .env("SSH_TTY", "/dev/ttys9")
+            .env(AGENT, "/forwarded-agent");
         let captured = Inherited::capture(&cmd).unwrap();
         let received: Inherited = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         assert_eq!(received.limits, captured.limits);
@@ -618,10 +634,29 @@ mod tests {
         assert_eq!(env.get(b"LESS_TERMCAP_md".as_slice()), Some(&b"\x1b[1m\r\xff".to_vec()));
         let ssh = super::super::SSH_LOGIN.iter().map(|key| key.as_bytes());
         let removed = [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()];
-        for name in removed.into_iter().chain(ssh) {
+        for name in removed.into_iter().chain(ssh).chain([AGENT.as_bytes()]) {
             assert!(!env.contains_key(name));
         }
         assert_eq!(env.get(b"XPC_SERVICE_NAME".as_slice()), Some(&b"0".to_vec()));
+
+        let mut desktop = Command::new("hc");
+        desktop.env(AGENT, "/gui-agent");
+        for key in super::super::SSH_LOGIN {
+            desktop.env_remove(key);
+        }
+        let env: BTreeMap<_, _> = Inherited::capture(&desktop).unwrap().env.into_iter().collect();
+        assert_eq!(env.get(AGENT.as_bytes()), Some(&b"/gui-agent".to_vec()));
+    }
+
+    #[test]
+    fn the_job_keeps_its_own_agent_only_when_the_launcher_sent_none() {
+        let agent =
+            |env: &[(Vec<u8>, Vec<u8>)]| env.iter().find(|(k, _)| k == AGENT.as_bytes()).map(|(_, v)| v.clone());
+        let home = vec![(b"HOME".to_vec(), b"/h".to_vec())];
+        let sent = vec![(AGENT.as_bytes().to_vec(), b"/sent".to_vec())];
+        assert_eq!(agent(&with_job_agent(home.clone(), Some(b"/own".to_vec()))), Some(b"/own".to_vec()));
+        assert_eq!(agent(&with_job_agent(sent, Some(b"/own".to_vec()))), Some(b"/sent".to_vec()));
+        assert_eq!(agent(&with_job_agent(home, None)), None);
     }
 
     #[test]
