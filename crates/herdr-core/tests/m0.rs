@@ -108,6 +108,18 @@ fn plain_mode_speaks_json_rpc_lines() {
 }
 
 #[test]
+fn a_list_without_machines_still_has_them() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    // The schema says `machines` is required: no machines is an empty list.
+    let list = s.connect().call(1, "terminal.list", json!({}));
+    assert_eq!(list["result"]["machines"], json!([]), "{list}");
+    // hc ls stays short for agents: no empty key there.
+    let ls = s.json(&["ls"]);
+    assert!(ls.get("machines").is_none(), "{ls}");
+}
+
+#[test]
 fn the_schema_is_openrpc_and_the_committed_file_matches_the_code() {
     let s = Session::new();
     let full = s.json(&["schema"]);

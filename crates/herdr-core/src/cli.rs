@@ -414,7 +414,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = table(&r);
             let rows: Vec<Value> = r["terminals"].as_array().into_iter().flatten().map(short).collect();
             let mut json = json!({"terminals": rows, "hidden_finished": r["hidden_finished"]});
-            if let Some(machines) = r["machines"].as_array() {
+            if let Some(machines) = r["machines"].as_array().filter(|m| !m.is_empty()) {
                 let keep = |m: &Value| -> Value {
                     let fields = ["name", "state", "since_ms", "why"].into_iter();
                     fields

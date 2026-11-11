@@ -328,7 +328,6 @@ pub struct ListResult {
     pub hidden_finished: usize,
     /// Machines added here and their lines: one that is not connected is
     /// listed here, not waited on.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<crate::remote::MachineView>,
 }
 
