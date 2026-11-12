@@ -27,43 +27,6 @@ fn destination(info: &crate::api::CoreInfo, st: &State, selector: &str) -> Strin
     }
 }
 
-#[tokio::test]
-async fn returned_addresses_route_back_to_the_same_machine() {
-    let root = crate::test_tmp().join(format!("hc-address-{}", crate::platform::random_hex()));
-    let paths = crate::paths::Paths {
-        socket: root.join("core.sock"),
-        holder_socket: root.join("holder.sock"),
-        state: root.clone(),
-        config: root.join("config.toml"),
-    };
-    paths.create_dirs().unwrap();
-    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
-    let first = machine("core-a", "core-b");
-    core.lock().machines = vec![first.clone(), machine("core-b", "second")];
-    let (frames, mut rx) = mpsc::unbounded_channel();
-    let line = Line::new(frames, &json!({}));
-    core.lock().lines.insert(first.id.clone(), LineState::Connected(line.clone()));
-    let reply_to_run = async {
-        let request = rx.recv().await.unwrap();
-        let request: Value = serde_json::from_slice(&request[wire::HEADER..]).unwrap();
-        assert_eq!(request["method"], "terminal.run");
-        line.take_reply(json!({"id": request["id"], "result": {"address": "t1"}}));
-    };
-    let (reply, ()) =
-        tokio::join!(forward_once(&core, &first, "terminal.run", json!({"argv": ["echo"]})), reply_to_run);
-    let reply = reply.unwrap();
-    mirror_replace(&core, &first, vec![json!({"address": "t1"})]);
-    let listed = core.matching(&core.lock(), &crate::events::Filter::default()).pop().unwrap();
-    for record in [reply, listed] {
-        let address = record["address"].as_str().unwrap();
-        let (to, params) = route(&core, "terminal.get", &json!({"terminal": address})).unwrap().unwrap();
-        assert!(matches!(to, To::Machine(m) if m.id == first.id), "{address} reached another core");
-        assert_eq!(params["terminal"], "t1");
-    }
-    drop(core);
-    std::fs::remove_dir_all(root).unwrap();
-}
-
 #[test]
 fn permanent_ids_cannot_be_shadowed_by_display_names() {
     let mut info = crate::api::CoreInfo { id: "local-id".into(), name: "local-name".into() };

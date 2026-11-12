@@ -490,12 +490,11 @@ fn mirror_replace(core: &Core, m: &Machine, terminals: Vec<Value>) {
 
 pub fn rename_mirror(core: &Core, st: &mut State, id: &str, old: &str, new: &str) {
     let Some(records) = st.mirrors.remove(id) else { return };
-    let new = st.machines.iter().find(|m| m.id == id).map_or(new, |m| address_name(core, st, m));
     let mut renamed = std::collections::BTreeMap::new();
     for record in records.values() {
         let mut record = record.clone();
         map_addresses(&mut record, &|s| match s.split_once('/') {
-            Some((prefix, rest)) if prefix == old || prefix == id => format!("{new}/{rest}"),
+            Some((prefix, rest)) if prefix == old => format!("{new}/{rest}"),
             _ => s.to_owned(),
         });
         let address = record["address"].as_str().unwrap_or_default().to_owned();
@@ -1112,22 +1111,14 @@ fn map_addresses(v: &mut Value, map: &dyn Fn(&str) -> String) {
     }
 }
 
-fn address_name<'a>(core: &Core, st: &State, machine: &'a Machine) -> &'a str {
-    match named(&core.info, st, &machine.name) {
-        Ok(Some(To::Machine(resolved))) if resolved.id == machine.id => &machine.name,
-        _ => &machine.id,
-    }
-}
-
 fn localize_in(core: &Core, st: &State, name: &str, aliases: &[&str], mut v: Value) -> Value {
-    let name = st.machines.iter().find(|m| m.name == name).map_or(name, |m| address_name(core, st, m));
     let map = |s: &str| match s.split_once('/') {
         None => format!("{name}/{s}"),
         Some((prefix, rest)) if prefix == core.info.id || prefix == core.info.name || aliases.contains(&prefix) => {
             rest.to_string()
         }
         Some((prefix, rest)) => match st.machines.iter().find(|m| m.id == prefix) {
-            Some(m) => format!("{}/{rest}", address_name(core, st, m)),
+            Some(m) => format!("{}/{rest}", m.name),
             None => s.to_string(),
         },
     };
