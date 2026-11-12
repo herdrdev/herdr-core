@@ -312,6 +312,18 @@ async fn supervise(core: Arc<Core>, id: String) {
     }
 }
 
+async fn refresh_status(core: &Arc<Core>, m: &Machine, line: &Arc<Line>) {
+    loop {
+        if let Ok(status) = line.call(&m.name, "server.status", json!({}), Duration::from_secs(2)).await {
+            let mut st = core.lock();
+            let Some(saved) = st.machines.iter_mut().find(|saved| saved.id == m.id) else { return };
+            saved.keeps_running_after_logout = status["keeps_running_after_logout"].as_bool();
+            saved.logout_linger_user = status["logout_linger_user"].as_str().map(String::from);
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
 /// Serves one open line until it closes.
 async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     let (frames, mut out) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -325,6 +337,8 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     }
     core.changed.notify_waiters();
     tokio::spawn(reattach(core.clone(), m.clone(), line.clone()));
+    let refresh = refresh_status(core, m, &line);
+    tokio::pin!(refresh);
     // Everything that happens there, to keep its mirror here and tell subscribers.
     let id = line.next.fetch_add(1, Ordering::Relaxed);
     lock(&line.mirror).0 = id;
@@ -349,6 +363,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     let mut sends = crate::server::Sends::default();
     loop {
         let (channel, kind, payload) = tokio::select! {
+            () = &mut refresh => break,
             frame = wire::read_frame(&mut stdout) => match frame {
                 Ok(Some(frame)) => frame,
                 _ => break,

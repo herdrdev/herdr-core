@@ -4,6 +4,77 @@ use crate::paths::Paths;
 use std::sync::atomic::AtomicBool;
 
 #[tokio::test]
+async fn removing_or_replacing_a_machine_drops_its_status_poll() {
+    for replacement in [false, true] {
+        let root = std::path::PathBuf::from(format!("/var/tmp/hc-poll-{}", crate::platform::random_hex()));
+        let paths = Paths {
+            socket: root.join("core.sock"),
+            holder_socket: root.join("holder.sock"),
+            state: root.clone(),
+            config: root.join("config.toml"),
+        };
+        paths.create_dirs().unwrap();
+        let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+        let machine: Machine = serde_json::from_value(json!({
+            "name": "away", "target": "away", "id": "away", "host": "away",
+            "version": "test", "session": null
+        }))
+        .unwrap();
+        core.lock().machines.push(machine.clone());
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let dialed = crate::machines::Dialed {
+            stdin: child.stdin.take().unwrap(),
+            stdout: tokio::io::BufReader::new(child.stdout.take().unwrap()),
+            stderr: child.stderr.take().unwrap(),
+            child,
+            hello: json!({}),
+        };
+        let owner = core.clone();
+        let task = tokio::spawn(async move { hold(&owner, &machine, dialed).await });
+        core.lock().line_tasks.insert("away".into(), task.abort_handle());
+        let line = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(LineState::Connected(line)) = core.lock().lines.get("away")
+                    && !lock(&line.pending).is_empty()
+                {
+                    break line.clone();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let weak = Arc::downgrade(&line);
+        drop(line);
+        {
+            let mut st = core.lock();
+            forget(&core, &mut st, "away");
+            if replacement {
+                st.lines.insert("away".into(), LineState::Connecting);
+            } else {
+                st.machines.clear();
+            }
+        }
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("removed line is still retained by a detached poll");
+        drop(core);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
 async fn a_send_on_an_already_closed_line_fails_without_waiting() {
     for writer_gone in [false, true] {
         let (frames, mut rx) = mpsc::unbounded_channel();
@@ -63,6 +134,8 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
             id: "remote".into(),
             host: "away".into(),
             version: "test".into(),
+            keeps_running_after_logout: None,
+            logout_linger_user: None,
         };
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));
@@ -176,6 +249,8 @@ async fn failed_reattach_drains_pending_data_before_close() {
         id: "remote".into(),
         host: "away".into(),
         version: "test".into(),
+        keeps_running_after_logout: None,
+        logout_linger_user: None,
     };
     let conn = Arc::new(Conn::default());
     conn.with(|out| {
@@ -248,6 +323,8 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
         id: "remote".into(),
         host: "rohan".into(),
         version: "test".into(),
+        keeps_running_after_logout: None,
+        logout_linger_user: None,
     };
     let (tx, mut rx) = mpsc::channel(4);
     let (filtered_tx, mut filtered_rx) = mpsc::channel(4);

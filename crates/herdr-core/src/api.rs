@@ -182,6 +182,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
             format!("this core speaks generation {GENERATION}"),
         ));
     }
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
     Ok(HelloResult {
         generation: GENERATION,
         version: version(),
@@ -190,10 +191,13 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
         login_session: core.login_session,
+        keeps_running_after_logout,
+        logout_linger_user,
     })
 }
 
 async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError> {
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
     let st = core.lock();
     let live = st.reg.terminals.values().filter(|t| t.is_live()).count();
     let holders: Vec<HolderInfo> = st
@@ -221,6 +225,8 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         live,
         finished: st.reg.terminals.len() - live,
         installed_by: crate::client::installed_by().map(String::from),
+        keeps_running_after_logout,
+        logout_linger_user,
     })
 }
 
@@ -659,6 +665,8 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
         id: text("id"),
         host: text("name"),
         version: hello["version"].as_str().unwrap_or_default().into(),
+        keeps_running_after_logout: hello["keeps_running_after_logout"].as_bool(),
+        logout_linger_user: hello["logout_linger_user"].as_str().map(String::from),
     };
     if machine.id == core.info.id {
         return Err(RpcError::invalid_params(format!("{} is this core", machine.target))

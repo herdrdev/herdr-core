@@ -1,7 +1,19 @@
 # Machines
 
 Run a program on another machine and come back to it from here.
-The program lives there. Losing your connection does not end it.
+The program lives there. On Linux with systemd, hc tries to enable lingering
+so it survives your last login ending. If the server refuses and logind has a finite stop delay,
+adding still succeeds with a warning and `hc machine ls` shows `! stops at logout`.
+Run the suggested `sudo loginctl enable-linger -- <user>` on that machine once.
+The warning clears automatically when an administrator enables it.
+
+The API reports `keeps_running_after_logout` and `logout_linger_user` in
+`hello`, `server.status` and machine results. False means lingering is off
+and logind has a finite user stop delay. An infinite or unreadable delay
+returns null, as do older cores and other OSes. Checks run in the background
+at startup, after the core's own enable attempt, and about every minute.
+Until the first check finishes, the result is null.
+This reports logout protection, not survival across a reboot.
 
 [Back to the README](../README.md) · [Command reference](commands.md#hc-machine)
 

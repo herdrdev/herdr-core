@@ -304,17 +304,128 @@ fn literal(arg: &OsStr) -> OsString {
     arg.to_string_lossy().replace('$', "$$").into()
 }
 
-/// Without linger the user manager, and every hc service with it, stops when
-/// the user's last login ends.
-fn linger() {
-    let user = unsafe {
-        let pw = libc::getpwuid(libc::getuid());
-        if pw.is_null() {
-            return;
+static LOGOUT_LINGER: std::sync::Mutex<(Option<bool>, Option<String>)> = std::sync::Mutex::new((None, None));
+static LINGER_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub fn logout_linger() -> (Option<bool>, Option<String>) {
+    LOGOUT_LINGER.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+pub fn start_logout_linger() {
+    tokio::spawn(async {
+        loop {
+            let observed = observe_logout_linger().await;
+            *LOGOUT_LINGER.lock().unwrap_or_else(|p| p.into_inner()) = observed;
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {},
+                _ = LINGER_CHANGED.notified() => {},
+            }
         }
-        std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned()
+    });
+    if manager().is_ok() {
+        linger();
+    }
+}
+
+async fn observe_logout_linger() -> (Option<bool>, Option<String>) {
+    if manager().is_err() {
+        return (None, None);
+    }
+    let Some(user) = login_user() else { return (None, None) };
+    let linger = linger_enabled(Path::new("/var/lib/systemd/linger"), &user);
+    let survives = match linger {
+        Some(false) => logout_survival(linger, stop_delay().await.as_deref()),
+        other => other,
     };
-    if Path::new("/var/lib/systemd/linger").join(&user).exists() {
+    (survives, Some(user))
+}
+
+fn linger_enabled(directory: &Path, user: &str) -> Option<bool> {
+    let escaped: String = user
+        .bytes()
+        .map(|byte| match byte {
+            b'\x07' => "\\a".into(),
+            b'\x08' => "\\b".into(),
+            b'\x0c' => "\\f".into(),
+            b'\n' => "\\n".into(),
+            b'\r' => "\\r".into(),
+            b'\t' => "\\t".into(),
+            b'\x0b' => "\\v".into(),
+            b'\\' => "\\\\".into(),
+            b'\'' => "\\'".into(),
+            b'"' => "\\\"".into(),
+            b' '..=b'~' => char::from(byte).to_string(),
+            _ => format!("\\{:03o}", byte),
+        })
+        .collect();
+    directory.join(escaped).try_exists().ok()
+}
+
+async fn stop_delay() -> Option<String> {
+    let mut command = tokio::process::Command::new("busctl");
+    command.args([
+        "--timeout=1",
+        "get-property",
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "UserStopDelayUSec",
+    ]);
+    stop_delay_command(command).await
+}
+
+async fn stop_delay_command(mut command: tokio::process::Command) -> Option<String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).process_group(0);
+    let child = command.spawn().ok()?;
+    // Kill the private group too, including helpers inheriting the output pipe.
+    struct ProcessGroup(u32);
+    impl Drop for ProcessGroup {
+        fn drop(&mut self) {
+            unsafe { libc::kill(-(self.0 as i32), libc::SIGKILL) };
+        }
+    }
+    let group = ProcessGroup(child.id()?);
+    let output = child.wait_with_output();
+    tokio::pin!(output);
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(1), &mut output).await {
+        Ok(out) => out.ok()?,
+        Err(_) => {
+            drop(group);
+            let _ = output.await;
+            return None;
+        }
+    };
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn logout_survival(linger: Option<bool>, stop_delay: Option<&str>) -> Option<bool> {
+    if linger != Some(false) {
+        return linger;
+    }
+    // Per-user finite delays override the global value; infinity means unset.
+    // Only a finite global delay proves that logind will stop this manager.
+    let delay = stop_delay?.strip_prefix("t ")?.trim().parse::<u64>().ok()?;
+    (delay != u64::MAX).then_some(false)
+}
+
+fn login_user() -> Option<String> {
+    // getpwuid_r keeps simultaneous status requests from sharing libc's buffer.
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0u8; 16384];
+    let mut result = std::ptr::null_mut();
+    let error = unsafe {
+        libc::getpwuid_r(libc::getuid(), entry.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result)
+    };
+    if error != 0 || result.is_null() {
+        return None;
+    }
+    Some(unsafe { std::ffi::CStr::from_ptr((*result).pw_name) }.to_string_lossy().into_owned())
+}
+
+/// Linger keeps the user manager alive independently of logind's stop delay.
+fn linger() {
+    let Some(user) = login_user() else { return };
+    if linger_enabled(Path::new("/var/lib/systemd/linger"), &user) == Some(true) {
         return;
     }
     // Polkit can leave loginctl waiting for 25 seconds, longer than a
@@ -328,16 +439,19 @@ fn linger() {
 fn enable_linger(mut command: Command, user: String) -> io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new().name("hc-linger".into()).spawn(move || {
         let enabled = command
-            .args(["--no-ask-password", "enable-linger", &user])
+            .args(["--no-ask-password", "enable-linger", "--", &user])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .is_ok_and(|s| s.success());
+        LINGER_CHANGED.notify_one();
         if enabled {
             eprintln!("hc: turned on linger for {user}, so the core outlives your logins");
         } else {
-            eprintln!("hc: the core stops when your last login ends; `sudo loginctl enable-linger {user}` keeps it");
+            eprintln!(
+                "hc: the core may stop when your last login ends; `sudo loginctl enable-linger -- {user}` keeps it"
+            );
         }
     })
 }
@@ -452,6 +566,78 @@ mod tests {
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn linger_marker_is_rechecked_after_admin_changes() {
+        let root = std::env::temp_dir().join(format!("hc-linger-{}", super::super::random_hex()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(super::linger_enabled(&root, "test"), Some(false));
+        std::fs::write(root.join("test"), "").unwrap();
+        assert_eq!(super::linger_enabled(&root, "test"), Some(true));
+        std::fs::remove_file(root.join("test")).unwrap();
+        assert_eq!(super::linger_enabled(&root, "test"), Some(false));
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn escaped_account_marker_is_rechecked() {
+        let root = std::env::temp_dir().join(format!("hc-linger-{}", super::super::random_hex()));
+        std::fs::create_dir_all(&root).unwrap();
+        let user = "DOMAIN\\o'né";
+        let marker = root.join(r"DOMAIN\\o\'n\303\251");
+        assert_eq!(super::linger_enabled(&root, user), Some(false));
+        std::fs::write(&marker, "").unwrap();
+        assert_eq!(super::linger_enabled(&root, user), Some(true));
+        std::fs::remove_file(marker).unwrap();
+        assert_eq!(super::linger_enabled(&root, user), Some(false));
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stalled_policy_query_does_not_block_and_is_reaped() {
+        let directory = Path::new("/var/tmp").join(format!("hc-policy-{}", super::super::random_hex()));
+        std::fs::create_dir(&directory).unwrap();
+        let pid_file = directory.join("pid");
+        use std::os::unix::fs::PermissionsExt;
+        let fake_busctl = directory.join("busctl");
+        std::fs::write(&fake_busctl, "#!/bin/sh\necho $$ > \"$1\"\nexec /bin/sleep 30\n").unwrap();
+        std::fs::set_permissions(&fake_busctl, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = tokio::process::Command::new("busctl");
+        command.env("PATH", &directory).arg(&pid_file);
+        let query = tokio::spawn(super::stop_delay_command(command));
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            while !pid_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("query blocked the executor");
+        let start = std::time::Instant::now();
+        for _ in 0..100 {
+            super::logout_linger();
+            tokio::task::yield_now().await;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_millis(250));
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        assert_eq!(query.await.unwrap(), None);
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "policy child leaked");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missing_linger_warns_only_with_a_known_finite_stop_delay() {
+        for (delay, expected) in [
+            (Some("t 10000000\n"), Some(false)),
+            (Some("t 0\n"), Some(false)),
+            (Some("t 18446744073709551615\n"), None),
+            (Some("not a property"), None),
+            (None, None),
+        ] {
+            assert_eq!(super::logout_survival(Some(false), delay), expected);
+            assert_eq!(super::logout_survival(Some(true), delay), Some(true));
+            assert_eq!(super::logout_survival(None, delay), None);
+        }
     }
 
     #[test]

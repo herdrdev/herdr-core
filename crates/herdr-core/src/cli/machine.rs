@@ -20,6 +20,15 @@ pub(super) enum MachineCmd {
     Rm(MachineParams),
 }
 
+fn linger_user(m: &Value) -> String {
+    let user = m["logout_linger_user"].as_str().unwrap_or("<user>");
+    if user.bytes().all(|c| c.is_ascii_alphanumeric() || b"_-.".contains(&c)) {
+        user.to_owned()
+    } else {
+        format!("'{}'", user.replace('\'', "'\\''"))
+    }
+}
+
 /// A person who can answer ssh's questions (a password, a code, a host key).
 fn at_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
@@ -61,7 +70,13 @@ pub(super) fn machine(
                 }
                 other => other?,
             };
-            let human = format!("added {}: {} answers, hc {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+            let mut human = format!("added {}: {} answers, hc {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+            if m["keeps_running_after_logout"] == false {
+                human.push_str(&format!(
+                    "\nwarning: programs on {} stop when your last login there ends. To fix it, run this on {} once: sudo loginctl enable-linger -- {}",
+                    s(&m["name"]), s(&m["name"]), linger_user(&m)
+                ));
+            }
             Out { json: m, human }
         }
         MachineCmd::Ls => {
@@ -73,8 +88,9 @@ pub(super) fn machine(
                 .map(|m| {
                     let session = m["session"].as_str().map(|x| format!(" session {x}")).unwrap_or_default();
                     let state = line_state(m);
+                    let logout = if m["keeps_running_after_logout"] == false { "  ! stops at logout" } else { "" };
                     format!(
-                        "{:<16} {state}  \x1b[2m{}{session} \u{b7} hc {}\x1b[22m",
+                        "{:<16} {state}{logout}  \x1b[2m{}{session} \u{b7} hc {}\x1b[22m",
                         s(&m["name"]),
                         s(&m["target"]),
                         s(&m["version"])
@@ -133,4 +149,32 @@ pub(super) fn machine(
             Out { json: r, human }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logout_warning_is_human_only_and_requires_observed_false() {
+        let paths = Paths {
+            socket: "unused".into(),
+            holder_socket: "unused".into(),
+            state: "unused".into(),
+            config: "unused".into(),
+        };
+        for state in [json!(false), json!(true), Value::Null] {
+            let remote = json!({"name":"cloud", "target":"user@cloud", "version":"test",
+                "keeps_running_after_logout":state, "logout_linger_user":"-remote-user"});
+            let params = serde_json::from_value(json!({"via":"ssh user@cloud", "name":"cloud"})).unwrap();
+            let added = machine(&paths, MachineCmd::Add(params), |_, _| Ok(remote.clone())).unwrap();
+            assert_eq!(added.json, remote);
+            assert_eq!(added.human.contains("warning:"), state == false);
+            if state == false {
+                assert!(added.human.contains("sudo loginctl enable-linger -- -remote-user"));
+            }
+            let listed = machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[remote]}))).unwrap();
+            assert_eq!(listed.human.contains("stops at logout"), state == false);
+        }
+    }
 }

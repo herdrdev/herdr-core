@@ -123,6 +123,11 @@ pub struct HelloResult {
     /// OS login inherited by this core. Absent when unavailable or unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_session: Option<crate::platform::LoginSession>,
+    /// True: systemd lingering is enabled; false: programs stop at last logout.
+    /// Null: unsupported, not applicable or unknown.
+    pub keeps_running_after_logout: Option<bool>,
+    /// Account for the administrator's loginctl enable-linger command.
+    pub logout_linger_user: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema, Clone)]
@@ -151,6 +156,11 @@ pub struct StatusResult {
     /// system package manager): it updates hc, `hc update` won't.
     /// Null for a replaceable plain install.
     pub installed_by: Option<String>,
+    /// True: systemd lingering is enabled; false: programs stop at last logout.
+    /// Null: unsupported, not applicable or unknown. Checked on every request.
+    pub keeps_running_after_logout: Option<bool>,
+    /// Account for the administrator's loginctl enable-linger command.
+    pub logout_linger_user: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

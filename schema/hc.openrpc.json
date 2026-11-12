@@ -322,6 +322,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "keeps_running_after_logout": {
+            "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "login_session": {
             "anyOf": [
               {
@@ -332,6 +339,13 @@
               }
             ],
             "description": "OS login inherited by this core. Absent when unavailable or unsupported."
+          },
+          "logout_linger_user": {
+            "description": "Account for the administrator's loginctl enable-linger command.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "methods": {
             "items": {
@@ -515,6 +529,22 @@
             "description": "The other core's permanent id.",
             "type": "string"
           },
+          "keeps_running_after_logout": {
+            "default": null,
+            "description": "Last observed systemd logout protection; null for old or unsupported cores.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "logout_linger_user": {
+            "default": null,
+            "description": "Remote account for loginctl enable-linger, when applicable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "description": "What this core calls it: `rohan` in `rohan/t7`.",
             "type": "string"
@@ -578,6 +608,22 @@
           "id": {
             "description": "The other core's permanent id.",
             "type": "string"
+          },
+          "keeps_running_after_logout": {
+            "default": null,
+            "description": "Last observed systemd logout protection; null for old or unsupported cores.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "logout_linger_user": {
+            "default": null,
+            "description": "Remote account for loginctl enable-linger, when applicable.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "description": "What this core calls it: `rohan` in `rohan/t7`.",
@@ -1057,10 +1103,24 @@
               "null"
             ]
           },
+          "keeps_running_after_logout": {
+            "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown. Checked on every request.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "live": {
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "logout_linger_user": {
+            "description": "Account for the administrator's loginctl enable-linger command.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pid": {
             "format": "uint32",

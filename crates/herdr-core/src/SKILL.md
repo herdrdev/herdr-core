@@ -178,7 +178,18 @@ Use the returned address to wait/read it; don't launch a duplicate.
 ## Other machines and files
 
 Your harness's own file tools touch only the machine you run on. Use hc for
-remote files and commands. `hc machine ls` lists configured machines; see
+remote files and commands. On Linux with systemd, hc tries to enable lingering.
+If denied and logind has a finite stop delay, machine add warns and machine ls
+marks `! stops at logout`: programs end when the account's last login closes.
+An infinite or unreadable delay reports unknown. Run the suggested
+`sudo loginctl enable-linger -- <user>` on
+that machine once; the warning clears after the next background check and status
+refresh. The core checks at startup, after its own enable attempt, and about
+every minute. Until the first check finishes, the result is unknown.
+JSON carries `keeps_running_after_logout` (true, false, or null when unknown /
+not applicable) and `logout_linger_user`, also in hello and server.status.
+
+`hc machine ls` lists configured machines; see
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
 Without `--name`, SSH machines use the first host label (IPs stay whole),
 shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken

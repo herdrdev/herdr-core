@@ -31,6 +31,12 @@ pub struct Machine {
     pub host: String,
     /// Its hc version when last seen.
     pub version: String,
+    /// Last observed systemd logout protection; null for old or unsupported cores.
+    #[serde(default)]
+    pub keeps_running_after_logout: Option<bool>,
+    /// Remote account for loginctl enable-linger, when applicable.
+    #[serde(default)]
+    pub logout_linger_user: Option<String>,
 }
 
 impl Machine {
