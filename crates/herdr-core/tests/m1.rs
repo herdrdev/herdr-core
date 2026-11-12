@@ -558,7 +558,7 @@ fn a_burst_of_tiny_writes_arrives_gathered_and_whole() {
     let (mut core, _) = raw_hello(&socket);
     let writes = 20000;
     let program = format!("import os\nfor i in range({writes}): os.write(1, b'%05d' % i)");
-    raw_spawn(&mut core, 1, &[python3(), "-c", &program]);
+    raw_spawn(&mut core, 1, &["python3", "-c", &program]);
     let (mut printed, mut frames) = (Vec::new(), 0);
     loop {
         let (kind, id, payload) = proto::read(&mut core).expect("output, then its exit").unwrap();
@@ -584,7 +584,7 @@ fn releasing_a_terminal_mid_burst_stops_it_cleanly() {
     let s = Session::new();
     let (_holder, socket) = raw_holder(&s, "release");
     let (mut core, _) = raw_hello(&socket);
-    raw_spawn(&mut core, 1, &[python3(), "-c", "import os\nwhile True: os.write(1, b'y')"]);
+    raw_spawn(&mut core, 1, &["python3", "-c", "import os\nwhile True: os.write(1, b'y')"]);
     let mut outputs = 0;
     while outputs < 20 {
         if proto::read(&mut core).unwrap().unwrap().0 == proto::OUTPUT {
