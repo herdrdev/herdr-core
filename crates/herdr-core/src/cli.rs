@@ -204,11 +204,11 @@ fn fail(err: &RpcError, json: bool) -> i32 {
         // Esc in the picker: nothing to report.
     } else if json {
         let body = json!({"error": {"kind": err.kind, "message": err.message, "hint": err.hint}});
-        eprintln!("{body}");
+        log!("{body}");
     } else {
-        eprintln!("error: {}", err.message);
+        log!("error: {}", err.message);
         if !err.hint.is_empty() {
-            eprintln!("hint: {}", err.hint);
+            log!("hint: {}", err.hint);
         }
     }
     err.exit_code()

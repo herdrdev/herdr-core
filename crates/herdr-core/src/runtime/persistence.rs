@@ -185,7 +185,8 @@ mod tests {
                 .env(CHILD, "1")
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && stdout.contains(&format!("{name} ... ok")), "{stdout}");
             return;
         }
         // stderr is a pipe nobody reads: every write fails, like a log file on a full disk.
