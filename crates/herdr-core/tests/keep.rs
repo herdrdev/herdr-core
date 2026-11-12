@@ -399,3 +399,54 @@ fn keep_off_on_a_lost_terminal_reports_it_finished() {
     assert_eq!(r["state"], "finished", "{r}");
     assert_eq!(r["reason"], "holder_lost");
 }
+
+#[test]
+fn a_kept_terminal_lost_to_a_reboot_or_its_holder_shows_what_its_program_left_above_the_new_shell() {
+    // As a reboot ends them: the service manager stops the core (a planned handover), then the rest.
+    shows_what_was_left(|s, status| {
+        unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGTERM) };
+        wait_until("core gone", || !s.connect_ok());
+        unsafe { libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+    });
+    // The holder alone dies while the core runs.
+    shows_what_was_left(|_, status| unsafe {
+        libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    });
+}
+
+fn shows_what_was_left(lose: impl Fn(&Session, &serde_json::Value)) {
+    let s = Session::new();
+    let t = run(&s, &["--keep", "sh", "-c", "printf 'left-on-screen\\n'; exec sleep 100"]);
+    wait_until("output", || text(&s, &t).contains("left-on-screen"));
+    let old = get(&s, &t)["pid"].as_i64().unwrap();
+    lose(&s, &s.json(&["server", "status"]));
+    wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+    s.json(&["send", &t, "echo after-$((1+1))"]);
+    wait_until("new shell answers", || text(&s, &t).contains("after-2"));
+    let text = text(&s, &t);
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
+    assert!(at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"), "{text:?}");
+    assert_eq!(text.matches("left-on-screen").count(), 1, "{text:?}");
+}
+
+#[test]
+fn a_saved_screen_comes_back_once_not_after_a_later_loss_that_saved_nothing() {
+    let s = Session::new();
+    let t = run(&s, &["--keep", "sh", "-c", "printf 'before-the-update\\n'; exec sleep 100"]);
+    wait_until("output", || text(&s, &t).contains("before-the-update"));
+    // An update hands the screen to the next core, which reads it.
+    s.json(&["server", "restart"]);
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    let old = get(&s, &t)["pid"].as_i64().unwrap();
+    // A power cut: nothing gets saved.
+    let status = s.json(&["server", "status"]);
+    unsafe {
+        libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    }
+    wait_until("core gone", || !s.connect_ok());
+    wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+    s.json(&["send", &t, "echo after-$((1+1))"]);
+    wait_until("new shell answers", || text(&s, &t).contains("after-2"));
+    assert!(!text(&s, &t).contains("before-the-update"), "a screen from before the update came back");
+}

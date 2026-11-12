@@ -224,6 +224,14 @@ impl Core {
         self.paths.state.join("screens").join(format!("{}.snap", crate::terminals::address(id)))
     }
 
+    /// A live terminal's saved screen, read once: a later loss must not bring back an older one.
+    pub(crate) fn take_saved_screen(&self, id: u32) -> Option<Screen> {
+        let path = self.snapshot_path(id);
+        let bytes = std::fs::read(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        Screen::restore(&bytes?, self.history_bytes())
+    }
+
     pub fn save(&self, st: &State) {
         self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
@@ -468,10 +476,12 @@ impl Core {
                 }
             }
             let tail = tails.remove(&id).unwrap_or_default();
-            let saved = handover
-                .then(|| std::fs::read(self.snapshot_path(id)).ok())
-                .flatten()
-                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
+            let saved = if handover {
+                self.take_saved_screen(id)
+            } else {
+                let _ = std::fs::remove_file(self.snapshot_path(id));
+                None
+            };
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
