@@ -727,6 +727,8 @@ fn status_events_on_crash_adoption(tail: &[u8]) -> Vec<Value> {
         instance: "fake".into(),
         pid: 0,
         build: crate::client::build_id(),
+        login_session: None,
+        draining: false,
         previous: "crash".into(),
         terminals: vec![proto::HeldTerminal { id, pid: 1, cols: 80, rows: 24, exit: None }],
     };

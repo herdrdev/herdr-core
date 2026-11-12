@@ -10,6 +10,8 @@ fn machine(id: &str, name: &str) -> Machine {
         session: None,
         host: "unused".into(),
         version: "test".into(),
+        keeps_running_after_logout: None,
+        logout_linger_user: None,
     }
 }
 
