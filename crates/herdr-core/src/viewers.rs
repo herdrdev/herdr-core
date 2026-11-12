@@ -125,7 +125,8 @@ impl Core {
                 for (id, wait) in due {
                     st.image_deadlines.remove(&id);
                     let late = st.relays.get_mut(&id).map(|r| r.expire(wait)).unwrap_or_default();
-                    let late = st.gates.entry(id).or_default().viewer(&late, false);
+                    let Some(gate) = st.gates.get_mut(&id) else { continue };
+                    let late = gate.viewer(&late, false);
                     if let Some(link) = st.link(id) {
                         link.input(id, &late);
                     }

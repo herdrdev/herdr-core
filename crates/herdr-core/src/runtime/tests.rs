@@ -2,6 +2,21 @@ use super::*;
 use serde_json::{Value, json};
 
 #[tokio::test(start_paused = true)]
+async fn expiring_an_ended_terminals_image_wait_does_not_recreate_its_gate() {
+    let (core, root) = test_core();
+    core.lock().image_deadlines.insert(1, (1, tokio::time::Instant::now()));
+    let timer = tokio::spawn(core.clone().expire_image_answers());
+    tokio::task::yield_now().await;
+    assert!(core.lock().image_deadlines.is_empty());
+    let gate_recreated = core.lock().gates.contains_key(&1);
+    timer.abort();
+    let _ = timer.await;
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(!gate_recreated);
+}
+
+#[tokio::test(start_paused = true)]
 async fn image_streams_share_one_timer_task_and_keep_the_latest_deadline() {
     use crate::viewers::{AttachRequest, Display};
     let (core, root) = test_core();
