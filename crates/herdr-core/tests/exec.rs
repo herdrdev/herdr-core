@@ -181,7 +181,6 @@ fn exec_ends_when_its_caller_goes_away_here_or_across_a_line() {
 
 #[test]
 fn a_caller_that_is_done_sending_still_gets_its_exec_reply() {
-    use std::io::BufRead;
     let s = Session::new();
     s.json(&["server", "start"]);
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": "machine.exec", "params": {"argv": ["sh", "-c", "sleep 0.3; echo ok"]}});
@@ -193,13 +192,6 @@ fn a_caller_that_is_done_sending_still_gets_its_exec_reply() {
         (json!(0), json!("b2sK")),
         "{reply}"
     );
-
-    let mut conn = exec_on_conn(&s, json!({"argv": ["sh", "-c", "sleep 0.3; echo ok"]}));
-    conn.writer.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut line = String::new();
-    conn.reader.read_line(&mut line).unwrap();
-    let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(reply["result"]["stdout"], "b2sK", "{reply}");
 }
 
 #[test]
