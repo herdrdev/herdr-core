@@ -247,6 +247,7 @@ impl Core {
     }
 
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
+        crate::keep_awake::update(self, st);
         let t = st.reg.terminals.get_mut(&id).expect("reported terminal");
         let first_task_finished = t.first_task_turn.is_some_and(|turn| {
             t.turn > turn

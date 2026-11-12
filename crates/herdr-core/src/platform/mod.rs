@@ -382,3 +382,47 @@ pub mod signal {
 #[cfg(test)]
 #[path = "environment_tests.rs"]
 mod environment_tests;
+
+#[cfg(target_os = "macos")]
+mod macos_power;
+#[cfg(target_os = "macos")]
+pub use macos_power::IdleSleep;
+
+pub fn keep_awake_supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub struct IdleSleep;
+
+#[cfg(not(target_os = "macos"))]
+impl IdleSleep {
+    pub fn new(_working: usize, _deadline: std::time::Duration, _left: std::time::Duration) -> std::io::Result<Self> {
+        Err(std::io::Error::other("idle-sleep prevention is not supported on this platform"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl IdleSleep {
+    pub fn update(
+        &mut self,
+        _working: usize,
+        _deadline: std::time::Duration,
+        _left: std::time::Duration,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Monotonic elapsed time, including system sleep on macOS.
+pub fn keep_awake_clock() -> std::time::Duration {
+    #[cfg(target_os = "macos")]
+    {
+        macos_power::clock()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed()
+    }
+}

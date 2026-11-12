@@ -1103,6 +1103,10 @@
               "null"
             ]
           },
+          "keep_awake": {
+            "description": "Idle-sleep prevention: off, unsupported, idle, active, limited, or error.",
+            "type": "string"
+          },
           "keeps_running_after_logout": {
             "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown. Checked on every request.",
             "type": [
@@ -1137,6 +1141,7 @@
           }
         },
         "required": [
+          "keep_awake",
           "core",
           "version",
           "pid",

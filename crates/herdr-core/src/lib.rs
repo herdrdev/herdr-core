@@ -11,6 +11,7 @@ pub mod foreground;
 pub mod holder;
 pub mod holder_proto;
 pub mod input;
+mod keep_awake;
 mod kept;
 pub mod keys;
 pub mod locale;

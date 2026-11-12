@@ -163,3 +163,12 @@ fn configured_shell_runs_its_arguments_and_leaves_explicit_programs_alone() {
         assert_eq!(s.err(&["run", "--bg"]).1["error"]["kind"], kind);
     }
 }
+
+#[test]
+fn keep_awake_is_off_by_default() {
+    let s = Session::new();
+    assert_eq!(s.json(&["server", "start"])["keep_awake"], "off");
+    let t = run(&s, &["sh", "-c", r"printf '\033]7501;state=working\033\\'; sleep 100"]);
+    wait_until("working", || s.json(&["get", &t])["status"]["state"] == "working");
+    assert_eq!(s.json(&["server", "status"])["keep_awake"], "off");
+}
