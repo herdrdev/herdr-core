@@ -1,7 +1,6 @@
 //! A pseudo console has no foreground process group. What stands in for one:
-//! the newest live program the terminal's first process started itself, as a
-//! shell's job would be. Its own helpers (an agent's tool or MCP processes)
-//! are its children, not the shell's, so they never take its place.
+//! the newest live program a known shell root started itself. A directly
+//! launched program keeps its place when it starts tools or helper processes.
 
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
@@ -24,9 +23,33 @@ pub(super) fn in_front(job: HANDLE, root: u32) -> u32 {
     newest_child(root, &unsafe { job_processes(job) }).unwrap_or(root)
 }
 
-/// The newest of `root`'s own children, console hosts aside (Windows starts
+/// A known shell root's newest child, console hosts aside (Windows starts
 /// them for console programs; they are never what a person is using).
 fn newest_child(root: u32, procs: &[Proc]) -> Option<u32> {
+    let shell = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        matches!(
+            name.strip_suffix(".exe").unwrap_or(&name),
+            "zsh"
+                | "bash"
+                | "fish"
+                | "sh"
+                | "dash"
+                | "nu"
+                | "pwsh"
+                | "powershell"
+                | "cmd"
+                | "elvish"
+                | "xonsh"
+                | "tcsh"
+                | "csh"
+                | "ksh"
+                | "ion"
+        )
+    };
+    if !procs.iter().any(|p| p.pid == root && shell(&p.name)) {
+        return None;
+    }
     let host = |name: &str| ["conhost.exe", "OpenConsole.exe"].iter().any(|h| name.eq_ignore_ascii_case(h));
     procs
         .iter()
@@ -108,5 +131,14 @@ mod tests {
             p(14, 12, 5, "node.exe"), // the agent's own helper
         ];
         assert_eq!(newest_child(10, &procs), Some(12));
+    }
+
+    #[test]
+    fn a_direct_program_keeps_its_place_when_it_starts_a_helper() {
+        let p = |pid, parent, name: &str| Proc { pid, parent, started: pid as u64, name: name.into() };
+        assert_eq!(newest_child(10, &[p(10, 1, "node.exe"), p(11, 10, "ping.exe")]), None);
+        for shell in ["cmd.exe", "PwSh.EXE", "powershell.exe", "nu.exe", "bash", "sh.exe"] {
+            assert_eq!(newest_child(10, &[p(10, 1, shell), p(11, 10, "node.exe")]), Some(11), "{shell}");
+        }
     }
 }
