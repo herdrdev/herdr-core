@@ -22,6 +22,8 @@ type Sink = (Arc<Conn>, u32);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
+#[cfg(test)]
+mod routing_tests;
 mod viewers;
 #[cfg(test)]
 use viewers::automatic_input;
@@ -814,14 +816,26 @@ pub enum To {
 }
 
 /// What an address prefix names: this core (`None`), a machine, or a peer.
-fn named(core: &Core, st: &State, prefix: &str) -> Result<Option<To>, RpcError> {
-    if prefix == core.info.id || prefix == core.info.name {
+fn named(info: &crate::api::CoreInfo, st: &State, prefix: &str) -> Result<Option<To>, RpcError> {
+    // Permanent ids win across the whole namespace, independent of display
+    // names or machine registration order. Otherwise an alias can retarget a
+    // doc/file/run call (or a terminal address) meant for another core's id.
+    if prefix == info.id {
         return Ok(None);
     }
-    if let Some(m) = st.machines.iter().find(|m| m.name == prefix || m.id == prefix) {
+    if let Some(m) = st.machines.iter().find(|m| m.id == prefix) {
         return Ok(Some(To::Machine(m.clone())));
     }
-    match st.peers.iter().find(|(id, p)| *id == prefix || p.name == prefix) {
+    if let Some(p) = st.peers.get(prefix) {
+        return Ok(Some(To::Peer { id: prefix.into(), name: p.name.clone() }));
+    }
+    if prefix == info.name {
+        return Ok(None);
+    }
+    if let Some(m) = st.machines.iter().find(|m| m.name == prefix) {
+        return Ok(Some(To::Machine(m.clone())));
+    }
+    match st.peers.iter().find(|(_, p)| p.name == prefix) {
         Some((id, p)) => Ok(Some(To::Peer { id: id.clone(), name: p.name.clone() })),
         None => Err(crate::machines::unknown(&st.machines, prefix)),
     }
@@ -838,7 +852,7 @@ pub fn route(core: &Core, method: &str, params: &Value) -> Result<Option<(To, Va
     ) {
         let Some(on) = params["on"].as_str().map(String::from) else { return Ok(None) };
         params.as_object_mut().map(|p| p.remove("on"));
-        match named(core, &st, &on)? {
+        match named(&core.info, &st, &on)? {
             Some(To::Peer { name, .. }) => return Err(crate::machines::unknown(&st.machines, &name)),
             to => to,
         }
@@ -848,7 +862,7 @@ pub fn route(core: &Core, method: &str, params: &Value) -> Result<Option<(To, Va
         else {
             return Ok(None);
         };
-        let to = named(core, &st, &prefix)?;
+        let to = named(&core.info, &st, &prefix)?;
         if let Some(To::Peer { name, .. }) = &to
             && !CALLS_BACK.contains(&method)
         {
