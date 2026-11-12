@@ -30,7 +30,7 @@ Any language or `socat` works.
 
 ```
 → {"jsonrpc":"2.0","id":1,"method":"terminal.list","params":{}}
-← {"jsonrpc":"2.0","id":1,"result":{"terminals":[...],"hidden_finished":0}}
+← {"jsonrpc":"2.0","id":1,"result":{"terminals":[...],"hidden_finished":0,"machines":[]}}
 ```
 
 Errors are JSON-RPC errors with a stable kind and a hint:
