@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## [0.1.21] - 2026-11-12
+
+### New
+- **Remote Linux machines warn when their programs would stop at logout.** Where the machine's login settings end your programs once your last SSH login closes, `hc machine add`, `hc server status` and Herdr's machine list say so, with the one command that fixes it.
+- After a reboot, a kept terminal can show its program's last screen above the new shell, so you can see where you were. Turn it on with `restore_screen = true` in config.toml; it's off by default. (#260, thanks @sundarshahi)
+
+### Fixed
+- **On Windows, Herdr sees the program running in a PowerShell or cmd terminal,** so agents started from a shell show their name and status, and Ctrl+C on a plain program reports that it stopped. (#70, #72, thanks @yetone)
+- **On Windows, terminals start when PowerShell 7 is installed but its folder isn't on PATH.** Before, every new terminal failed. (herdr-app#967)
+- **A machine whose SSH login fails, like a passphrase key that isn't in an agent, no longer retries every few seconds.** It shows that it needs a login and retries after 2, 5, then every 10 minutes, so servers with fail2ban or CrowdSec don't ban you. A locked ssh-agent that unlocks later still reconnects by itself, and `hc machine login` reconnects at once.
+- Remote Linux cores started over SSH get your login profile's environment, so tools in `~/.local/bin` and the like are found in terminals there. (herdr-app#873)
+- Programs that ask whether the terminal can show images get the answer from the Herdr window showing them. (#241, thanks @factory-ain3sh)
+- After restarting Herdr while vim or less is open, the pane shows the right screen when the program exits.
+- `hc wait` on an agent that crashes or exits says `exit` with its code, as documented. (#221, thanks @connorburgess)
+- Calling `hc wait` many times no longer grows the core's memory. (#230, thanks @CMU02)
+- Watching a terminal with `hc attach --observe` no longer resizes it. (#199, thanks @deepcoldy)
+- After a core crash, apps see each agent's current status. (#183, thanks @abhijit-s)
+- The install script works on servers whose temp folder can't run programs, for installs and updates. (#116, thanks @y2hhbw)
+- The "line lost; reconnecting" notice shows even when the line drops in the middle of an image. (#236, thanks @aldanor)
+- `terminal.list` always includes `machines`, as the schema says. (#235, thanks @CMU02)
+
 ## [0.1.20] - 2026-11-10
 
 ### New
