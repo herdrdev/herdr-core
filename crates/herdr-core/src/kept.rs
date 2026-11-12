@@ -25,6 +25,9 @@ impl Terminal {
     }
 }
 
+/// Under what the lost program left on screen, so it isn't taken for something still running.
+const RESTORED: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; this is a new shell --\x1b[0m\r\n";
+
 impl Core {
     pub(crate) fn spawn_failed(&self, st: &mut crate::runtime::State, id: u32) {
         let t = st.reg.terminals.get_mut(&id).expect("failed spawn");
@@ -105,8 +108,22 @@ impl Core {
             t.stop = None;
             t.paste_gap_ms = None;
             let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
-            let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
-            screen.set_xtversion(&t.identity);
+            let identity = t.identity.clone();
+            // A retry after a failed spawn keeps the screen the first try built.
+            let mut screen = st.screens.remove(&id).unwrap_or_else(|| {
+                let mut screen = ghostty_vt::Terminal::new(spawn.cols, spawn.rows, self.history_bytes());
+                if let Some(old) = self.take_saved_screen(id) {
+                    screen.write(&old.replay());
+                    screen.write(RESTORED);
+                    // ConPTY paints a new console from the top left: move what was there into history.
+                    if cfg!(windows) {
+                        screen.write(&b"\n".repeat(spawn.rows as usize));
+                        screen.write(b"\x1b[H");
+                    }
+                }
+                screen
+            });
+            screen.set_xtversion(&identity);
             st.screens.insert(id, screen);
             // Claim and queue the snapshot before sending: a slow holder never gets a second spawn.
             // If a crash leaves the spawn unrecorded, the next start kills it.

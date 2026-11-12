@@ -919,3 +919,20 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
         assert_eq!(err["error"]["kind"], kind, "{err}");
     }
 }
+
+#[test]
+fn a_lost_kept_terminal_shows_what_its_program_left_above_the_new_shell() {
+    let s = Session::new();
+    let t = s.bg(&["--keep", "cmd.exe", "/c", "echo left-on-screen& ping -n 120 127.0.0.1 >nul"]);
+    let text = |t: &str| s.out(&["read", t, "--lines", "200"]).1;
+    wait_until("output", || text(&t).contains("left-on-screen"));
+    let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+    wait_until("new shell", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != old));
+    s.out(&["send", &t, "echo ('after-' + 2)"]);
+    wait_until("new shell answers", || text(&t).contains("after-2"));
+    let text = text(&t);
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
+    assert!(at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"), "{text:?}");
+}

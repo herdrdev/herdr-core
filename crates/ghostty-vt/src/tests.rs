@@ -270,3 +270,33 @@ fn grapheme_clustering_is_on_like_ghostty() {
     t.write(b"\x1bc");
     assert!(t.dec_mode(2027), "a reset keeps it on");
 }
+
+#[test]
+fn a_replay_carries_the_text_and_colors_but_not_the_programs_modes_or_title() {
+    let mut old = Terminal::new(80, 24, 1 << 20);
+    old.write(b"\x1b[?1000h\x1b[?2004h\x1b]2;old title\x1b\\");
+    for i in 0..30 {
+        old.write(format!("line-{i}\r\n").as_bytes());
+    }
+    old.write(b"\x1b[38;2;255;0;0mred\x1b[0m\r\n\r\n");
+    let replay = old.replay();
+    assert!(String::from_utf8_lossy(&replay).contains("255;0;0"), "{:?}", String::from_utf8_lossy(&replay));
+    let mut new = Terminal::new(80, 24, 1 << 20);
+    new.write(&replay);
+    let text = new.plain_text();
+    assert!(text.contains("line-0") && text.contains("line-29") && text.trim_end().ends_with("red"), "{text:?}");
+    assert!(!new.dec_mode(1000) && !new.dec_mode(2004) && new.title().is_empty());
+}
+
+#[test]
+fn a_replay_of_a_full_screen_program_keeps_what_it_hid_then_its_last_frame() {
+    let mut old = Terminal::new(80, 24, 1 << 20);
+    old.write(b"$ agent\r\n\x1b[?1049h\x1b[Hlast-frame");
+    let mut new = Terminal::new(80, 24, 1 << 20);
+    new.write(&old.replay());
+    let text = new.plain_text();
+    assert!(
+        !new.alt_screen() && text.find("$ agent") < text.find("last-frame") && text.contains("$ agent"),
+        "{text:?}"
+    );
+}
