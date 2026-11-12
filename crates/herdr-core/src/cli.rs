@@ -17,6 +17,7 @@ mod machine;
 mod output;
 mod run;
 mod server;
+mod ssh_agent;
 mod update;
 use file::*;
 use machine::*;
@@ -696,12 +697,21 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
     Ok(())
 }
 
-/// Copies bytes between stdin/stdout and the core: plain or framed, untouched.
+/// Bridges stdin/stdout and the core; an opted-in SSH bridge augments its framed hello.
 fn connect(paths: &Paths) -> Result<(), RpcError> {
     let stream = crate::platform::connect_for_app(paths)?;
     let mut to_core = stream.try_clone().map_err(|e| RpcError::internal(e.to_string()))?;
+    let agent = ssh_agent::forwarded_socket(paths);
     std::thread::spawn(move || {
-        pump(&mut *crate::platform::console::stdin(), &mut to_core);
+        let mut stdin = crate::platform::console::stdin();
+        let mut input = std::io::BufReader::new(&mut *stdin);
+        if let Some(agent) = agent
+            && ssh_agent::offer(&mut input, &mut to_core, &agent).is_err()
+        {
+            let _ = to_core.shutdown(std::net::Shutdown::Write);
+            return;
+        }
+        pump(&mut input, &mut to_core);
         let _ = to_core.shutdown(std::net::Shutdown::Write);
     });
     // Unbuffered: std's stdout holds bytes until a newline, and frames have none.

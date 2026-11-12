@@ -7,6 +7,9 @@ use std::time::Duration;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Expose a session-local relay for agents explicitly forwarded through SSH (default off).
+    #[serde(default)]
+    pub ssh_agent_forwarding: bool,
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.

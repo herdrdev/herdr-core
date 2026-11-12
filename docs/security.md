@@ -56,6 +56,31 @@ Machine installation or update copies executable code there and restarts that se
 Forgetting a machine removes the connection here, not its remote programs or state.
 See [machines](machines.md).
 
+## Opt-in forwarded SSH agents
+
+`ssh_agent_forwarding = true` on a Unix destination lets its core relay agent
+connections to clients reached over SSH. The default is false. This is a
+deliberate grant of access to the attached client's identities to **all
+programs under the destination account**, including coding agents. Private
+keys stay in the originating agent, but destination programs can request
+authentication or signing while the forwarding connection is live.
+
+The stable relay socket is `<core-client-socket>.ssh-agent`, in a private,
+account-owned directory with mode 0700; the socket has mode 0600. Core refuses
+unsafe ownership, unrelated files, recursive forwarding, and a relay endpoint
+already owned by a live core. A sibling `.ssh-agent.lock` file serializes
+endpoint ownership and is retained after shutdown. It contains no credentials.
+Registered client socket paths are transient, never restored from saved state.
+
+The newest live registered client supplies new connections, so identities can
+change when another client joins or leaves. Agent requests are not replayed
+after delivery. Disconnect and heartbeat expiry revoke existing channels as
+well as new ones. The relay does not inspect, log, or persist agent messages,
+list keys on a timer, enable SSH forwarding, or provide isolation between
+terminals or processes of the same UID. A local non-SSH bridge does not offer
+its desktop agent. See [machines](machines.md#forward-an-ssh-agent-into-persistent-terminals)
+for activation, restart requirements, and timeout behavior.
+
 ## State and endpoints
 
 | Item | Default |

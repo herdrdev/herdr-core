@@ -97,6 +97,9 @@ pub(super) fn seconds(s: Option<f64>) -> Result<Option<Duration>, RpcError> {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct HelloParams {
+    /// Destination-local Unix agent socket offered by an SSH bridge. Used only
+    /// in framed mode with ssh_agent_forwarding enabled on the destination.
+    pub ssh_agent_socket: Option<String>,
     /// Protocol generation the caller speaks.
     pub generation: Option<u32>,
     /// Switch this connection to framed mode after the reply.

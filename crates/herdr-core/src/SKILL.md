@@ -204,6 +204,19 @@ Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -
 A machine whose SSH login fails shows `needs_login` and retries slowly (up to
 every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
 
+For Git/SSH authentication in persistent Unix terminals, the destination may
+opt in with `ssh_agent_forwarding = true` in its core config and a core restart.
+An SSH-launched `hc connect` then registers its forwarded agent socket; new
+terminals, kept recovery, and `exec` use a stable session-local `SSH_AUTH_SOCK`.
+OpenSSH forwarding must already be enabled for the trusted host. The newest
+live client supplies new agent connections; disconnect or heartbeat expiry
+revokes its channels. Requests already delivered are never replayed. Old
+terminals need reopening once after activation, not after each reconnect.
+This is off by default, Unix-only, and gives all programs of the destination
+account access to the client's identities. Do not enable it, change SSH config,
+or restart a real core without the person's approval. See `docs/machines.md`
+for the 5-second open, 120-second inactivity, and peer liveness limits.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.

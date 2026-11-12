@@ -28,6 +28,7 @@ pub struct Core {
     /// Set by `server.restart`: on stop, hand over instead of ending programs.
     pub restart: std::sync::atomic::AtomicBool,
     pub paths: Paths,
+    pub ssh_agent: Arc<platform::SshAgent>,
     pub state: Mutex<State>,
     /// Woken on every lifecycle change; waiters re-check what they need.
     pub changed: Notify,
@@ -180,6 +181,12 @@ impl Core {
         let machines = read_state(&paths.state.join("machines.json"))?;
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let settings = crate::config::load(&paths.config).unwrap_or_default();
+        let ssh_agent = platform::SshAgent::bind(
+            &paths.socket,
+            settings.ssh_agent_forwarding,
+            settings.machine_timeout() + crate::server::heartbeat_every(),
+        )?;
         let core = Arc::new(Core {
             info,
             login_session: platform::login_session(),
@@ -188,6 +195,7 @@ impl Core {
             restart: Default::default(),
             registry_writer: RegistryWriter::new(paths.state.join("terminals.json"))?,
             paths,
+            ssh_agent,
             state: Mutex::new(State { reg, docs, machines, peers, ..Default::default() }),
             changed: Notify::new(),
             jobs,
@@ -206,6 +214,12 @@ impl Core {
     /// `run` reports it).
     pub fn settings(&self) -> crate::config::Config {
         crate::config::load(&self.paths.config).unwrap_or_default()
+    }
+
+    pub(crate) async fn program_env(&self) -> std::collections::BTreeMap<String, String> {
+        let mut env = platform::program_env().await;
+        self.ssh_agent.environment(&mut env);
+        env
     }
 
     pub fn headless(&self) -> (u16, u16) {

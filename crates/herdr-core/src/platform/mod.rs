@@ -10,6 +10,13 @@ mod unix;
 #[cfg(unix)]
 pub use unix::*;
 
+#[cfg(unix)]
+mod ssh_agent;
+#[cfg(windows)]
+#[path = "ssh_agent_windows.rs"]
+mod ssh_agent;
+pub use ssh_agent::SshAgent;
+
 #[cfg(target_os = "linux")]
 mod linux_login;
 #[cfg(target_os = "linux")]

@@ -66,6 +66,7 @@ pub fn serve() -> io::Result<()> {
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;
+        core.ssh_agent.start()?;
         platform::start_logout_linger();
         crate::restart::discard(&core.paths);
         let kept = core.clone();
@@ -99,6 +100,7 @@ pub fn serve() -> io::Result<()> {
                 }
             }
         }
+        core.ssh_agent.stop();
         platform::remove_endpoint(&socket);
         finish(&core).await
     })
@@ -232,6 +234,11 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
     let mut writer = tokio::spawn(write_frames(core.clone(), conn.clone(), write));
     // Another core dialing in says who it is in its hello.
     let hello: Value = serde_json::from_str(&line).unwrap_or_default();
+    if let Some(path) = hello["params"]["ssh_agent_socket"].as_str()
+        && let Err(error) = core.ssh_agent.register(&conn, path)
+    {
+        eprintln!("core: cannot register forwarded SSH agent: {error}");
+    }
     crate::remote::peer_joined(&core, &conn, &hello["params"]);
     // It ends when it closes, can't be written to, or stopped reading so long
     // that its replies passed `MAX_CONTROL`.
@@ -243,6 +250,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
             Ok(())
         }
     };
+    core.ssh_agent.unregister(&conn);
     core.detach(&conn, None);
     crate::remote::conn_gone(&core, &conn);
     crate::remote::peer_left(&core, &conn);
@@ -348,7 +356,8 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
     // closes, or when it gives up on one (`$/cancelRequest`).
     let mut execs = Execs::default();
     let mut sends = Sends::default();
-    while let Some((channel, kind, payload)) = wire::read_frame(read).await? {
+    let mut read = conn.heard.watch(read);
+    while let Some((channel, kind, payload)) = wire::read_frame(&mut read).await? {
         if channel != 0 && crate::remote::relay_in(core, conn, channel, kind, &payload) {
             continue;
         }
