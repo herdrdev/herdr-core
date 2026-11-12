@@ -11,11 +11,16 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+const CAPTURING: &str = "HC_LOGIN_CAPTURE";
 const MARKER: &[u8] = b"\0HC_LOGIN_ENV\0";
 const END: &[u8] = b"\0HC_LOGIN_END\0";
 const SCRIPT: &str = "printf '\\0HC_LOGIN_ENV\\0'; /usr/bin/env -0; printf '\\0HC_LOGIN_END\\0'";
 
 pub(super) fn apply(cmd: &mut Command, state: &Path) {
+    if std::env::var_os(CAPTURING).is_some() {
+        cmd.env_remove(CAPTURING);
+        return;
+    }
     if std::env::var_os(crate::sweep::RUNTIME).is_some()
         || !super::SSH_LOGIN.iter().any(|key| std::env::var_os(key).is_some())
     {
@@ -24,7 +29,8 @@ pub(super) fn apply(cmd: &mut Command, state: &Path) {
     let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
     let result = capture(&shell, state);
     match result {
-        Ok(vars) => {
+        Ok(mut vars) => {
+            vars.remove(std::ffi::OsStr::new(CAPTURING));
             let mut vars = super::restored_environment(vars, std::env::vars_os(), false);
             // Profiles must not hide the SSH origin from systemd's session filtering.
             for key in super::SSH_LOGIN {
@@ -53,6 +59,7 @@ pub(super) fn apply(cmd: &mut Command, state: &Path) {
 
 fn capture(shell: &std::ffi::OsStr, state: &Path) -> io::Result<BTreeMap<OsString, OsString>> {
     let mut cmd = Command::new(shell);
+    cmd.env(CAPTURING, "1");
     let name = Path::new(shell).file_name().unwrap_or_default().to_string_lossy();
     match name.as_ref() {
         "csh" | "tcsh" => {

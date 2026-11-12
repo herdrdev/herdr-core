@@ -4,6 +4,26 @@ mod common;
 use common::*;
 
 #[test]
+fn a_login_profile_running_hc_captures_only_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut s = Session::new();
+    let shell = s.root.join("login-shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\necho capture >> \"$HOME/captures\"\n\
+             if [ \"$(wc -l < \"$HOME/captures\")\" -lt 4 ]; then '{BIN}' ls >/dev/null; fi\n\
+             [ \"$1\" != -l ] || shift\nexec /bin/sh \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    s.env.extend([("SSH_CONNECTION".into(), "test".into()), ("SHELL".into(), shell.to_str().unwrap().into())]);
+    s.json(&["ls"]);
+    assert_eq!(std::fs::read_to_string(s.root.join("captures")).unwrap(), "capture\n");
+}
+
+#[test]
 fn failed_login_profile_cleans_up_its_background_child() {
     let s = ssh_session("sleep 60 &\necho $! > \"$HOME/profile-child\"\nexit 17\n");
     assert_eq!(value(&s), "");
