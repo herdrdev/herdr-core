@@ -236,7 +236,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     }
     crate::restart::discard(&core.paths);
     if let Err(e) = core.shutdown().await {
-        eprintln!("core: shutdown registry flush failed: {}", e.message);
+        log!("core: shutdown registry flush failed: {}", e.message);
     }
     Ok(StopResult { stopped: true })
 }

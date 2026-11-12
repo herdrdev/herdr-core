@@ -83,7 +83,7 @@ pub fn prepare_core() {
 pub fn prepare_holder() {
     #[cfg(target_os = "macos")]
     if let Err(error) = macos_appkit::check_in() {
-        eprintln!("holder: background app registration unavailable: {error}");
+        log!("holder: background app registration unavailable: {error}");
     }
 }
 
@@ -122,7 +122,7 @@ pub fn holder_can_start_core(session: Option<LoginSession>) -> bool {
 pub(crate) fn raise_nofile_limit() {
     #[cfg(unix)]
     if let Err(error) = unix::raise_nofile_limit() {
-        eprintln!("cannot raise open file limit; using inherited limit: {error}");
+        log!("cannot raise open file limit; using inherited limit: {error}");
     }
 }
 
@@ -349,7 +349,7 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
     {
         env = tokio::task::spawn_blocking(move || {
             if let Err(error) = windows_env::refresh(&mut env) {
-                eprintln!("cannot refresh Windows environment; using inherited settings: {error}");
+                log!("cannot refresh Windows environment; using inherited settings: {error}");
             }
             env
         })

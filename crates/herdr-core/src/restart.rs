@@ -36,7 +36,7 @@ pub(crate) fn prepare(core: &Core, environment: Option<BTreeMap<String, String>>
     drop(state);
     discard(&core.paths);
     if let Err(error) = save(&core.paths, vars, fresh) {
-        eprintln!("core: cannot preserve restart environment; using the next launcher's environment: {error}");
+        log!("core: cannot preserve restart environment; using the next launcher's environment: {error}");
         discard(&core.paths);
     }
     Ok(())
@@ -132,7 +132,7 @@ pub(crate) unsafe fn restore(paths: &Paths) {
         Ok(Some(env)) => env,
         Ok(None) => return,
         Err(error) => {
-            eprintln!("core: ignoring restart environment: {error}");
+            log!("core: ignoring restart environment: {error}");
             discard(paths);
             return;
         }
@@ -162,7 +162,7 @@ fn remove(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        eprintln!("core: cannot remove {}: {error}", path.display());
+        log!("core: cannot remove {}: {error}", path.display());
     }
 }
 
@@ -190,7 +190,7 @@ pub(crate) fn discard_if_stopped(paths: &Paths) {
         Ok(lock) if crate::platform::try_lock(&lock) => discard(paths),
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => eprintln!("core: cannot lock restart environment for cleanup: {error}"),
+        Err(error) => log!("core: cannot lock restart environment for cleanup: {error}"),
     }
 }
 

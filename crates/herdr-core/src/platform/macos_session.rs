@@ -38,7 +38,7 @@ pub fn current() -> Option<LoginSession> {
         let audit = match audit() {
             Ok(audit) if ![0, u32::MAX].contains(&audit.session) => audit,
             result => {
-                eprintln!("hc: login session identity unavailable: {:?}", result.err());
+                log!("hc: login session identity unavailable: {:?}", result.err());
                 return None;
             }
         };
@@ -88,7 +88,7 @@ fn repair(paths: &Paths, local: LoginSession) -> Result<super::Stream, RpcError>
             break;
         }
         repairs += 1;
-        eprintln!("hc: refreshing core after a new macOS login");
+        log!("hc: refreshing core after a new macOS login");
         // Set before the request; if the old core already closed, the read below ends at once.
         let _ = control.set_read_timeout(Some(Duration::from_secs(30)));
         let requested = client::call(&control, "server.restart", serde_json::json!({}));

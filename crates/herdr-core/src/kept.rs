@@ -49,13 +49,13 @@ impl Core {
             return;
         }
         if let Err(e) = self.ensure_holder().await {
-            eprintln!("core: kept terminals waiting for a holder: {e}");
+            log!("core: kept terminals waiting for a holder: {e}");
             return;
         }
         let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
             Ok(shell) => shell,
             Err(e) => {
-                eprintln!("core: kept terminals waiting for a shell: {}", e.message);
+                log!("core: kept terminals waiting for a shell: {}", e.message);
                 return;
             }
         };

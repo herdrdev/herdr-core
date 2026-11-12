@@ -123,7 +123,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         let stream = stream?;
         std::thread::spawn(move || {
             if let Err(e) = holder.serve(stream) {
-                eprintln!("holder: core connection: {e}");
+                log!("holder: core connection: {e}");
             }
         });
     }
@@ -332,7 +332,7 @@ impl Holder {
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));
-                eprintln!("holder: {}: {error}", crate::terminals::address(id));
+                log!("holder: {}: {error}", crate::terminals::address(id));
                 proto::json_frame(proto::SPAWN_FAILED, id, &proto::SpawnFailed { error })
             }
             Ok((reader, mut writer, pty, child)) => {
@@ -407,7 +407,7 @@ impl Holder {
         let (code, signal) = match platform::wait(&mut child) {
             Ok(ended) => ended,
             Err(e) => {
-                eprintln!("holder: wait {}: {e}", crate::terminals::address(id));
+                log!("holder: wait {}: {e}", crate::terminals::address(id));
                 return;
             }
         };
@@ -454,11 +454,11 @@ impl Holder {
             st.core_left = now;
             drop(st);
             if !platform::holder_can_start_core(self.login_session) {
-                eprintln!("holder: original GUI login unavailable; waiting for a fresh launcher");
+                log!("holder: original GUI login unavailable; waiting for a fresh launcher");
                 continue;
             }
             if let Err(e) = crate::client::spawn_core(&self.paths) {
-                eprintln!("holder: cannot start core: {e:?}");
+                log!("holder: cannot start core: {e:?}");
             }
         }
     }

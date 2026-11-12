@@ -89,7 +89,7 @@ pub fn monitor() -> Option<Registration> {
     match Registration::new(PREFIX, watcher) {
         Ok(registration) => Some(registration),
         Err(e) => {
-            eprintln!("core: cannot watch host shutdown: {e}");
+            log!("core: cannot watch host shutdown: {e}");
             None
         }
     }

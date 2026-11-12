@@ -100,7 +100,7 @@ pub fn unknown(machines: &[Machine], name: &str) -> crate::rpc::RpcError {
 pub fn save(state: &Path, machines: &[Machine]) {
     let bytes = serde_json::to_vec_pretty(machines).expect("machines serialize");
     if let Err(e) = crate::paths::write_atomic(&state.join("machines.json"), &bytes) {
-        eprintln!("core: cannot save machines: {e}");
+        log!("core: cannot save machines: {e}");
     }
 }
 

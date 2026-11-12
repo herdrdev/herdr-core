@@ -1,3 +1,11 @@
+/// `eprintln!` that never panics: the core's stderr is a log file, which a full disk fails.
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 pub mod addr;
 pub mod api;
 pub mod attach;

@@ -35,7 +35,7 @@ impl RegistryWriter {
                 if let Some((version, bytes)) = pending.latest.take() {
                     drop(pending);
                     if let Err(e) = write(&bytes) {
-                        eprintln!("core: cannot save terminals: {e}");
+                        log!("core: cannot save terminals: {e}");
                     }
                     done.send_replace(version);
                     pending = mutex.lock().unwrap();
@@ -171,6 +171,34 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(10), writer.flush()).await.is_err());
         release.send(()).unwrap();
         writer.flush().await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_save_with_no_stderr_left_keeps_the_writer() {
+        const CHILD: &str = "HC_TEST_STDERR_GONE";
+        if std::env::var_os(CHILD).is_none() {
+            let name = "runtime::persistence::tests::a_failed_save_with_no_stderr_left_keeps_the_writer";
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+            return;
+        }
+        // stderr is a pipe nobody reads: every write fails, like a log file on a full disk.
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        unsafe {
+            libc::close(fds[0]);
+            libc::dup2(fds[1], 2);
+        }
+        let writer = RegistryWriter::start(|_| Err(io::Error::other("no space left on device"))).unwrap();
+        writer.save(vec![1]);
+        writer.flush().await.unwrap();
+        writer.save(vec![2]);
         writer.flush().await.unwrap();
     }
 }

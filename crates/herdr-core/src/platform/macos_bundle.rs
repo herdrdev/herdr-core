@@ -337,7 +337,7 @@ pub fn installer_startup() -> bool {
         Err(io::Error::other("expected source executable and destination entry point"))
     };
     if let Err(error) = result {
-        eprintln!("hc: bundle install failed: {error}");
+        log!("hc: bundle install failed: {error}");
         std::process::exit(1);
     }
     std::process::exit(0)

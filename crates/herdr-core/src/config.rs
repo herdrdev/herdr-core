@@ -88,7 +88,7 @@ pub fn load(path: &Path) -> Result<Config, RpcError> {
 pub fn delivery(path: &Path) -> Config {
     load(path).unwrap_or_else(|error| {
         static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| eprintln!("core: {}; using delivery defaults", error.message));
+        WARNED.call_once(|| log!("core: {}; using delivery defaults", error.message));
         Config::default()
     })
 }

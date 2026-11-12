@@ -384,7 +384,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 _ => break,
             },
             () = heard.silent_for(silence) => {
-                eprintln!("core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
+                log!("core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
                 break;
             }
         };
@@ -643,7 +643,7 @@ pub struct Peer {
 fn save_peers(core: &Core, st: &State) {
     let bytes = serde_json::to_vec(&st.peers).expect("peers serialize");
     if let Err(e) = crate::paths::write_atomic(&core.paths.state.join("peers.json"), &bytes) {
-        eprintln!("core: cannot save peers: {e}");
+        log!("core: cannot save peers: {e}");
     }
 }
 
