@@ -127,6 +127,18 @@ pub async fn exited(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
+/// Std leaves `a"b` unquoted, which Git's sh misreads; batch files keep std's escaping.
+pub fn exec_args(cmd: &mut tokio::process::Command, argv: &[String]) {
+    let ext = std::path::Path::new(&argv[0]).extension().unwrap_or_default();
+    if ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd") {
+        cmd.args(&argv[1..]);
+        return;
+    }
+    for arg in &argv[1..] {
+        cmd.raw_arg(super::windows::quote(arg));
+    }
+}
+
 pub fn exec_group(cmd: &mut tokio::process::Command) {
     cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
 }

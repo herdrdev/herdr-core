@@ -526,6 +526,23 @@ fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
 }
 
 #[test]
+fn exec_gives_git_sh_and_batch_files_each_argument_as_given() {
+    let s = Session::new();
+    let batch = s.file("first.cmd", "@echo %1");
+    let out = cmd(&s.name, &s.root).args(["exec", &batch, "a&whoami"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "\"a&whoami\"\r\n", "a batch file keeps std's escaping");
+
+    if std::process::Command::new("sh").args(["-c", "true"]).status().is_err() {
+        return; // no Git for Windows here
+    }
+    let args = ["{\"value\":\"demo\"}", "a\"b", "a b", "plain", ""];
+    let out =
+        cmd(&s.name, &s.root).args(["exec", "sh", "-c", "printf '[%s]' \"$@\"", "sh"]).args(args).output().unwrap();
+    let want = "[{\"value\":\"demo\"}][a\"b][a b][plain][]";
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let s = Session::new();
     let (code, out) = s.out(&["run", "--timeout", "20", "echo \"hi  there\" & exit 3"]);
