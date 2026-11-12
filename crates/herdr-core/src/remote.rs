@@ -848,7 +848,14 @@ pub fn route(core: &Core, method: &str, params: &Value) -> Result<Option<(To, Va
     let mut params = params.clone();
     let to = if matches!(
         method,
-        "terminal.run" | "machine.exec" | "file.read" | "file.write" | "file.edit" | "doc.get" | "doc.set"
+        "terminal.run"
+            | "machine.exec"
+            | "file.read"
+            | "file.write"
+            | "file.edit"
+            | "file.upload"
+            | "doc.get"
+            | "doc.set"
     ) {
         let Some(on) = params["on"].as_str().map(String::from) else { return Ok(None) };
         params.as_object_mut().map(|p| p.remove("on"));

@@ -32,6 +32,7 @@ pub mod stitch;
 pub mod sweep;
 pub mod templates;
 pub mod terminals;
+pub mod upload;
 pub mod viewers;
 pub mod wait;
 pub mod wire;
