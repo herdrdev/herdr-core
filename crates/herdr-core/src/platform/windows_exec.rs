@@ -114,11 +114,12 @@ pub fn shell_line(line: &str) -> Vec<String> {
 /// Whether `argv` is a `shell_line`: cmd itself, which never reads the
 /// usual argument quoting, so its line must go raw.
 pub fn is_shell_line(argv: &[String]) -> bool {
-    let is_cmd = |program: &String| {
-        let name = std::path::Path::new(program).file_name().and_then(|f| f.to_str()).unwrap_or_default();
-        name.eq_ignore_ascii_case("cmd.exe") || name.eq_ignore_ascii_case("cmd")
-    };
     argv.len() == 5 && is_cmd(&argv[0]) && argv[1..4] == ["/d", "/s", "/c"]
+}
+
+fn is_cmd(program: &str) -> bool {
+    let name = std::path::Path::new(program).file_name().and_then(|f| f.to_str()).unwrap_or_default();
+    name.eq_ignore_ascii_case("cmd.exe") || name.eq_ignore_ascii_case("cmd")
 }
 
 /// Returns once the child exited (a job holds what it started, so reaping
@@ -127,15 +128,18 @@ pub async fn exited(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
-/// Std leaves `a"b` unquoted, which Git's sh misreads; batch files keep std's escaping.
+/// Quotes what Git's sh (MSYS) would split or expand; cmd and batch files keep std's escaping.
 pub fn exec_args(cmd: &mut tokio::process::Command, argv: &[String]) {
-    let ext = std::path::Path::new(&argv[0]).extension().unwrap_or_default();
-    if ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd") {
+    // Windows drops a name's trailing dots and spaces: `x.cmd.` runs as a batch file.
+    let program = argv[0].trim_end_matches(['.', ' ']);
+    let ext = std::path::Path::new(program).extension().unwrap_or_default();
+    if is_cmd(program) || ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd") {
         cmd.args(&argv[1..]);
         return;
     }
     for arg in &argv[1..] {
-        cmd.raw_arg(super::windows::quote(arg));
+        let msys = arg.contains(['"', '\'', '*', '?', '[', '{', '\n', '\r']) || arg.starts_with(['~', '@']);
+        cmd.raw_arg(if msys { super::windows::quoted(arg) } else { super::windows::quote(arg) });
     }
 }
 

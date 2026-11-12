@@ -888,6 +888,11 @@ pub(super) fn quote(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
         return arg.into();
     }
+    quoted(arg)
+}
+
+/// `arg` always in double quotes, read back the same way.
+pub(super) fn quoted(arg: &str) -> String {
     let mut out = String::from("\"");
     let mut slashes = 0;
     for c in arg.chars() {
