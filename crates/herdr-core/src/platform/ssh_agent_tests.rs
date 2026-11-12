@@ -103,6 +103,39 @@ fn a_fifo_lockfile_is_rejected_without_waiting_for_a_reader() {
     assert_eq!(rejected.ok(), Some(true), "a non-regular lockfile must fail without blocking startup");
 }
 
+#[tokio::test]
+async fn a_short_agent_alias_works_when_its_canonical_path_exceeds_the_socket_limit() {
+    use tokio::io::AsyncReadExt;
+    let dir = Scratch::new();
+    let long = dir.0.join("d".repeat(super::super::MAX_SOCKET_PATH));
+    std::fs::create_dir(&long).unwrap();
+    let alias = dir.0.join("short");
+    std::os::unix::fs::symlink(&long, &alias).unwrap();
+    let path = alias.join("agent");
+    let agent = UnixListener::bind(&path).unwrap();
+    assert!(std::fs::canonicalize(&path).unwrap().as_os_str().len() > super::super::MAX_SOCKET_PATH);
+    let relay = dir.relay(Duration::from_secs(30));
+    relay.start().unwrap();
+    let conn = Arc::new(Conn::default());
+    relay.register(&conn, path.to_str().unwrap()).unwrap();
+    let mut client = UnixStream::connect(dir.0.join("core.sock.ssh-agent")).await.unwrap();
+    let upstream = async {
+        let (mut stream, _) = agent.accept().await?;
+        let mut request = [0];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"A").await
+    };
+    let downstream = async {
+        client.write_all(b"?").await?;
+        let mut answer = [0];
+        client.read_exact(&mut answer).await?;
+        Ok::<_, io::Error>(answer)
+    };
+    let result = tokio::time::timeout(Duration::from_secs(1), async { tokio::try_join!(upstream, downstream) }).await;
+    relay.stop();
+    assert_eq!(result.unwrap().unwrap().1, [b'A']);
+}
+
 #[tokio::test(start_paused = true)]
 async fn expiry_revokes_a_silent_peer_but_inbound_progress_renews_it() {
     let dir = Scratch::new();

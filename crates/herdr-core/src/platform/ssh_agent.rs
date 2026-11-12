@@ -194,15 +194,16 @@ impl SshAgent {
         if !path.is_absolute() {
             return Err(invalid("forwarded agent socket must be an absolute path"));
         }
-        let path = std::fs::canonicalize(path)?;
-        let meta = std::fs::metadata(&path)?;
+        // Follow aliases for validation, but connect through the offered pathname:
+        // expanding a short alias can exceed the Unix socket path limit.
+        let meta = std::fs::metadata(path)?;
         if !meta.file_type().is_socket() || !owned(&meta) {
             return Err(invalid("forwarded agent must be a Unix socket owned by this account"));
         }
         if self.endpoint.as_ref().is_some_and(|e| inode(&meta) == e.inode) {
             return Err(invalid("SSH agent relay cannot forward to itself"));
         }
-        Ok(path)
+        Ok(path.to_path_buf())
     }
 
     pub fn register(self: &Arc<Self>, conn: &Arc<Conn>, path: &str) -> io::Result<()> {

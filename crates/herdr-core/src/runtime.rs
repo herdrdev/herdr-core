@@ -182,11 +182,17 @@ impl Core {
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
         let settings = crate::config::load(&paths.config).unwrap_or_default();
-        let ssh_agent = platform::SshAgent::bind(
-            &paths.socket,
-            settings.ssh_agent_forwarding,
-            settings.machine_timeout() + crate::server::heartbeat_every(),
-        )?;
+        let expiry = if settings.ssh_agent_forwarding {
+            let seconds = settings.machine_timeout.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(30.0);
+            Duration::try_from_secs_f64(seconds)
+                .ok()
+                .and_then(|timeout| timeout.checked_add(crate::server::heartbeat_every()))
+                .filter(|timeout| Instant::now().checked_add(*timeout).is_some())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "SSH agent relay timeout is too large"))?
+        } else {
+            Duration::ZERO
+        };
+        let ssh_agent = platform::SshAgent::bind(&paths.socket, settings.ssh_agent_forwarding, expiry)?;
         let core = Arc::new(Core {
             info,
             login_session: platform::login_session(),
