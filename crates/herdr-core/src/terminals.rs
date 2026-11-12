@@ -214,6 +214,8 @@ pub struct Registry {
     /// Viewer drafts saved only for planned handover; older cores ignore this field.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<u32, crate::input::SavedGate>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replies: BTreeMap<u32, Vec<u8>>,
 }
 
 #[derive(Default)]

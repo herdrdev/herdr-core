@@ -2,6 +2,206 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test(start_paused = true)]
+async fn image_streams_share_one_timer_task_and_keep_the_latest_deadline() {
+    use crate::viewers::{AttachRequest, Display};
+    let (core, root) = test_core();
+    let (writer, frames) = mpsc::channel();
+    let (bye, _) = mpsc::channel();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+        id
+    };
+    let viewer = Arc::new(crate::wire::Conn::default());
+    let channel = core
+        .attach(
+            &viewer,
+            id,
+            AttachRequest {
+                observe: false,
+                resize_notifications: false,
+                history: 0,
+                size: (80, 24),
+                display: Display::default(),
+                resumed: false,
+            },
+        )
+        .unwrap();
+    while frames.try_recv().is_ok() {}
+    let runtime = tokio::runtime::Handle::current();
+    let baseline = runtime.metrics().num_alive_tasks();
+    let timer = tokio::spawn(core.clone().expire_image_answers());
+    let probe = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+    for _ in 0..1000 {
+        core.output(&mut core.lock(), id, probe);
+        core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+        assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c"));
+        assert!(frames.try_recv().is_err());
+        assert_eq!(core.lock().image_deadlines.len(), 1);
+        assert_eq!(runtime.metrics().num_alive_tasks(), baseline + 1);
+    }
+    // An old, answered wait cannot release a newer unanswered one.
+    let wait = crate::relay::image_answer_wait();
+    tokio::time::advance(wait / 2).await;
+    core.output(&mut core.lock(), id, probe);
+    tokio::task::yield_now().await;
+    tokio::time::advance(wait / 2 + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert!(frames.try_recv().is_err());
+    tokio::time::advance(wait / 2).await;
+    tokio::task::yield_now().await;
+    assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\x1b[?62;22c"));
+    assert!(core.lock().image_deadlines.is_empty());
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+    assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\x1b_Gi=31;OK\x1b\\"));
+    // A complete answer received while input is gated owns its following DA1.
+    for expire_before_release in [false, true] {
+        core.lock().gates.entry(id).or_default().set_busy(true);
+        core.output(&mut core.lock(), id, probe);
+        core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+        assert!(frames.try_recv().is_err());
+        if expire_before_release {
+            tokio::time::advance(wait * 2).await;
+            tokio::task::yield_now().await;
+            assert!(frames.try_recv().is_err(), "expiry cannot overtake a queued answer");
+        }
+        let held = core.lock().gates.get_mut(&id).unwrap().set_busy(false);
+        assert_eq!(held, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+    }
+    // The program can write DA1 in a later output chunk, after its answer was queued.
+    core.lock().gates.entry(id).or_default().set_busy(true);
+    core.output(&mut core.lock(), id, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\");
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+    core.output(&mut core.lock(), id, b"\x1b[c\x1b[6n\x1b[5n");
+    assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\x1b[1;1R\x1b[0n"));
+    assert!(frames.try_recv().is_err(), "later DA1 cannot overtake a queued answer");
+    let held = core.lock().gates.get_mut(&id).unwrap().set_busy(false);
+    assert_eq!(held, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+    core.lock().gates.entry(id).or_default().set_busy(true);
+    core.output(&mut core.lock(), id, probe);
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+    core.output(&mut core.lock(), id, b"\x1b_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+    tokio::time::advance(wait * 2).await;
+    tokio::task::yield_now().await;
+    assert!(frames.try_recv().is_err(), "a later expiry cannot overtake an earlier queued answer");
+    let held = core.lock().gates.get_mut(&id).unwrap().set_busy(false);
+    assert_eq!(held, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c\x1b[?62;22c");
+    core.output(&mut core.lock(), id, probe);
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=99;O", true);
+    assert_eq!(
+        frames.try_recv().unwrap(),
+        proto::frame(proto::INPUT, id, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c\x1b_Gi=99;O")
+    );
+    core.viewer_input(&viewer, channel, b"K\x1b\\", true);
+    assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"K\x1b\\"));
+    core.lock().gates.entry(id).or_default().set_busy(true);
+    core.output(&mut core.lock(), id, probe);
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+    core.output(&mut core.lock(), id, b"\x1b_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+    core.detach(&viewer, Some(channel));
+    while let Ok(frame) = frames.try_recv() {
+        assert_ne!(frame[0], proto::INPUT, "detaching cannot bypass an earlier queued answer");
+    }
+    let held = core.lock().gates.get_mut(&id).unwrap().set_busy(false);
+    assert_eq!(held, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c\x1b[?62;22c");
+    timer.abort();
+    let _ = timer.await;
+    drop(core);
+    remove_root(&root);
+}
+
+#[tokio::test]
+async fn handover_carries_held_replies_and_answers_including_final_holder_output() {
+    use crate::viewers::{AttachRequest, Display};
+    let (core, root) = test_core();
+    let (writer, frames) = mpsc::channel();
+    let (bye, done) = mpsc::channel();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        st.holders.push(Link {
+            writer,
+            pid: 0,
+            instance: "fake".into(),
+            current: true,
+            bye: bye.clone(),
+            bye_rx: Some(done),
+        });
+        id
+    };
+    let viewer = Arc::new(crate::wire::Conn::default());
+    let channel = core
+        .attach(
+            &viewer,
+            id,
+            AttachRequest {
+                observe: false,
+                resize_notifications: false,
+                history: 0,
+                size: (80, 24),
+                display: Display::default(),
+                resumed: false,
+            },
+        )
+        .unwrap();
+    while frames.try_recv().is_ok() {}
+    core.lock().gates.entry(id).or_default().set_busy(true);
+    core.output(&mut core.lock(), id, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+    core.viewer_input(&viewer, channel, b"\x1b_Gi=31;OK\x1b\\", true);
+    assert!(frames.try_recv().is_err());
+    let last_output = core.clone();
+    let holder = std::thread::spawn(move || {
+        let goodbye = frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(goodbye[0], proto::GOODBYE);
+        last_output.output(&mut last_output.lock(), id, b"\x1b_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+        bye.send(()).unwrap();
+    });
+    core.handover().await.unwrap();
+    holder.join().unwrap();
+    let successor = core;
+    {
+        let mut st = successor.lock();
+        st.reg = read_state(&successor.paths.state.join("terminals.json")).unwrap();
+        st.gates.clear();
+        st.relays.clear();
+        st.screens.clear();
+    }
+    let (writer, frames) = mpsc::channel();
+    let (bye, _) = mpsc::channel();
+    {
+        let mut st = successor.lock();
+        st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+        let welcome = proto::Welcome {
+            version: proto::VERSION,
+            instance: "fake".into(),
+            pid: 0,
+            build: crate::client::build_id(),
+            login_session: None,
+            draining: false,
+            previous: "handover".into(),
+            terminals: vec![proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None }],
+        };
+        successor.adopt(&mut st, &welcome, HashMap::new());
+        assert!(st.reg.replies.is_empty());
+        assert!(st.reg.drafts.is_empty());
+    }
+    assert_eq!(
+        frames.try_recv().unwrap(),
+        proto::frame(proto::INPUT, id, b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c\x1b[?62;22c")
+    );
+    assert!(frames.try_recv().is_err(), "carried replies are delivered once");
+    drop(successor);
+    remove_root(&root);
+}
+
+#[tokio::test(start_paused = true)]
 async fn keys_pressed_during_a_paste_follow_its_submit() {
     use crate::viewers::{AttachRequest, Display};
     use std::future::{Future, poll_fn};

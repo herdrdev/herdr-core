@@ -41,6 +41,7 @@ pub struct Core {
     /// The registry changed in a way a crash may lose: `save_soon` writes it shortly.
     dirty: std::sync::atomic::AtomicBool,
     save_due: Notify,
+    pub(crate) image_due: Notify,
     registry_writer: RegistryWriter,
 }
 
@@ -50,6 +51,8 @@ pub struct State {
     pub docs: std::collections::BTreeMap<String, crate::api::DocGetResult>,
     pub screens: HashMap<u32, Screen>,
     pub relays: HashMap<u32, Relay>,
+    /// One deadline per terminal; image streams replace it instead of spawning timers.
+    pub image_deadlines: HashMap<u32, (u64, tokio::time::Instant)>,
     pub viewers: HashMap<u32, Vec<Viewer>>,
     pub events: crate::events::Events,
     pub gates: HashMap<u32, crate::input::Gate>,
@@ -193,6 +196,7 @@ impl Core {
             holder_start: Default::default(),
             dirty: Default::default(),
             save_due: Notify::new(),
+            image_due: Notify::new(),
         });
         core.attach_all()?;
         Ok(core)
@@ -455,6 +459,14 @@ impl Core {
                 st.gates.insert(id, crate::input::Gate::restore(saved));
             }
             st.reg.terminals.get_mut(&id).expect("ours").holder = Some(instance.to_string());
+            let replies = st.reg.replies.remove(&id).unwrap_or_default();
+            if handover {
+                let mut held = st.gates.entry(id).or_default().set_busy(false);
+                held.extend(replies);
+                if let Some(link) = st.link(id) {
+                    link.input(id, &held);
+                }
+            }
             let tail = tails.remove(&id).unwrap_or_default();
             let saved = handover
                 .then(|| std::fs::read(self.snapshot_path(id)).ok())
@@ -932,6 +944,16 @@ impl Core {
         {
             let mut st = self.lock();
             st.holders.clear();
+            // Goodbye has consumed all output before the holder's cutoff. Carry
+            // replies taken out of the screen, including those from that last output.
+            st.reg.replies = st
+                .relays
+                .iter_mut()
+                .filter_map(|(id, relay)| {
+                    let replies = relay.end_wait();
+                    (!replies.is_empty()).then_some((*id, replies))
+                })
+                .collect();
             st.reg.drafts = st
                 .gates
                 .iter()

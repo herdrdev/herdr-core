@@ -5,12 +5,15 @@
 //! them (they move the cursor) but its replies are dropped, since it can't
 //! show them; a viewer that can answers. Programs read replies in order (DA1
 //! after kitty's query is how they learn images don't work), so the screen's
-//! replies after an image wait for the viewer's answer, briefly.
+//! DA1 after an image waits for the viewer's answer, briefly.
 
 use ghostty_vt::Terminal as Screen;
 use std::time::Duration;
 
-/// How long the screen's replies wait behind an image for a viewer's answer.
+mod graphics;
+pub(crate) use graphics::Answers;
+
+/// How long DA1 waits behind an image for a viewer's answer.
 pub fn image_answer_wait() -> Duration {
     crate::input::env_ms("HC_IMAGE_ANSWER_MS", 100)
 }
@@ -39,6 +42,10 @@ pub struct Relay {
     /// Counts waits, so a deadline only ends the wait it was set for.
     wait: u64,
     wait_started: bool,
+    graphics: graphics::Parser,
+    query: u64,
+    queries: Vec<(graphics::Key, u64)>,
+    unanswered: Vec<u64>,
 }
 
 enum Seq {
@@ -53,33 +60,53 @@ impl Relay {
         without_resize_reports(&screen.take_responses())
     }
 
-    /// The screen's replies to send now: those after an image wait until a
-    /// viewer answers or the wait ends. With no viewer to answer (`answering`
+    /// Only DA1 after an image waits until a viewer answers or the wait ends.
+    /// With no viewer to answer (`answering`
     /// false), everything goes. Returns the wait that began, which the caller
     /// ends with `expire` after `image_answer_wait()`.
     pub fn take_replies(&mut self, screen: &mut Screen, answering: bool) -> (Vec<u8>, Option<u64>) {
         let replies = screen.take_responses();
+        if !answering {
+            self.queries.clear();
+            self.wait_started = false;
+            let mut now = self.end_wait();
+            now.extend(without_resize_reports(&replies));
+            return (now, None);
+        }
         let split = match self.behind_from.take() {
             Some(at) => at.min(replies.len()),
             None if self.waiting => 0,
             None => replies.len(),
         };
         let mut now = without_resize_reports(&replies[..split]);
-        self.behind.extend(without_resize_reports(&replies[split..]));
-        let started = std::mem::take(&mut self.wait_started).then_some(self.wait);
-        if !answering {
-            now.extend(self.end_wait());
-            return (now, None);
+        let after = without_resize_reports(&replies[split..]);
+        let mut i = 0;
+        while i < after.len() {
+            if let Some(n) = da1_len(&after[i..]) {
+                self.behind.extend_from_slice(&after[i..i + n]);
+                i += n;
+                continue;
+            }
+            now.push(after[i]);
+            i += 1;
         }
+        let started = std::mem::take(&mut self.wait_started).then_some(self.wait);
         (now, started)
     }
 
-    /// A viewer's input, as it went to the program. Its first image
-    /// answer lets the waiting replies go: a viewer answers in stream order, and
-    /// it may skip some images the screen answered (feature queries), so
-    /// counting answers would wait out the deadline.
-    pub fn answered(&mut self, input: &[u8]) -> Vec<u8> {
-        if self.waiting && input.windows(3).any(|w| w == b"\x1b_G") { self.end_wait() } else { Vec::new() }
+    pub(crate) fn expect_answers<'a>(&mut self, viewers: impl Iterator<Item = &'a mut Answers>) {
+        let queries = std::mem::take(&mut self.queries);
+        for viewer in viewers {
+            for (key, query) in &queries {
+                viewer.expect(key.clone(), *query);
+            }
+        }
+    }
+
+    /// Only complete, correlated answers can end this wait.
+    pub(crate) fn answered(&mut self, queries: &[(usize, u64)]) -> Vec<u8> {
+        self.unanswered.retain(|query| !queries.iter().any(|(_, answer)| query == answer));
+        if self.waiting && self.unanswered.is_empty() { self.end_wait() } else { Vec::new() }
     }
 
     /// Ends `wait` if it is still going: no viewer answered in time.
@@ -87,7 +114,8 @@ impl Relay {
         if self.wait == wait && self.waiting { self.end_wait() } else { Vec::new() }
     }
 
-    fn end_wait(&mut self) -> Vec<u8> {
+    pub(crate) fn end_wait(&mut self) -> Vec<u8> {
+        self.unanswered.clear();
         self.waiting = false;
         self.behind_from = None;
         std::mem::take(&mut self.behind)
@@ -99,6 +127,7 @@ impl Relay {
         let mut out = Vec::with_capacity(input.len());
         let mut run = 0;
         for (i, &b) in input.iter().enumerate() {
+            let image = self.graphics.push(b);
             if self.held.is_empty() {
                 if b == ESC {
                     pass(screen, &mut out, &input[run..i]);
@@ -128,11 +157,19 @@ impl Relay {
                     if seq == b"\x1b\\"
                         && let Some(keep) = self.apc.take()
                     {
-                        if screen.pending_responses() > keep && !self.waiting {
-                            self.waiting = true;
-                            self.wait += 1;
-                            self.wait_started = true;
-                            self.behind_from = Some(keep);
+                        if screen.pending_responses() > keep
+                            && let Some(image) = image.filter(|s| graphics::expects_answer(s))
+                            && let Some(key) = graphics::key(&image)
+                        {
+                            self.query += 1;
+                            self.queries.push((key, self.query));
+                            self.unanswered.push(self.query);
+                            if !self.waiting {
+                                self.waiting = true;
+                                self.wait += 1;
+                                self.wait_started = true;
+                                self.behind_from = Some(keep);
+                            }
                         }
                         screen.drop_responses_after(keep);
                     }
@@ -196,6 +233,12 @@ impl Relay {
             Some(_) => Seq::Done { maybe_query: false },
         }
     }
+}
+
+pub(crate) fn da1_len(bytes: &[u8]) -> Option<usize> {
+    let rest = bytes.strip_prefix(b"\x1b[?")?;
+    let n = rest.iter().take_while(|b| b.is_ascii_digit() || **b == b';').count();
+    (rest.get(n) == Some(&b'c')).then_some(3 + n + 1)
 }
 
 fn without_resize_reports(replies: &[u8]) -> Vec<u8> {
@@ -305,7 +348,9 @@ mod tests {
         relay.feed(&mut screen, probe);
         let (now, wait) = relay.take_replies(&mut screen, true);
         assert_eq!(now, b"\x1b[1;1R");
-        assert_eq!(relay.answered(b"\x1b_Gi=31;OK\x1b\\"), b"\x1b[?62;22c");
+        let mut answers = Answers::default();
+        relay.expect_answers(std::iter::once(&mut answers));
+        assert_eq!(relay.answered(&answers.feed(b"\x1b_Gi=31;OK\x1b\\")), b"\x1b[?62;22c");
         assert!(relay.expire(wait.expect("a wait began")).is_empty(), "nothing left once answered");
         // No answer in time: DA1 goes when the wait ends.
         relay.feed(&mut screen, probe);
@@ -343,6 +388,91 @@ mod tests {
                 assert!(!text.contains("AAAA"), "image data leaked: {text:?}");
                 assert!(screen.take_responses().is_empty(), "no core kitty acknowledgements");
             }
+        }
+    }
+
+    #[test]
+    fn only_da1_waits_and_answers_must_be_complete_and_correlated() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        let mut viewer = Answers::default();
+        let mut second = Answers::default();
+        let probe = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c\x1b[6n\x1b[5n";
+        relay.feed(&mut screen, probe);
+        relay.expect_answers([&mut viewer, &mut second].into_iter());
+        let (now, wait) = relay.take_replies(&mut screen, true);
+        assert_eq!(now, b"\x1b[1;1R\x1b[0n", "prompt queries must not wait");
+        for part in [
+            b"\x1b[200~\x1b_Gi=31;OK\x1b\\\x1b[201~".as_slice(),
+            b"\x1b[200~\x1b_Garbitrary pasted text\x1b[201~",
+            b"\x1b_Garbitrary\x1b\\",
+            b"\x1b_Gi=31,a=q;OK\x1b\\",
+            b"\x1b",
+            b"_",
+            b"Gi=31;OK",
+            b"\x1b",
+        ] {
+            assert!(relay.answered(&viewer.feed(part)).is_empty());
+        }
+        assert_eq!(relay.answered(&viewer.feed(b"\\")), b"\x1b[?62;22c");
+        assert!(relay.expire(wait.unwrap()).is_empty());
+
+        // The second viewer's duplicate belongs to the first query, even
+        // when the program reuses its image ID for the next query.
+        relay.feed(&mut screen, probe);
+        relay.expect_answers([&mut viewer, &mut second].into_iter());
+        let (_, wait) = relay.take_replies(&mut screen, true);
+        assert!(relay.answered(&second.feed(b"\x1b_Gi=31;OK\x1b\\")).is_empty());
+        assert_eq!(relay.answered(&viewer.feed(b"\x1b_Gi=31;OK\x1b\\")), b"\x1b[?62;22c");
+        assert!(relay.expire(wait.unwrap()).is_empty());
+
+        // An expired query's late answer cannot release a newer ID's DA1.
+        relay.feed(&mut screen, probe);
+        relay.expect_answers(std::iter::once(&mut viewer));
+        let (_, wait) = relay.take_replies(&mut screen, true);
+        assert_eq!(relay.expire(wait.unwrap()), b"\x1b[?62;22c");
+        relay.feed(&mut screen, b"\x1b_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
+        relay.expect_answers(std::iter::once(&mut viewer));
+        let (_, wait) = relay.take_replies(&mut screen, true);
+        assert!(relay.answered(&viewer.feed(b"\x1b_Gi=31;OK\x1b\\")).is_empty());
+        assert_eq!(relay.answered(&viewer.feed(b"\x1b_Gi=32;OK\x1b\\")), b"\x1b[?62;22c");
+        assert!(relay.expire(wait.unwrap()).is_empty());
+    }
+
+    #[test]
+    fn no_viewer_preserves_reply_order_even_when_prompt_queries_follow_da1() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        relay.feed(&mut screen, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c\x1b[6n\x1b[5n");
+        assert_eq!(relay.take_replies(&mut screen, false), (b"\x1b[?62;22c\x1b[1;1R\x1b[0n".to_vec(), None));
+    }
+
+    #[test]
+    fn coalesced_queries_need_each_answer_but_skipped_feature_probes_do_not() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        let mut viewer = Answers::default();
+        relay.feed(&mut screen, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Ga=q,i=33,e=T,U=1\x1b\\\x1b[c");
+        relay.expect_answers(std::iter::once(&mut viewer));
+        let (_, wait) = relay.take_replies(&mut screen, true);
+        assert!(relay.answered(&viewer.feed(b"\x1b_Gi=31;OK\x1b\\")).is_empty());
+        assert_eq!(relay.answered(&viewer.feed(b"\x1b_Gi=32;ENOENT:no image\x1b\\")), b"\x1b[?62;22c");
+        assert!(relay.expire(wait.unwrap()).is_empty());
+    }
+
+    #[test]
+    fn payload_free_commands_wait_regardless_of_parameter_order() {
+        for command in [b"\x1b_Ga=p,i=31\x1b\\".as_slice(), b"\x1b_Gi=31,a=p\x1b\\"] {
+            let mut screen = Screen::new(80, 24, 1 << 20);
+            let mut relay = Relay::default();
+            let mut viewer = Answers::default();
+            relay.feed(&mut screen, command);
+            relay.feed(&mut screen, b"\x1b[c");
+            relay.expect_answers(std::iter::once(&mut viewer));
+            let (now, wait) = relay.take_replies(&mut screen, true);
+            assert!(now.is_empty(), "{command:?}: DA1 must wait");
+            assert!(wait.is_some(), "{command:?}: placement starts a wait");
+            assert_eq!(relay.answered(&viewer.feed(b"\x1b_Gi=31;ENOENT: image not found\x1b\\")), b"\x1b[?62;22c");
         }
     }
 
