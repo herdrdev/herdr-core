@@ -108,7 +108,7 @@ if [ "$bundle" = 1 ] && [ -x "$tmp/Herdr Core.app/Contents/MacOS/herdr-core" ]; 
   say "hc $version $action as Herdr Core.app. Recreate pre-update terminals if macOS privacy access is broken; running terminals were kept."
 elif [ -x "$bin/herdr-core" ]; then
   # Swapped the planned way, so its terminals keep running.
-  "$bin/herdr-core" update --from "$tmp/herdr-core" >/dev/null || fail "updating $bin/herdr-core failed (see above)"
+  "$bin/herdr-core" update --from "$core" >/dev/null || fail "updating $bin/herdr-core failed (see above)"
   say "hc updated to $version."
 else
   cp "$core" "$bin/herdr-core.new"

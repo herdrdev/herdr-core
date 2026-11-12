@@ -277,19 +277,23 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
     let script = format!(
         "set -e; mount --make-rprivate /; mount -t tmpfs -o size=256M,noexec tmpfs {}; \
          export TAR_OPTIONS=--no-same-owner; \
-         HC_INSTALL_DIR={} TMPDIR={} HERDR_RELEASES_URL={} /usr/bin/sh {}/../../distribution/install.sh",
+         export HC_INSTALL_DIR={} TMPDIR={} HERDR_RELEASES_URL={}; \
+         /usr/bin/sh {}/../../distribution/install.sh; \
+         /usr/bin/sh {}/../../distribution/install.sh",
         tmp.display(),
         bin.display(),
         tmp.display(),
         r.url,
+        ROOT,
         ROOT
     );
-    let out = Command::new("unshare").args(["-rm", "--map-root-user", "sh", "-c", &script]).output().unwrap();
+    let out = s.program("unshare").args(["-rm", "--map-root-user", "sh", "-c", &script]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("does not run"), "the noexec mount was read as a wrong machine: {stdout}{stderr}");
     assert!(out.status.success(), "{stdout}{stderr}");
     assert!(stdout.contains("installed"));
+    assert!(stdout.contains("updated"));
     assert!(bin.join("herdr-core").is_file());
     assert!(!bin.join("herdr-core.staged").exists(), "the stage is cleaned up");
 }
