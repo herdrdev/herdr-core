@@ -10,9 +10,6 @@ It does not arrange windows; use `herdr-app --skill` for that.
 `$HC_TERMINAL_ID` is your address. Terminals you start are your children.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
-The machine part of an address, and `--on`, can use a permanent core ID or a
-display name. An exact core ID wins over display names, including this core's
-hostname.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
