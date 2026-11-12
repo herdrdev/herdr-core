@@ -403,19 +403,38 @@ fn keep_off_on_a_lost_terminal_reports_it_finished() {
 #[test]
 fn a_kept_terminal_lost_to_a_reboot_or_its_holder_shows_what_its_program_left_above_the_new_shell() {
     // As a reboot ends them: the service manager stops the core (a planned handover), then the rest.
-    shows_what_was_left(|s, status| {
+    shows_what_was_left(Some(true), |s, status| {
         unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGTERM) };
         wait_until("core gone", || !s.connect_ok());
         unsafe { libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
     });
     // The holder alone dies while the core runs.
-    shows_what_was_left(|_, status| unsafe {
+    shows_what_was_left(Some(true), |_, status| unsafe {
         libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
     });
 }
 
-fn shows_what_was_left(lose: impl Fn(&Session, &serde_json::Value)) {
+#[test]
+fn screen_restore_is_opt_in_and_enabling_it_later_does_not_replay_a_discarded_screen() {
+    for setting in [None, Some(false)] {
+        shows_what_was_left(setting, |s, status| {
+            unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGTERM) };
+            wait_until("core gone", || !s.connect_ok());
+            unsafe { libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+        });
+        shows_what_was_left(setting, |_, status| unsafe {
+            libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        });
+    }
+}
+
+fn shows_what_was_left(setting: Option<bool>, lose: impl Fn(&Session, &serde_json::Value)) {
     let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    if let Some(setting) = setting {
+        std::fs::write(&config, format!("restore_screen = {setting}\n")).unwrap();
+    }
     let t = run(&s, &["--keep", "sh", "-c", "printf 'left-on-screen\\n'; exec sleep 100"]);
     wait_until("output", || text(&s, &t).contains("left-on-screen"));
     let old = get(&s, &t)["pid"].as_i64().unwrap();
@@ -424,14 +443,38 @@ fn shows_what_was_left(lose: impl Fn(&Session, &serde_json::Value)) {
     s.json(&["send", &t, "echo after-$((1+1))"]);
     wait_until("new shell answers", || text(&s, &t).contains("after-2"));
     let text = text(&s, &t);
-    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
-    assert!(at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"), "{text:?}");
-    assert_eq!(text.matches("left-on-screen").count(), 1, "{text:?}");
+    if setting == Some(true) {
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
+        assert!(
+            at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"),
+            "{text:?}"
+        );
+        assert_eq!(text.matches("left-on-screen").count(), 1, "{text:?}");
+        assert_eq!(text.matches("this is a new shell").count(), 1, "{text:?}");
+    } else {
+        assert!(!text.contains("left-on-screen") && !text.contains("this is a new shell"), "{text:?}");
+        std::fs::write(&config, "restore_screen = true\n").unwrap();
+        let status = s.json(&["server", "status"]);
+        let old = get(&s, &t)["pid"].as_i64().unwrap();
+        unsafe {
+            libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+            libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        }
+        wait_until("core gone", || !s.connect_ok());
+        wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+        s.json(&["send", &t, "echo after-$((2+1))"]);
+        wait_until("new shell answers", || common::text(&s, &t).contains("after-3"));
+        let text = common::text(&s, &t);
+        assert!(!text.contains("left-on-screen") && !text.contains("this is a new shell"), "{text:?}");
+    }
 }
 
 #[test]
 fn a_saved_screen_comes_back_once_not_after_a_later_loss_that_saved_nothing() {
     let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "restore_screen = true\n").unwrap();
     let t = run(&s, &["--keep", "sh", "-c", "printf 'before-the-update\\n'; exec sleep 100"]);
     wait_until("output", || text(&s, &t).contains("before-the-update"));
     // An update hands the screen to the next core, which reads it.

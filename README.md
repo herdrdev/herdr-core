@@ -56,6 +56,14 @@ For a terminal you want to keep even if its program is lost, use `hc run --keep`
 Recovery starts a fresh shell, never reruns the task.
 A normal exit or an explicit kill still ends it.
 
+To show a lost kept program's last saved screen above the new shell, set
+`restore_screen = true` in the same config.toml described below. It defaults
+to false. Changes apply at the next recovery. A divider marks where the old
+program ended; on Windows its screen is in history. `hc read` includes that
+old output, so scripts reading it can match text from the lost program. Each saved screen
+is consumed or discarded once, even with the setting off. A power cut that
+saves nothing starts blank.
+
 ## Default shell
 
 With no program, `hc run --bg` starts the machine's shell: `$SHELL` (or

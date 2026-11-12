@@ -923,6 +923,9 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
 #[test]
 fn a_lost_kept_terminal_shows_what_its_program_left_above_the_new_shell() {
     let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "restore_screen = true\n").unwrap();
     let t = s.bg(&["--keep", "cmd.exe", "/c", "echo left-on-screen& ping -n 120 127.0.0.1 >nul"]);
     let text = |t: &str| s.out(&["read", t, "--lines", "200"]).1;
     wait_until("output", || text(&t).contains("left-on-screen"));

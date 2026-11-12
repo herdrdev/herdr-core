@@ -220,7 +220,7 @@ impl Core {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn snapshot_path(&self, id: u32) -> PathBuf {
+    pub(crate) fn snapshot_path(&self, id: u32) -> PathBuf {
         self.paths.state.join("screens").join(format!("{}.snap", crate::terminals::address(id)))
     }
 

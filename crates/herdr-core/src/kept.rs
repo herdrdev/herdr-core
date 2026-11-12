@@ -55,8 +55,10 @@ impl Core {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
         }
-        let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
-            Ok(shell) => shell,
+        let (shell, restore_screen) = match crate::config::load(&self.paths.config)
+            .and_then(|settings| settings.shell().map(|shell| (shell, settings.restore_screen.unwrap_or(false))))
+        {
+            Ok(settings) => settings,
             Err(e) => {
                 eprintln!("core: kept terminals waiting for a shell: {}", e.message);
                 return;
@@ -109,10 +111,13 @@ impl Core {
             t.paste_gap_ms = None;
             let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
             let identity = t.identity.clone();
+            if !restore_screen {
+                let _ = std::fs::remove_file(self.snapshot_path(id));
+            }
             // A retry after a failed spawn keeps the screen the first try built.
-            let mut screen = st.screens.remove(&id).unwrap_or_else(|| {
+            let mut screen = st.screens.remove(&id).filter(|_| restore_screen).unwrap_or_else(|| {
                 let mut screen = ghostty_vt::Terminal::new(spawn.cols, spawn.rows, self.history_bytes());
-                if let Some(old) = self.take_saved_screen(id) {
+                if restore_screen && let Some(old) = self.take_saved_screen(id) {
                     screen.write(&old.replay());
                     screen.write(RESTORED);
                     // ConPTY paints a new console from the top left: move what was there into history.
