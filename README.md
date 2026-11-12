@@ -95,6 +95,36 @@ Reverse sends allow at least the default 60-second draft hold.
 A parent configured above 60 seconds can still outwait a child configured below
 that parent's limit and cause its reverse send to time out.
 
+## Keep working agents awake
+
+On macOS, core can prevent idle system sleep while a local terminal reports `working` through OSC 7501.
+Add these settings to `config.toml`:
+
+```toml
+keep_awake = "on" # default "off"
+keep_awake_max = 7200 # seconds per continuous work period; default 7200
+```
+
+Core holds one `PreventUserIdleSystemSleep` assertion while at least one local terminal reports `working`.
+`pmset -g assertions` shows its name, for example `herdr-core: 2 terminals working`.
+Child status records and terminals on other machines do not count.
+The display can still sleep.
+Manual sleep and lid closure still work.
+
+Core releases the assertion when all local terminals leave `working`, when the time limit expires, or when core stops.
+Repeated reports and additional working terminals do not reset the time limit.
+After expiration, all terminals must leave `working` before another work period can start.
+Disabling the setting or restarting core also resets the time limit.
+Zero or negative seconds prevent an assertion; nonfinite values and duration overflow cause a config error.
+
+Changes apply within one second without a restart.
+Each core reads its own configuration file.
+Linux and Windows accept the settings but do not prevent sleep.
+`hc server status` reports `off`, `unsupported`, `idle`, `active`, `limited`, or `error` in `keep_awake`.
+`limited` means that the time limit expired.
+`error` means that macOS rejected the assertion; details appear in `core.log`.
+An invalid configuration disables sleep prevention until corrected.
+
 ## Agents run agents
 
 Give an agent `hc --skill`. It prints the agent docs in one read, including how to delegate, wait, report back, and clean up.

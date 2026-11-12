@@ -7,6 +7,12 @@ use std::time::Duration;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Prevent idle system sleep while a terminal reports working (default off).
+    pub keep_awake: Option<KeepAwake>,
+    /// Maximum seconds per continuous work period (default 7200); 0 prevents assertions.
+    #[serde(default, deserialize_with = "seconds")]
+    pub keep_awake_max: Option<Duration>,
+
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.
@@ -32,6 +38,13 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KeepAwake {
+    On,
+    Off,
 }
 
 fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
@@ -133,6 +146,21 @@ mod tests {
             for value in ["nan", "inf", "-inf", "1e100"] {
                 assert!(toml::from_str::<Config>(&format!("{setting} = {value}")).is_err());
             }
+        }
+    }
+
+    #[test]
+    fn keep_awake_accepts_only_on_or_off_and_bounded_seconds() {
+        assert!(Config::default().keep_awake.is_none());
+        for setting in ["'on'", "'off'"] {
+            let c: Config = toml::from_str(&format!("keep_awake = {setting}\nkeep_awake_max = 7200")).unwrap();
+            assert_eq!(c.keep_awake_max, Some(Duration::from_secs(7200)));
+        }
+        for setting in ["true", "'yes'", "'ON'"] {
+            assert!(toml::from_str::<Config>(&format!("keep_awake = {setting}")).is_err());
+        }
+        for value in ["nan", "inf", "-inf", "1e100"] {
+            assert!(toml::from_str::<Config>(&format!("keep_awake_max = {value}")).is_err());
         }
     }
 

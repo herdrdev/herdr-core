@@ -15,10 +15,12 @@ use std::io::{IsTerminal, Read};
 mod file;
 mod machine;
 mod output;
+mod server;
 mod update;
 use file::*;
 use machine::*;
 use output::*;
+use server::{connect, follow_events, wait_closed};
 use update::*;
 
 #[derive(Parser)]
@@ -548,31 +550,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = serde_json::to_string_pretty(&r).unwrap_or_default();
             Out { json: r, human }
         }
-        Cmd::Server { action: action @ (ServerCmd::Start | ServerCmd::Status | ServerCmd::Restart { .. }) } => {
-            if let ServerCmd::Restart { fresh } = action {
-                restart(&paths, fresh)?;
-            }
-            let r = if crate::platform::status_may_start_core() {
-                call("server.status", json!({}))?
-            } else {
-                let stream = if matches!(action, ServerCmd::Status) {
-                    client::require_existing(&paths)?
-                } else {
-                    client::connect_or_start_explicit(&paths)?
-                };
-                client::call(&stream, "server.status", json!({}))?
-            };
-            let id = r["core"]["id"].as_str().unwrap_or("?");
-            let human = format!(
-                "core {} ({}) running, pid {}, up {}s",
-                r["core"]["name"].as_str().unwrap_or("?"),
-                id.get(..8).unwrap_or(id),
-                r["pid"],
-                r["uptime_ms"].as_u64().unwrap_or(0) / 1000
-            );
-            Out { json: r, human }
-        }
-        Cmd::Server { action: ServerCmd::Stop } => stop(&paths)?,
+        Cmd::Server { action } => server::run(&paths, action)?,
         Cmd::Update { from: None, version, force } => {
             let this = format!("hc {}", env!("CARGO_PKG_VERSION"));
             if let Some(v) = &version
@@ -729,90 +707,6 @@ fn caller() -> String {
     client::terminal_id().unwrap_or_else(|| format!("ppid:{}", crate::platform::parent_pid()))
 }
 
-/// Prints the snapshot, then every notification until the core goes away.
-fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcError> {
-    use std::io::BufRead;
-    let stream = client::connect_or_start(paths)?;
-    let snapshot = client::call(&stream, "events.subscribe", params)?;
-    if json {
-        println!("{snapshot}");
-    } else {
-        println!("{}", table(&json!({"terminals": snapshot["terminals"]})));
-    }
-    for line in std::io::BufReader::new(&stream).lines() {
-        let Ok(line) = line else { break };
-        if json {
-            println!("{line}");
-            continue;
-        }
-        let msg: Value = serde_json::from_str(&line).unwrap_or_default();
-        let p = &msg["params"];
-        match msg["method"].as_str() {
-            Some("event") if p["type"] == "doc" => {
-                let name = p["data"]["name"].as_str().unwrap_or("?");
-                let machine = p["machine"].as_str().map(|m| format!("{m}/")).unwrap_or_default();
-                println!("{machine}{name}  doc  version {}", p["data"]["version"]);
-            }
-            Some("event") => println!(
-                "{:<6} {:<10} {}",
-                p["terminal"].as_str().unwrap_or("?"),
-                p["type"].as_str().unwrap_or("?"),
-                p["data"]
-            ),
-            Some("missed") => {
-                println!("[missed some events; {} terminals now]", p["terminals"].as_array().map_or(0, Vec::len))
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
-    if fresh && std::env::var_os("HC_TERMINAL_ID").is_some() {
-        eprintln!(
-            "hc: this shell carries Herdr's environment; run --fresh from a terminal outside Herdr or unset unwanted variables first"
-        );
-    }
-    let environment: std::collections::BTreeMap<_, _> =
-        crate::platform::utf8_vars().filter(|(k, _)| !k.starts_with('=')).collect();
-    let Some(stream) = client::connect_existing(paths) else {
-        if fresh {
-            crate::restart::prepare_start(paths, environment).map_err(|e| {
-                RpcError::new("unavailable", e.to_string(), "retry hc server restart --fresh once the core is running")
-            })?;
-        }
-        return Ok(());
-    };
-    let params = if fresh {
-        let hello = client::call(&stream, "hello", json!({}))?;
-        if !hello["features"].as_array().is_some_and(|f| f.contains(&json!("restart_environment"))) {
-            return Err(RpcError::new(
-                "refused",
-                "--fresh needs a newer running core",
-                "run hc update, then retry hc server restart --fresh",
-            ));
-        }
-        json!({"environment": environment})
-    } else {
-        json!({})
-    };
-    client::call(&stream, "server.restart", params)?;
-    wait_closed(&stream);
-    Ok(())
-}
-
-/// Stops the core and returns once it has exited (its connection closes).
-fn stop(paths: &Paths) -> Result<Out, RpcError> {
-    let Some(stream) = client::connect_existing(paths) else {
-        crate::restart::discard_if_stopped(paths);
-        return Ok(Out { json: json!({"stopped": false}), human: "no core running".into() });
-    };
-    let r = client::call(&stream, "server.stop", json!({}))?;
-    wait_closed(&stream);
-    Ok(Out { json: r, human: "core stopped".into() })
-}
-
 /// A run that waited: its output as text (like read), a last line when there
 /// is more to say, and the program's exit code as hc's (124: still running).
 fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
@@ -847,34 +741,6 @@ fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{}", text.trim_start_matches('\n')).and_then(|_| out.flush());
     std::process::exit(code);
-}
-
-/// The core closes every connection when its process exits.
-fn wait_closed(stream: &crate::platform::Stream) {
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
-    let _ = (&*stream).read_to_end(&mut Vec::new());
-}
-
-/// Copies bytes between stdin/stdout and the core: plain or framed, untouched.
-fn connect(paths: &Paths) -> Result<(), RpcError> {
-    let stream = crate::platform::connect_for_app(paths)?;
-    let mut to_core = stream.try_clone().map_err(|e| RpcError::internal(e.to_string()))?;
-    std::thread::spawn(move || {
-        pump(&mut *crate::platform::console::stdin(), &mut to_core);
-        let _ = to_core.shutdown(std::net::Shutdown::Write);
-    });
-    // Unbuffered: std's stdout holds bytes until a newline, and frames have none.
-    pump(&mut &stream, &mut *crate::platform::console::stdout());
-    Ok(())
-}
-
-fn pump(from: &mut impl Read, to: &mut impl std::io::Write) {
-    let mut buf = [0u8; 64 * 1024];
-    while let Ok(n @ 1..) = from.read(&mut buf) {
-        if to.write_all(&buf[..n]).is_err() {
-            return;
-        }
-    }
 }
 
 /// Which API method each command calls. Methods missing here are API-only.
@@ -914,161 +780,4 @@ pub const COMMANDS: &[(&str, &str)] = &[
 pub const API_ONLY: &[&str] = &["hello", "doc.get", "doc.set"];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    fn parsed(args: &[&str]) -> Cmd {
-        Cli::try_parse_from([&["hc"], args].concat()).unwrap().cmd.unwrap()
-    }
-
-    #[test]
-    fn the_picker_orders_by_last_change_by_what_needs_you_and_by_name() {
-        let t = |address: &str, name: &str, state: Option<&str>, ms: u64| {
-            let status = state.map(|s| serde_json::json!({"state": s}));
-            serde_json::json!({"address": address, "name": name, "state": "live", "created_ms": 1,
-                "status": status, "status_ms": state.map(|_| ms)})
-        };
-        let all = [
-            t("t1", "web", Some("working"), 30),
-            t("t2", "api", Some("done"), 20),
-            t("t3", "shell", None, 0),
-            t("t4", "Docs", Some("blocked"), 10),
-            t("t5", "cli", Some("idle"), 40),
-        ];
-        let orders: Vec<(&str, String)> = orders(&all)
-            .into_iter()
-            .map(|(name, ts)| (name, ts.iter().map(|t| t["address"].as_str().unwrap()).collect::<Vec<_>>().join(" ")))
-            .collect();
-        assert_eq!(
-            orders,
-            [
-                ("recent", "t5 t1 t2 t4 t3".into()),
-                ("status", "t4 t1 t5 t2 t3".into()),
-                ("name", "t2 t5 t4 t3 t1".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn picker_rows_narrower_than_the_headings_list_without_a_header() {
-        let t = serde_json::json!({"address": "t1", "argv": ["pi"], "cwd": "/a"});
-        assert_eq!(items(&[t], false).len(), 1);
-    }
-
-    #[test]
-    fn rows_say_where_a_terminal_lives_else_its_folder_and_no_other_labels() {
-        let t = |extra: Value| {
-            let mut t = serde_json::json!({"address": "t1", "argv": ["pi"], "cwd": "/a/bliss", "state": "live"});
-            t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            let item = items(&[t], false).remove(0);
-            (picker::plain(&item.rest), item.short)
-        };
-        let labels = serde_json::json!({"where": "herdr-core / review", "herdr.tab": "tab3", "ws": "x9"});
-        let (rest, short) = t(serde_json::json!({"labels": labels, "name": "rev"}));
-        assert_eq!(short, "rev \u{b7} herdr-core / review");
-        assert!(
-            rest.contains("herdr-core / review")
-                && !rest.contains("bliss")
-                && !rest.contains("x9")
-                && !rest.contains("tab3"),
-            "{rest}"
-        );
-        assert_eq!(t(serde_json::json!({"labels": {"ws": "x9"}})).1, "pi \u{b7} bliss");
-    }
-
-    #[test]
-    fn human_folders_follow_the_foreground_but_json_keeps_the_launch_folder() {
-        for foreground in [json!({"cwd": "/current/work"}), json!({"cwd": null}), Value::Null] {
-            let t = json!({"address": "t1", "argv": ["bash"], "cwd": "/launch/start", "foreground": foreground});
-            let original = t.clone();
-            let cwd = if foreground["cwd"].is_string() { "/current/work" } else { "/launch/start" };
-            assert_eq!(folder(&t), cwd.rsplit('/').next().unwrap());
-            assert!(picker::plain(&items(std::slice::from_ref(&t), false)[0].rest).contains(&folder(&t)));
-            assert!(describe(&t).contains(&format!("  cwd: {cwd}\n")));
-            assert_eq!(short(&t), json!({"address": "t1", "cwd": "/launch/start", "agent": "bash"}));
-            assert_eq!(t, original, "formatting must not change the full get record");
-        }
-    }
-
-    #[test]
-    fn get_keeps_an_unsent_first_message_visible_to_people() {
-        let mut t = json!({"address": "t1", "argv": ["pi"], "state": "live"});
-        assert!(!describe(&t).contains("first message"));
-        t["first_message"] = json!({"sent": false, "reason": "output did not settle"});
-        assert!(describe(&t).contains("first message NOT sent: output did not settle"));
-    }
-
-    #[test]
-    fn every_api_method_has_a_command_or_is_api_only() {
-        Cli::command().debug_assert();
-        for method in crate::api::METHOD_NAMES {
-            let covered = COMMANDS.iter().any(|(_, m)| m == method) || API_ONLY.contains(method);
-            assert!(covered, "{method} has no command and is not marked API-only");
-        }
-        for (command, _) in COMMANDS {
-            let mut cmd = Cli::command();
-            for word in command.split(' ') {
-                cmd = cmd.find_subcommand(word).unwrap_or_else(|| panic!("no command `{command}`")).clone();
-            }
-        }
-    }
-
-    #[test]
-    fn a_command_line_becomes_the_api_request() {
-        let Cmd::Send(p) = parsed(&["send", "t3", "hi there", "--if", "idle", "--wait", "--timeout", "2.5"]) else {
-            panic!()
-        };
-        let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "wait": true, "timeout": 2.5, "caller": null});
-        assert_eq!(to(&p), want);
-        assert!(serde_json::from_value::<SendParams>(want).is_ok(), "and the API reads it back");
-
-        let Cmd::Wait(p) = parsed(&["wait", "t3", "--output", "ready"]) else { panic!() };
-        assert_eq!(to(&p)["output"], "ready");
-
-        let Cmd::Run(p) = parsed(&["run", "--label", "a=1", "--label", "b=x=y", "--label", "a=2", "sh", "-c", "true"])
-        else {
-            panic!()
-        };
-        assert_eq!(
-            to(&p)["labels"],
-            json!({"a": "2", "b": "x=y"}),
-            "an object; values may hold =; the last repeat wins"
-        );
-        assert_eq!(to(&p)["argv"], json!(["sh", "-c", "true"]));
-    }
-
-    #[test]
-    fn a_wait_prints_what_happened() {
-        let one = |reason: &str| json!({"terminal": "t1", "ended": reason != "timeout", "reason": reason, "status": "working", "turn": 2, "exit_code": 42, "children": []});
-        assert!(describe_wait(&one("timeout")).starts_with("t1 still running: working"));
-        assert!(describe_wait(&one("exit")).starts_with("t1 exited (exit 42"));
-        let all = json!({"terminal": "t0", "reason": "children", "children": [one("exit")]});
-        assert!(describe_wait(&all).starts_with("t1 exited"));
-        let none = json!({"terminal": "t0", "reason": "children", "children": []});
-        assert_eq!(describe_wait(&none), "no children are working");
-        let message = json!({"terminal": "t0", "reason": "message", "from": "t2", "children": []});
-        assert!(describe_wait(&message).contains("t2"), "{}", describe_wait(&message));
-        let mut interrupted = one("message");
-        interrupted["ended"] = false.into();
-        interrupted["from"] = "t1".into();
-        assert_eq!(
-            describe_wait(&interrupted),
-            "a message from t1 (already in your input)\nt1 still running: working, turn 2 (wait again to keep waiting)"
-        );
-    }
-
-    #[test]
-    fn older_compares_versions_as_numbers() {
-        assert!(older("hc 0.1.9", "hc 0.2.0") && older("hc 0.2.0", "hc 0.10.0"));
-        assert!(!older("hc 0.2.0", "hc 0.2.0") && !older("hc 0.10.0", "hc 0.9.9") && !older("hc dev", "hc 0.2.0"));
-    }
-
-    #[test]
-    fn labels_need_a_key() {
-        assert!(Cli::try_parse_from(["hc", "label", "t1", "nokey"]).is_err());
-        assert!(Cli::try_parse_from(["hc", "label", "t1", "=v"]).is_err());
-        let Cmd::Label(p) = parsed(&["label", "t1", "gone="]) else { panic!() };
-        assert_eq!(to(&p)["labels"], json!({"gone": ""}), "an empty value removes it");
-    }
-}
+mod tests;

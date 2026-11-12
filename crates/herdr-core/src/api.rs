@@ -198,7 +198,8 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
 
 async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError> {
     let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
-    let st = core.lock();
+    let mut st = core.lock();
+    crate::keep_awake::update(core, &mut st);
     let live = st.reg.terminals.values().filter(|t| t.is_live()).count();
     let holders: Vec<HolderInfo> = st
         .holders
@@ -216,6 +217,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         })
         .collect();
     Ok(StatusResult {
+        keep_awake: st.keep_awake.status.into(),
         core: core.info.clone(),
         version: version(),
         pid: std::process::id(),

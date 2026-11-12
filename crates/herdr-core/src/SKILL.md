@@ -198,6 +198,18 @@ On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
 no shell), with the remote line appended as one argument, no console window;
 Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
 
+On macOS, `keep_awake = "on"` in `config.toml` prevents idle system sleep while a local terminal reports `working`.
+The default is `"off"`.
+`keep_awake_max = 7200` limits each continuous work period in seconds; zero or negative values prevent an assertion.
+Child records and remote terminals do not count.
+The display can sleep, and manual sleep still works.
+After expiration, all local terminals must leave `working` before the assertion can start again.
+Disabling the setting or restarting core resets the limit.
+Settings apply within one second.
+Linux and Windows accept these settings and report `keep_awake: unsupported` when enabled.
+`hc server status` reports `keep_awake` as `off`, `unsupported`, `idle`, `active`, `limited`, or `error`.
+An invalid configuration disables sleep prevention.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.

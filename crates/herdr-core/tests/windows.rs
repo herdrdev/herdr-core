@@ -901,3 +901,12 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
         assert_eq!(err["error"]["kind"], kind, "{err}");
     }
 }
+
+#[test]
+fn keep_awake_accepts_shared_settings_and_reports_unsupported() {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "keep_awake = 'on'\nkeep_awake_max = 7200").unwrap();
+    assert_eq!(s.json(&["server", "start"])["keep_awake"], "unsupported");
+}

@@ -80,6 +80,7 @@ pub fn serve() -> io::Result<()> {
             tokio::spawn(core.clone().run_jobs(jobs));
         }
         crate::remote::start_all(&core);
+        tokio::spawn(crate::keep_awake::watch(core.clone()));
         tokio::spawn(core.clone().watch_foreground());
         tokio::spawn(core.clone().save_when_due());
         tokio::spawn(core.clone().expire_image_answers());
@@ -106,6 +107,7 @@ pub fn serve() -> io::Result<()> {
 
 /// Finish queued registry work before the runtime cancels its tasks (which still own Core).
 pub(crate) async fn finish(core: &Core) -> io::Result<()> {
+    core.lock().keep_awake.stop();
     if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
         core.handover().await?;
     }

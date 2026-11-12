@@ -142,6 +142,8 @@ pub struct HolderInfo {
 
 #[derive(Serialize, JsonSchema)]
 pub struct StatusResult {
+    /// Idle-sleep prevention: off, unsupported, idle, active, limited, or error.
+    pub keep_awake: String,
     pub core: CoreInfo,
     pub version: String,
     pub pid: u32,
