@@ -442,7 +442,8 @@ fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
 #[test]
 fn waiting_on_children_counts_the_ones_on_other_machines() {
     let (_rohan, s) = with_rohan();
-    let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; r state=idle; sleep 100"));
+    let (parent, child) =
+        parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; r state=idle; w exit; exit 7"));
     let wait = |mode: &str, timeout: &str| {
         let out = s
             .cmd()
@@ -457,6 +458,8 @@ fn waiting_on_children_counts_the_ones_on_other_machines() {
     assert_eq!((&still["ended"], &still["children"][0]["terminal"]), (&json!(false), &json!(child)), "{still}");
 
     touch(&s, "go");
+    let filtered = wait("messages", "0.5");
+    assert_eq!(filtered["reason"], "timeout", "remote idle is not a report: {filtered}");
     let any = wait("any", "10");
     assert_eq!(
         (&any["ended"], &any["terminal"], &any["children"][0]["terminal"]),
@@ -465,6 +468,13 @@ fn waiting_on_children_counts_the_ones_on_other_machines() {
     );
     let all = wait("all", "10");
     assert_eq!((&all["ended"], &all["children"][0]["status"]), (&json!(true), &json!("idle")), "{all}");
+    let gone = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| wait("messages", "5"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        touch(&s, "exit");
+        waiting.join().unwrap()
+    });
+    assert_eq!((&gone["ended"], &gone["children"][0]["reason"]), (&json!(true), &json!("exit")), "{gone}");
 }
 
 #[test]

@@ -113,6 +113,9 @@ impl Core {
     pub fn news(&self, st: &mut State, id: u32) {
         let Some(t) = st.reg.terminals.get_mut(&id) else { return };
         t.news += 1;
+        if stuck(t) {
+            t.failure_news = t.status.as_ref().map(|s| (t.news, Some(s.state.clone()), None));
+        }
         if std::mem::take(&mut t.told_parent) && !stuck(t) && t.is_live() {
             t.seen = t.news; // a turn that ended after reporting to the parent
         }

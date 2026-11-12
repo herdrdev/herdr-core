@@ -696,3 +696,62 @@ fn remove_root(root: impl AsRef<std::path::Path>) {
         }
     }
 }
+
+#[tokio::test]
+async fn message_wait_observes_saved_failures_and_recovered_losses() {
+    for state in ["blocked", "error", "lost"] {
+        let (core, root) = test_core();
+        let parent = {
+            let mut st = core.lock();
+            let parent = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0)
+                .unwrap();
+            let kid = st
+                .reg
+                .create(
+                    crate::terminals::NewTerminal {
+                        argv: vec!["sh".into()],
+                        parent: Some(crate::terminals::address(parent)),
+                        keep: true,
+                        ..Default::default()
+                    },
+                    0,
+                )
+                .unwrap();
+            if state == "lost" {
+                core.record_finish(&mut st, kid, proto::Exit { code: None, signal: Some(9) }, "holder_lost");
+                // The replacement shell is live before the parent asks for the news.
+                let t = st.reg.terminals.get_mut(&kid).unwrap();
+                t.holder = Some("replacement".into());
+                t.reason = None;
+                t.signal = None;
+            } else {
+                let mut saved = serde_json::to_value(&st.reg.terminals[&kid]).unwrap();
+                saved["news"] = json!(1);
+                saved["reported"] = json!(true);
+                saved["status"] = json!({"state": state});
+                saved.as_object_mut().unwrap().remove("failure_news");
+                let t = serde_json::from_value(saved).unwrap();
+                st.reg.terminals.insert(kid, t);
+            }
+            parent
+        };
+        let call = crate::api::Call { core: &core, conn: None, plain: None };
+        let parent = crate::terminals::address(parent);
+        let r = crate::api::dispatch(
+            &call,
+            "terminal.wait",
+            json!({"terminal": parent, "caller": parent, "children": "messages", "timeout": 0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r["reason"], "children", "{state}: {r}");
+        assert_eq!(r["children"][0]["reason"], if state == "lost" { "exit" } else { "status" }, "{r}");
+        if state != "lost" {
+            assert_eq!(r["children"][0]["status"], state, "{r}");
+        }
+        drop(core);
+        remove_root(root);
+    }
+}

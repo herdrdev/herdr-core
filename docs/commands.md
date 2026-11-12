@@ -639,11 +639,11 @@ Arguments:
 
 Options:
       --children <CHILDREN>
-          Wait on children instead: all = until none is working, any = next news or a message to you.
+          Wait on children: all = none working, any = next news, messages = reports or failures.
           
-          `all`: until none of the children is working (one that hasn't reported yet counts as working). `any`: the parent's unseen news (a turn ended, it blocked, it hit an error, it exited), else the next child to stop working; for the parent itself, also a message typed into it while it worked (reason `message`). A child with a sent launch task counts as working until its turn advances past delivery, or it reports done, blocked, error, or exits. Startup idle does not complete that task in either mode. Without a launch task, idle still counts as stopped.
+          `all`: until none of the children is working (one that hasn't reported yet counts as working). `any`: the parent's unseen news (a turn ended, it blocked, it hit an error, it exited), else the next child to stop working; for the parent itself, also a message typed into it while it worked (reason `message`). A child with a sent launch task counts as working until its turn advances past delivery, or it reports done, blocked, error, or exits. Startup idle does not complete that task in either mode. Without a launch task, idle still counts as stopped. `messages`: like `any`, but ignores ordinary turn ends (done/idle/cleared status). Returns for messages to the waiting parent, blocked/error news, or child exit/loss. Timeout and human interruption are unchanged.
           
-          [possible values: any, all]
+          [possible values: any, all, messages]
 
       --json
           JSON output even in a terminal

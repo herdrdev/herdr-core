@@ -756,6 +756,7 @@ impl Core {
         if pending {
             let t = st.reg.terminals.get_mut(&id).expect("lost");
             t.news += 1;
+            t.failure_news = Some((t.news, None, exit.signal));
             t.told_parent = false;
         } else {
             self.news(st, id);

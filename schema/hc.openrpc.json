@@ -32,7 +32,8 @@
       "Children": {
         "enum": [
           "any",
-          "all"
+          "all",
+          "messages"
         ],
         "type": "string"
       },
@@ -2715,7 +2716,7 @@
           }
         },
         {
-          "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.",
+          "description": "Wait on children: all = none working, any = next news, messages = reports or failures.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.\n`messages`: like `any`, but ignores ordinary turn ends (done/idle/cleared\nstatus). Returns for messages to the waiting parent, blocked/error news,\nor child exit/loss. Timeout and human interruption are unchanged.",
           "name": "children",
           "required": false,
           "schema": {
@@ -2727,7 +2728,7 @@
                 "type": "null"
               }
             ],
-            "description": "Wait on children instead: all = until none is working, any = next news or a message to you.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped."
+            "description": "Wait on children: all = none working, any = next news, messages = reports or failures.\n\n`all`: until none of the children is working (one that hasn't reported\nyet counts as working). `any`: the parent's unseen news (a turn ended, it\nblocked, it hit an error, it exited), else the next child to stop working; for the parent\nitself, also a message typed into it while it worked (reason `message`).\nA child with a sent launch task counts as working until its turn advances\npast delivery, or it reports done, blocked, error, or exits. Startup idle\ndoes not complete that task in either mode. Without a launch task, idle\nstill counts as stopped.\n`messages`: like `any`, but ignores ordinary turn ends (done/idle/cleared\nstatus). Returns for messages to the waiting parent, blocked/error news,\nor child exit/loss. Timeout and human interruption are unchanged."
           }
         },
         {

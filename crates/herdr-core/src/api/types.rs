@@ -75,6 +75,7 @@ pub enum IdleOrWorking {
 pub enum Children {
     Any,
     All,
+    Messages,
 }
 
 /// Seconds on the command line: 0 or more, finite (JSON has no NaN, so a
@@ -522,7 +523,7 @@ pub struct SendResult {
 pub struct WaitParams {
     /// The terminal; with `children`, whose children (default: the caller).
     pub terminal: Option<String>,
-    /// Wait on children instead: all = until none is working, any = next news or a message to you.
+    /// Wait on children: all = none working, any = next news, messages = reports or failures.
     ///
     /// `all`: until none of the children is working (one that hasn't reported
     /// yet counts as working). `any`: the parent's unseen news (a turn ended, it
@@ -532,6 +533,9 @@ pub struct WaitParams {
     /// past delivery, or it reports done, blocked, error, or exits. Startup idle
     /// does not complete that task in either mode. Without a launch task, idle
     /// still counts as stopped.
+    /// `messages`: like `any`, but ignores ordinary turn ends (done/idle/cleared
+    /// status). Returns for messages to the waiting parent, blocked/error news,
+    /// or child exit/loss. Timeout and human interruption are unchanged.
     #[arg(long)]
     pub children: Option<Children>,
     /// For programs, not agents: end when output printed after the wait started
