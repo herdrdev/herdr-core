@@ -198,6 +198,9 @@ On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
 no shell), with the remote line appended as one argument, no console window;
 Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
 
+A machine whose SSH login fails shows `needs_login` and retries slowly (up to
+every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.

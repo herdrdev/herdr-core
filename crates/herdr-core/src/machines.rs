@@ -280,8 +280,10 @@ fn unreachable(to: Reach, why: &str) -> RpcError {
 
 /// ssh refused us a login only a person can give (code, password, key).
 fn wants_login(err: &str) -> bool {
-    err.contains("Permission denied")
-        && ["publickey", "keyboard-interactive", "password"].iter().any(|k| err.contains(k))
+    // Too many keys offered (sshd's MaxAuthTries) fails auth the same way; retrying fast gets banned.
+    err.contains("Too many authentication failures")
+        || err.contains("Permission denied")
+            && ["publickey", "keyboard-interactive", "password"].iter().any(|k| err.contains(k))
 }
 
 /// An open pipe to the core there, past its hello.

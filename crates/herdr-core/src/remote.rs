@@ -231,7 +231,7 @@ pub fn start_all(core: &Arc<Core>) {
 }
 
 /// Dials the machine, holds the line, and dials again after a drop (backing
-/// off to 30 s) until the machine is removed.
+/// off to 30 s, or more slowly when a login is needed) until it is removed.
 pub fn keep_up(core: &Arc<Core>, id: String) {
     let mut st = core.lock();
     st.lines.insert(id.clone(), LineState::Connecting);
@@ -262,6 +262,7 @@ pub fn forget(core: &Core, st: &mut State, id: &str) {
 
 async fn supervise(core: Arc<Core>, id: String) {
     let mut backoff = Duration::from_millis(250);
+    let mut login_backoff = Duration::ZERO;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
         let down = |st: &mut State, why: String| {
@@ -288,6 +289,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             }
             Ok(d) => {
                 backoff = Duration::from_millis(250);
+                login_backoff = Duration::ZERO;
                 // It may have been updated since it was added.
                 if let Some(v) = d.hello["version"].as_str().filter(|v| *v != m.version) {
                     let mut st = core.lock();
@@ -303,7 +305,18 @@ async fn supervise(core: Arc<Core>, id: String) {
                 core.changed.notify_waiters();
                 continue;
             }
-            Err(e) if e.kind == "needs_login" => down(&mut core.lock(), "needs_login".into()),
+            Err(e) if e.kind == "needs_login" => {
+                down(&mut core.lock(), "needs_login".into());
+                // Slow enough that a failing key doesn't get the person banned (fail2ban, CrowdSec),
+                // but an ssh-agent unlocked later still reconnects on its own.
+                login_backoff = Duration::from_secs(match login_backoff.as_secs() {
+                    0 => 120,
+                    120 => 300,
+                    _ => 600,
+                });
+                tokio::time::sleep(login_backoff).await;
+                continue;
+            }
             Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into()),
             Err(e) => down(&mut core.lock(), e.message),
         }
