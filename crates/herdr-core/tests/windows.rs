@@ -554,7 +554,12 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let _ = conn.wait();
     let reply: Value = serde_json::from_str(&reply).unwrap();
     let shell = reply["result"]["argv"][0].as_str().unwrap_or_default().to_string();
-    assert!(shell == "pwsh.exe" || shell == "powershell.exe", "{reply}");
+    let path = Path::new(&shell);
+    assert!(
+        shell == "powershell.exe"
+            || (path.is_absolute() && path.file_name().is_some_and(|name| name == "pwsh.exe") && path.is_file()),
+        "{reply}"
+    );
 }
 
 #[test]
