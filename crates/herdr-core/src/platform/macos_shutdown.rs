@@ -256,7 +256,7 @@ mod tests {
         }
         use crate::{api::CoreInfo, holder_proto::Exit, paths::Paths, runtime::Core, terminals::NewTerminal};
         use std::io::{BufRead, BufReader};
-        let root = std::path::PathBuf::from(format!("/var/tmp/hc-mac-shutdown-{}", super::super::random_hex()));
+        let root = crate::test_tmp().join(format!("hc-mac-shutdown-{}", super::super::random_hex()));
         let paths = || Paths {
             state: root.join("state"),
             config: root.join("config.toml"),

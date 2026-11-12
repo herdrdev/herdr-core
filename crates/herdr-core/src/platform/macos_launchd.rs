@@ -521,7 +521,7 @@ mod tests {
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let label = format!("{PREFIX}{}.{}", std::process::id(), now.as_nanos());
-        let dir = PathBuf::from(format!("/var/tmp/hc-demand-{}", super::super::random_hex()));
+        let dir = crate::test_tmp().join(format!("hc-demand-{}", super::super::random_hex()));
         super::super::private_dir(&dir).unwrap();
         let mut job = Job { dir, target: format!("{domain}/{label}"), loaded: false };
         let contents =
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn stale_directories_need_a_dead_starter_and_never_follow_symlinks() {
-        let dir = PathBuf::from(format!("/var/tmp/hc-c-{}", &super::super::random_hex()[..8]));
+        let dir = crate::test_tmp().join(format!("hc-c-{}", &super::super::random_hex()[..8]));
         super::super::private_dir(&dir).unwrap();
         let scratch = Job { dir, target: String::new(), loaded: false };
         let mut child = Command::new("/usr/bin/true").spawn().unwrap();
@@ -646,7 +646,7 @@ mod tests {
         if launchctl(&[OsStr::new("print"), OsStr::new(&domain)]).is_err() {
             return;
         }
-        let dir = PathBuf::from(format!("/var/tmp/hc-old-launchd-{}", super::super::random_hex()));
+        let dir = crate::test_tmp().join(format!("hc-old-launchd-{}", super::super::random_hex()));
         super::super::private_dir(&dir).unwrap();
         let scratch = Job { dir, target: String::new(), loaded: false };
         let log = scratch.dir.join("core.log");

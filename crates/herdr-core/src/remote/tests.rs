@@ -112,8 +112,8 @@ fn automatic_input_requires_support_at_every_hop() {
 #[tokio::test]
 async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
     for (feature, confirmed) in [(false, true), (true, false), (true, true)] {
-        let root = std::path::PathBuf::from(format!(
-            "/var/tmp/hc-automatic-relay-{}-{}",
+        let root = crate::test_tmp().join(format!(
+            "hc-automatic-relay-{}-{}",
             std::process::id(),
             crate::platform::random_hex()
         ));
@@ -227,11 +227,8 @@ async fn reconnect_rejects_downgrade_before_mapping_fallback_data() {
 
 #[tokio::test]
 async fn failed_reattach_drains_pending_data_before_close() {
-    let root = std::path::PathBuf::from(format!(
-        "/var/tmp/hc-reattach-drain-{}-{}",
-        std::process::id(),
-        crate::platform::random_hex()
-    ));
+    let root =
+        crate::test_tmp().join(format!("hc-reattach-drain-{}-{}", std::process::id(), crate::platform::random_hex()));
     let paths = Paths {
         socket: root.join("core.sock"),
         holder_socket: root.join("holder.sock"),
@@ -301,11 +298,8 @@ async fn failed_reattach_drains_pending_data_before_close() {
 
 #[test]
 fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
-    let root = std::path::PathBuf::from(format!(
-        "/var/tmp/hc-doc-missed-{}-{}",
-        std::process::id(),
-        crate::platform::random_hex()
-    ));
+    let root =
+        crate::test_tmp().join(format!("hc-doc-missed-{}-{}", std::process::id(), crate::platform::random_hex()));
     let paths = Paths {
         socket: root.join("core.sock"),
         holder_socket: root.join("holder.sock"),

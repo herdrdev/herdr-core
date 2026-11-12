@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn older_systemd_appends_logs_without_changing_the_main_pid() {
         use std::os::unix::fs::DirBuilderExt;
-        let test_directory = Path::new("/var/tmp").join(format!("hc-legacy-log-{}", super::super::random_hex()));
+        let test_directory = crate::test_tmp().join(format!("hc-legacy-log-{}", super::super::random_hex()));
         std::fs::DirBuilder::new().mode(0o700).create(&test_directory).unwrap();
         let log_path = test_directory.join("a '$dollar`tick` %h.log");
         std::fs::write(&log_path, "previous log\n").unwrap();
@@ -818,13 +818,12 @@ mod tests {
     fn environment_file_and_directory_are_private() {
         use std::os::unix::fs::PermissionsExt;
         let name = format!("hc-env-test-{}", super::super::random_hex());
-        let dir =
-            super::write_environment(Path::new("/var/tmp"), &name, &map(&[("API_KEY", "secret-canary")])).unwrap();
+        let dir = super::write_environment(&crate::test_tmp(), &name, &map(&[("API_KEY", "secret-canary")])).unwrap();
         let file = dir.join("environment");
         assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "API_KEY=\"secret-canary\"\n");
-        assert!(super::write_environment(Path::new("/var/tmp"), &name, &BTreeMap::new()).is_err());
+        assert!(super::write_environment(&crate::test_tmp(), &name, &BTreeMap::new()).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "API_KEY=\"secret-canary\"\n");
         std::fs::remove_dir_all(dir).unwrap();
     }
