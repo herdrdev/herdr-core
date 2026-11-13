@@ -96,7 +96,7 @@ impl Core {
         if !req.observe {
             self.apply_size(&mut st, id);
         }
-        let paint = first_paint(&st, id, req.history);
+        let paint = with_state(&st, id, st.screens[&id].paint(req.history));
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
             out.open_paused(channel);
@@ -105,7 +105,7 @@ impl Core {
                 let size = [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat();
                 out.resize(channel, &size);
             }
-            out.data(channel, &paint);
+            out.paint(channel, &paint);
         });
         Ok(channel)
     }
@@ -483,11 +483,14 @@ fn answering(viewers: Option<&Vec<Viewer>>) -> bool {
 /// must see them too; a viewer repainted after falling behind gets the mode
 /// either way).
 pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
+    with_state(st, id, st.screens[&id].paint_text(history))
+}
+
+fn with_state(st: &State, id: u32, screen: Vec<u8>) -> Vec<u8> {
     #[cfg(test)]
     tests::PAINTS.with(|n| n.set(n.get() + 1));
-    let screen = &st.screens[&id];
-    let mut paint = paint_state(st, id, screen.paint(history));
-    if let Some(continuation) = screen.continuation() {
+    let mut paint = paint_state(st, id, screen);
+    if let Some(continuation) = st.screens[&id].continuation() {
         paint.extend(continuation);
     }
     paint

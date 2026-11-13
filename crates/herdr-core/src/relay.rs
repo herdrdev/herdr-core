@@ -194,7 +194,7 @@ impl Relay {
         if let Some(keep) = self.apc.take() {
             screen.drop_responses_after(keep);
         }
-        let paint = screen.paint(0);
+        let paint = screen.paint_text(0);
         let mut out = bytes[..n].to_vec();
         out.extend(self.feed(screen, &bytes[n..]));
         (out, Some((n, paint)))
@@ -483,5 +483,14 @@ mod tests {
         let long = format!("\x1b]52;c;{}?\x07after", "A".repeat(2000));
         let out = feed_bytewise(&mut relay, &mut screen, long.as_bytes());
         assert_eq!(out, long.as_bytes());
+    }
+
+    #[test]
+    fn a_recovery_repaint_brings_no_images() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        screen.write(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,c=2,r=1,q=2;AAAAAA==\x1b\\");
+        let (_, recovered) = Relay::default().feed_to_ground(&mut screen, b"x");
+        let (_, paint) = recovered.expect("at ground");
+        assert!(!paint.windows(4).any(|w| w == b"a=t,"), "only a viewer's first paint carries them");
     }
 }

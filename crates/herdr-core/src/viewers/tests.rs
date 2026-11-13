@@ -91,3 +91,26 @@ fn resize_drags_serialize_nothing_without_observers_and_only_latest_when_stalled
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_repaint_brings_no_images_only_a_first_paint_does() {
+    let root = std::path::PathBuf::from(format!("/var/tmp/hc-repaint-{}", crate::platform::random_hex()));
+    let paths = crate::paths::Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    let mut st = core.lock();
+    let new = crate::terminals::NewTerminal { argv: vec!["sh".into()], cols: 80, rows: 24, ..Default::default() };
+    let id = st.reg.create(new, 0).unwrap();
+    let mut screen = ghostty_vt::Terminal::new(80, 24, 1 << 20);
+    screen.write(b"\x1b_Ga=T,f=32,s=1,v=1,i=1,c=2,r=1,q=2;AAAAAA==\x1b\\");
+    st.screens.insert(id, screen);
+    assert!(!first_paint(&st, id, 0).windows(4).any(|w| w == b"a=t,"));
+    drop(st);
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}

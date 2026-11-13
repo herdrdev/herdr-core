@@ -151,6 +151,8 @@ struct Stream {
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
     ending: Option<Vec<u8>>,
+    /// Paint bytes still at the head of `pending`: they don't count as falling behind.
+    paint_left: usize,
 }
 
 /// What one connection still has to send. Control frames always go first;
@@ -182,7 +184,14 @@ impl Outbox {
     pub fn open(&mut self, channel: u32) {
         self.streams.insert(
             channel,
-            Stream { pending: VecDeque::new(), resizes: VecDeque::new(), paused: false, credit: WINDOW, ending: None },
+            Stream {
+                pending: VecDeque::new(),
+                resizes: VecDeque::new(),
+                paused: false,
+                credit: WINDOW,
+                ending: None,
+                paint_left: 0,
+            },
         );
     }
 
@@ -207,6 +216,7 @@ impl Outbox {
     pub fn resize(&mut self, channel: u32, size: &[u8]) {
         if let Some(s) = self.streams.get_mut(&channel) {
             s.pending.clear();
+            s.paint_left = 0;
             s.resizes.clear();
             s.resizes.push_back((0, size.to_vec()));
         }
@@ -238,8 +248,9 @@ impl Outbox {
     /// viewer is too far behind: the caller replaces it with a repaint.
     pub fn data(&mut self, channel: u32, bytes: &[u8]) -> bool {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
-        if s.pending.len() + bytes.len() > MAX_PENDING {
-            s.pending.clear();
+        if s.pending.len() + bytes.len() > MAX_PENDING + s.paint_left {
+            // A first paint on its way finishes. Only what followed it goes.
+            s.pending.truncate(s.paint_left);
             let latest = s.resizes.pop_back();
             s.resizes.clear();
             if let Some((_, size)) = latest {
@@ -249,6 +260,13 @@ impl Outbox {
         }
         s.pending.extend(bytes);
         true
+    }
+
+    /// Queues a first paint, of any size: only what queues up after it can mean falling behind.
+    pub fn paint(&mut self, channel: u32, bytes: &[u8]) {
+        let Some(s) = self.streams.get_mut(&channel) else { return };
+        s.pending.extend(bytes);
+        s.paint_left = s.pending.len();
     }
 
     /// `data` for a stream of whole lines (events): too far behind, it keeps
@@ -305,6 +323,7 @@ impl Outbox {
             *at -= n;
         }
         s.credit -= n;
+        s.paint_left = s.paint_left.saturating_sub(n);
         let chunk: Vec<u8> = s.pending.drain(..n).collect();
         Some(encode(channel, DATA, &chunk))
     }
@@ -468,5 +487,22 @@ mod tests {
 
         // Too far behind: the backlog is dropped so the caller can repaint.
         assert!(!out.data(1, &vec![b'b'; MAX_PENDING]));
+    }
+
+    #[test]
+    fn a_first_paint_on_its_way_never_counts_as_falling_behind() {
+        let mut out = Outbox::default();
+        out.open(1);
+        let paint = MAX_PENDING + 10;
+        out.paint(1, &vec![b'p'; paint]);
+        assert!(out.data(1, b"after"), "output behind a paint isn't a backlog");
+        assert!(!out.data(1, &vec![b'o'; MAX_PENDING]), "a backlog's worth behind it is");
+        assert_eq!(out.queued(1), paint, "and the paint still goes whole");
+        out.credit(1, paint);
+        while out.next_frame().is_some() {}
+        assert!(!out.data(1, &vec![b'o'; MAX_PENDING + 1]), "once sent, it no longer counts");
+        out.paint(1, &vec![b'p'; paint]);
+        out.resize(1, &[80, 0, 24, 0]);
+        assert!(!out.data(1, &vec![b'o'; MAX_PENDING + 1]), "nor once a resize dropped it");
     }
 }
