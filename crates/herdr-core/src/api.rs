@@ -112,6 +112,9 @@ methods! { Ctx<'_>;
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
         "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
+    "terminal.encode" => terminal_encode, KeysParams => EncodeResult,
+        "The bytes each named key sends in the program's current keyboard modes, without pressing it. For a client that types as the person on an attach: write them there as data, which has no quiet wait.",
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.interrupt" => terminal_interrupt, InterruptParams => InterruptResult,
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
@@ -565,6 +568,19 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
     core.saw(p.caller.as_deref(), id);
     core.flush_saved().await?;
     Ok(KeysResult { status, turn })
+}
+
+async fn terminal_encode(core: Ctx<'_>, p: KeysParams) -> Result<EncodeResult, RpcError> {
+    let id = resolve(core, &p.terminal)?;
+    let st = core.lock();
+    let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or_else(|| {
+        let address = crate::terminals::address(id);
+        RpcError::new("finished", format!("{address} has finished"), format!("hc read {address}"))
+    })?;
+    t.check_program()?;
+    let screen = st.screens.get(&id).expect("live terminal has a screen");
+    let bytes = p.keys.iter().map(|k| crate::keys::encode(screen, k)).collect::<Result<Vec<_>, _>>()?;
+    Ok(EncodeResult { bytes: bytes.into_iter().map(|b| String::from_utf8_lossy(&b).into_owned()).collect() })
 }
 
 async fn terminal_interrupt(core: Ctx<'_>, p: InterruptParams) -> Result<InterruptResult, RpcError> {
