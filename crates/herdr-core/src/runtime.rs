@@ -483,7 +483,13 @@ impl Core {
                 None
             };
             let exact = saved.is_some();
+            let titles = st.reg.titles.remove(&id);
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            // The stack goes with the screen it was saved with; a screen rebuilt
+            // from the tail gets only what the tail pushes.
+            if exact && let Some(titles) = titles {
+                screen.set_title_stack(titles);
+            }
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
             relay.feed(&mut screen, &tail);
@@ -974,13 +980,19 @@ impl Core {
                 .filter(|(id, _)| st.reg.terminals.get(*id).is_some_and(|t| t.is_live()))
                 .filter_map(|(id, gate)| Some((*id, gate.snapshot()?)))
                 .collect();
-            let State { screens, relays, .. } = &mut *st;
+            let State { screens, relays, reg, .. } = &mut *st;
+            // A terminal whose holder hasn't come back keeps its earlier snapshot, and with it its stack.
+            let crate::terminals::Registry { titles, terminals, .. } = reg;
+            titles.retain(|id, _| !screens.contains_key(id) && terminals.get(id).is_some_and(|t| t.is_live()));
             for (id, screen) in screens.iter_mut() {
                 if let Some(relay) = relays.get_mut(id) {
                     relay.flush(screen);
                 }
                 if let Some(snapshot) = screen.snapshot() {
                     let _ = write_atomic(&self.snapshot_path(*id), &snapshot);
+                    if !screen.title_stack().is_empty() {
+                        titles.insert(*id, screen.title_stack().to_vec());
+                    }
                 }
             }
             self.save(&st);
