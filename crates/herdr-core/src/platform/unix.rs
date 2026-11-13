@@ -660,6 +660,16 @@ impl Read for PtyIo {
     }
 }
 
+impl super::PtyOutput for PtyIo {
+    fn read_now(&mut self, buf: &mut [u8]) -> io::Result<Option<usize>> {
+        // The master is non-blocking.
+        match self.master.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            result => result.map(Some),
+        }
+    }
+}
+
 impl Write for PtyIo {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {

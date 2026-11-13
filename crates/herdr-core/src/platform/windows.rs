@@ -1023,6 +1023,13 @@ pub fn spawn_pty(
     }
 }
 
+/// The holder doesn't gather reads here (see `holder::GATHERS`), so it never asks.
+impl super::PtyOutput for File {
+    fn read_now(&mut self, _buf: &mut [u8]) -> io::Result<Option<usize>> {
+        Ok(None)
+    }
+}
+
 impl Pty {
     pub fn reader(&self) -> io::Result<File> {
         self.output.try_clone()
