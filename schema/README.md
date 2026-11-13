@@ -136,6 +136,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `turn` | `{turn, state}`: the turn counter after a turn ended, and the word it ended on | set `turn` |
 | `title` | `{title}` | set `title` |
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
+| `parent` | `{parent}`: its new parent; plus `record` (the whole `Terminal`) when it newly matches your filter | set `parent`; with `record`, add it; with `children_of`, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
 

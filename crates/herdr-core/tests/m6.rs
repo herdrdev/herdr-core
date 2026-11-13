@@ -155,6 +155,56 @@ fn children_end_with_their_parent_unless_they_asked_to_outlive_it() {
 }
 
 #[test]
+fn an_adopted_child_belongs_to_its_new_parent_with_news_the_old_one_already_had() {
+    let s = session();
+    let agent = "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done";
+    let (old, new) = (run(&s, &[], agent), run(&s, &[], agent));
+    let orphan = run(&s, &["--parent", &old, "--outlive-parent"], "r state=working; w a; r state=blocked; sleep 100");
+    let handed = run(&s, &["--parent", &old], "r state=working; w b; r state=done; sleep 100");
+    touch(&s, "a");
+    wait_until("the old parent is told", || text(&s, &old).contains(&format!("<hc>{orphan} is blocked")));
+
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", json!({"children_of": new}));
+    assert_eq!(s.json(&["adopt", &handed, "--parent", &new])["parent"], new.as_str());
+    let event = next_event(&mut events, |m| m["params"]["type"] == "parent");
+    assert_eq!(event["params"]["data"]["parent"], new.as_str());
+    assert_eq!(event["params"]["data"]["record"]["address"], handed.as_str(), "new to this view: the whole record");
+
+    s.json(&["kill", &old]);
+    s.json(&["adopt", &orphan, "--parent", &new]); // its parent is gone: anyone may move it
+    wait_until("news from before the move", || text(&s, &new).contains(&format!("parent-got:<hc>{orphan} is blocked")));
+    assert_eq!(get(&s, &handed)["state"], "live", "the old parent's end is no longer its end");
+
+    let any = wait_children(&s, &new, "any");
+    std::thread::sleep(Duration::from_millis(300));
+    touch(&s, "b");
+    assert_eq!(ended(&any.join().unwrap()), std::slice::from_ref(&handed), "news after the move");
+    s.json(&["kill", &new]);
+    wait_until("it ends with its new parent", || get(&s, &handed)["state"] == "finished");
+}
+
+#[test]
+fn adopt_refuses_a_parent_that_is_finished_or_under_the_terminal() {
+    let s = session();
+    let top = run(&s, &[], "sleep 100");
+    let kid = run(&s, &["--parent", &top], "sleep 100");
+    let grandkid = run(&s, &["--parent", &kid, "--outlive-parent"], "sleep 100");
+    for parent in [&top, &grandkid] {
+        let (_, err) = s.err(&["adopt", &top, "--parent", parent]);
+        assert_eq!(err["error"]["kind"], "invalid_params", "its own ancestor: {err}");
+    }
+    assert!(get(&s, &top)["parent"].is_null());
+    let (_, err) = s.err(&["adopt", &format!("elsewhere/{kid}"), "--parent", &top]);
+    assert_eq!(err["error"]["kind"], "machine_unknown", "only terminals of this core: {err}");
+    s.json(&["kill", &kid]);
+    let (_, err) = s.err(&["adopt", &grandkid, "--parent", &kid]);
+    assert_eq!(err["error"]["kind"], "finished", "nobody there to tell: {err}");
+    assert_eq!(get(&s, &grandkid)["parent"], kid.as_str());
+    assert_eq!(s.json(&["adopt", &grandkid, "--parent", &top])["parent"], top.as_str());
+}
+
+#[test]
 fn only_a_blocked_errored_or_exited_child_is_a_note() {
     let s = session();
     let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");

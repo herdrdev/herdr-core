@@ -97,6 +97,9 @@ methods! { Ctx<'_>;
     "terminal.label" => terminal_label, LabelParams => Public,
         "Set or remove labels (free-form `key=value`, never interpreted).",
         errors ["not_found", "machine_unknown", "invalid_params"];
+    "terminal.adopt" => terminal_adopt, AdoptParams => Public,
+        "Move a terminal under another live terminal on this machine. Notes about it and children waits go to the new parent, which has seen none of its news. A terminal that was to end with its old parent ends with the new one instead. Refuses a parent that is the terminal itself or under it.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params"];
     "terminal.read" => terminal_read, ReadParams => ReadResult,
         "The screen plus `lines` of history as text, live or finished.",
         errors ["not_found", "machine_unknown"];
@@ -137,7 +140,7 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, parent, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
         errors ["not_found", "machine_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
@@ -369,6 +372,14 @@ async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcErro
         let labels = serde_json::to_value(&st.reg.terminals[&id].labels).unwrap_or_default();
         core.emit_from(&mut st, "labels", id, json!({"labels": labels}), was.as_ref());
     }
+    let result = record(core, id).map(Public);
+    core.flush_saved().await?;
+    result
+}
+
+async fn terminal_adopt(core: Ctx<'_>, p: AdoptParams) -> Result<Public, RpcError> {
+    let (id, parent) = (resolve(core, &p.terminal)?, resolve(core, &p.parent)?);
+    core.reparent(&mut core.lock(), id, parent)?;
     let result = record(core, id).map(Public);
     core.flush_saved().await?;
     result

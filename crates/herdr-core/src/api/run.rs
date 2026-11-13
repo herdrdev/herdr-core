@@ -118,7 +118,7 @@ pub(super) async fn start(
     )
     .trim()
     .to_string();
-    // Set once, at start: an explicit parent, else the calling terminal.
+    // An explicit parent, else the calling terminal.
     let parent = match (&p.parent, &p.caller) {
         (Some(parent), _) => Some(crate::terminals::address(resolve(core, parent)?)),
         // Started from a terminal on the machine that dialed in: `desktop/t3`.

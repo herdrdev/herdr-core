@@ -75,7 +75,7 @@ pub struct Terminal {
     pub reported: bool,
     #[serde(default)]
     pub title: String,
-    /// The terminal that started it (`t3`), set once at start.
+    /// Its parent (`t3`): the terminal that started it, until `terminal.adopt` moves it.
     #[serde(default)]
     pub parent: Option<String>,
     /// Its parent gets notes about it (see `--no-notify`).

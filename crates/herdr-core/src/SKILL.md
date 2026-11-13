@@ -100,6 +100,14 @@ children finish:
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
+Taking over another terminal's children (a fresh lead after a handoff, or
+after the old one ended): `hc adopt <t> --parent $HC_TERMINAL_ID`, once per
+child, both on this machine. Its notes and `hc wait --children` are yours from
+then on, including news its old parent already had. If it was to end with
+its old parent, it ends with you instead; one started with `--outlive-parent`
+or without a parent still outlives you. It still reports to the address its
+first task named: send it the new one.
+
 Sends and parent notes wait for an unfinished draft, up to 60 seconds since
 the person's last key. Set `draft_wait = 5` (seconds) in
 `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)

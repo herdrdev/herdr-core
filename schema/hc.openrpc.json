@@ -844,7 +844,7 @@
           },
           "parent": {
             "default": null,
-            "description": "The terminal that started it (`t3`), set once at start.",
+            "description": "Its parent (`t3`): the terminal that started it, until `terminal.adopt` moves it.",
             "type": [
               "string",
               "null"
@@ -1325,7 +1325,7 @@
           },
           "parent": {
             "default": null,
-            "description": "The terminal that started it (`t3`), set once at start.",
+            "description": "Its parent (`t3`): the terminal that started it, until `terminal.adopt` moves it.",
             "type": [
               "string",
               "null"
@@ -2281,6 +2281,67 @@
           "required": true,
           "schema": {
             "description": "The terminal: `t7`, a name, or `machine/t7`.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Terminal"
+        }
+      }
+    },
+    {
+      "description": "Move a terminal under another live terminal on this machine. Notes about it and children waits go to the new parent, which has seen none of its news. A terminal that was to end with its old parent ends with the new one instead. Refuses a parent that is the terminal itself or under it.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
+      "name": "terminal.adopt",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Its new parent: a live terminal on this machine, not the terminal itself or one under it.",
+          "name": "parent",
+          "required": true,
+          "schema": {
+            "description": "Its new parent: a live terminal on this machine, not the terminal itself or one under it.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The terminal to move: `t7` or a name, on this machine.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "The terminal to move: `t7` or a name, on this machine.",
             "type": "string"
           }
         }
@@ -3625,7 +3686,7 @@
       }
     },
     {
-      "description": "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+      "description": "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, parent, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
       "errors": [
         {
           "code": -32000,

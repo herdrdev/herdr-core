@@ -24,6 +24,7 @@ Terminals
   label <t> k=v...            set labels
   keep <t> [--off]            replace lost programs with a shell (also run --keep)
                               signal death recovers too; streams end on loss, reattach
+  adopt <t> --parent <p>      move it under a new parent: its notes and waits go there
 
 Talk to programs
   send <t> <text>             paste text and press enter
@@ -69,6 +70,22 @@ Examples
   hc run reviewer "review src/x.rs"        a template with a task
 
 Agent? Run: hc --skill
+```
+
+## hc adopt
+
+```text
+Move a terminal under a new parent (--parent)
+
+Usage: hc adopt [OPTIONS] --parent <PARENT> <TERMINAL>
+
+Arguments:
+  <TERMINAL>  The terminal to move: `t7` or a name, on this machine
+
+Options:
+      --json             JSON output even in a terminal
+      --parent <PARENT>  Its new parent: a live terminal on this machine, not the terminal itself or one under it
+  -h, --help             Print help
 ```
 
 ## hc attach

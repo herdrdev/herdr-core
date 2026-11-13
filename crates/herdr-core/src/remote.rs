@@ -578,6 +578,7 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         "turn" => set(record, &["turn"]),
         "title" => set(record, &["title"]),
         "labels" => set(record, &["labels"]),
+        "parent" => set(record, &["parent"]),
         "keep" => set(record, &["keep"]),
         "size" => set(record, &["cols", "rows"]),
         "foreground" => record["foreground"] = data.clone(),

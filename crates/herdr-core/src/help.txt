@@ -14,6 +14,7 @@ Terminals
   label <t> k=v...            set labels
   keep <t> [--off]            replace lost programs with a shell (also run --keep)
                               signal death recovers too; streams end on loss, reattach
+  adopt <t> --parent <p>      move it under a new parent: its notes and waits go there
 
 Talk to programs
   send <t> <text>             paste text and press enter

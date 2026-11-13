@@ -51,6 +51,8 @@ enum Cmd {
     Label(LabelParams),
     /// Keep a live terminal after loss (--off disables).
     Keep(crate::api::KeepParams),
+    /// Move a terminal under a new parent (--parent).
+    Adopt(crate::api::AdoptParams),
     /// Paste text into a terminal and press Enter (waits for a person's unfinished draft).
     Send(SendParams),
     /// Wait for your children (--children any) or one terminal; a message to you also ends it.
@@ -454,6 +456,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = describe(&r);
             Out { json: r, human }
         }
+        Cmd::Adopt(p) => {
+            let r = call("terminal.adopt", to(&p))?;
+            let human = describe(&r);
+            Out { json: r, human }
+        }
         Cmd::Read(mut p) => {
             p.terminal = pick(p.terminal)?;
             p.caller = Some(caller());
@@ -727,6 +734,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("rm", "terminal.rm"),
     ("label", "terminal.label"),
     ("keep", "terminal.keep"),
+    ("adopt", "terminal.adopt"),
     ("send", "terminal.send"),
     ("wait", "terminal.wait"),
     ("keys", "terminal.keys"),

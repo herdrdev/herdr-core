@@ -123,6 +123,37 @@ impl Core {
         }
     }
 
+    /// Moves `id` under the live terminal `parent`. What the old parent saw or
+    /// was told starts over: the new one has seen none of it, so a block the
+    /// old one already had a note about is news again.
+    pub fn reparent(&self, st: &mut State, id: u32, parent: u32) -> Result<(), RpcError> {
+        let address = crate::terminals::address(parent);
+        if !st.reg.terminals.get(&parent).is_some_and(Terminal::is_live) {
+            return Err(RpcError::new("finished", format!("{address} has finished"), "nobody there to tell"));
+        }
+        let was = st.reg.terminals.get(&id).cloned().expect("resolved");
+        if was.parent.as_deref() == Some(address.as_str()) {
+            return Ok(());
+        }
+        // Under itself it would end with itself, and a walk up from it would never end.
+        let mut up = Some(parent);
+        while let Some(above) = up {
+            if above == id {
+                let why = format!("{} can't go under {address}: that is itself or a terminal under it", was.address);
+                return Err(RpcError::invalid_params(why));
+            }
+            up = st.reg.terminals.get(&above).and_then(parent_id);
+        }
+        let t = st.reg.terminals.get_mut(&id).expect("resolved");
+        (t.parent, t.seen, t.noted, t.told_parent) = (Some(address.clone()), 0, 0, false);
+        self.emit_from(st, "parent", id, serde_json::json!({"parent": address}), Some(&was));
+        if was.notify {
+            drop(self.jobs.send(Job::Notes(parent)));
+        }
+        self.save(st);
+        Ok(())
+    }
+
     /// The caller looked at `id`; if it is the parent, that news is seen.
     pub fn saw(&self, caller: Option<&str>, id: u32) {
         let mut st = self.lock();

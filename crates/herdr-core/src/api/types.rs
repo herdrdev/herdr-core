@@ -361,6 +361,15 @@ pub struct KeepParams {
     pub keep: bool,
 }
 
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct AdoptParams {
+    /// The terminal to move: `t7` or a name, on this machine.
+    pub terminal: String,
+    /// Its new parent: a live terminal on this machine, not the terminal itself or one under it.
+    #[arg(long)]
+    pub parent: String,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub struct RemoveResult {
     pub removed: String,
