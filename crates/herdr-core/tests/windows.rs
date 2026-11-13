@@ -182,6 +182,7 @@ fn ssh_reaches_the_host_without_a_control_socket() {
     use std::sync::{Arc, atomic::AtomicBool};
 
     let s = Session::new();
+    assert!(cmd(&s.name, &s.root).env_remove("HC_SSH").args(["server", "start"]).status().unwrap().success());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let target = format!("ssh://127.0.0.1:{}", listener.local_addr().unwrap().port());
     listener.set_nonblocking(true).unwrap();
@@ -209,6 +210,7 @@ fn ssh_auth_failure_points_to_keys_instead_of_repeating_login() {
     let s = Session::new();
     let ssh =
         s.file("ssh-denied.cmd", "@echo off\r\necho Permission denied (publickey,password). 1>&2\r\nexit /b 255\r\n");
+    assert!(cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["server", "start"]).status().unwrap().success());
     let output = cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["machine", "add", "example"]).output().unwrap();
     let error: Value = serde_json::from_slice(&output.stderr)
         .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
@@ -234,6 +236,7 @@ if ($request.method -ne 'hello') { exit 2 }
         "ssh-console.cmd",
         &format!("@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{probe}\"\r\n"),
     );
+    assert!(cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["server", "start"]).status().unwrap().success());
     let output = cmd(&s.name, &s.root).env("HC_SSH", &ssh).args(["machine", "add", "example"]).output().unwrap();
     let error: Value = serde_json::from_slice(&output.stderr)
         .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
@@ -274,6 +277,7 @@ fn hc_at(s: &Session, exe: &Path, args: &[&str]) -> std::process::Output {
 fn update_swaps_the_whole_release_while_its_terminals_run() {
     let s = Session::new();
     let exe = installed(&s);
+    assert!(hc_at(&s, &exe, &["server", "start"]).status.success());
     let run = hc_at(&s, &exe, &["run", "--bg", "ping", "-n", "120", "127.0.0.1"]);
     let t = serde_json::from_slice::<Value>(&run.stdout).unwrap()["address"].as_str().unwrap().to_string();
     // Not hc's, even when named like hc's files: never cleaned up. An old
@@ -298,6 +302,7 @@ fn update_swaps_the_whole_release_while_its_terminals_run() {
 fn an_update_that_cannot_finish_puts_everything_back() {
     let s = Session::new();
     let exe = installed(&s);
+    assert!(hc_at(&s, &exe, &["server", "start"]).status.success());
     let new = release(&s.root.join("new"), "new-build");
     // Something holds the last file without letting it move (a scanner).
     let held = std::os::windows::fs::OpenOptionsExt::share_mode(std::fs::OpenOptions::new().read(true), 0)
@@ -316,6 +321,7 @@ fn an_update_that_cannot_finish_puts_everything_back() {
 fn attach_types_non_ascii_text_unchanged() {
     // The console attach runs in reads keys in its code page (437 here).
     let s = Session::new();
+    s.json(&["server", "start"]);
     let got = s.root.join("got.txt");
     let script = format!(
         "Write-Host ready; $l = [Console]::ReadLine(); [IO.File]::WriteAllText('{}', (($l.ToCharArray() | % {{ [int]$_ }}) -join ','))",
@@ -334,6 +340,7 @@ fn attach_types_non_ascii_text_unchanged() {
 fn a_cmd_shim_gets_its_arguments_literally() {
     // npm installs agents as .cmd files; a prompt is an argument.
     let s = Session::new();
+    s.json(&["server", "start"]);
     let shim = s.file("agent.cmd", "@echo off\r\nsetlocal EnableDelayedExpansion\r\nset \"a=%~1\"\r\nset \"b=%~2\"\r\nset \"c=%~3\"\r\necho 1=[!a!] 2=[!b!] 3=[!c!]\r\n");
     let (_, out) = s.out(&["run", "--timeout", "20", &shim, "fix a & echo INJECTED", "100%PATH%", "x y"]);
     assert!(out.contains("1=[fix a & echo INJECTED] 2=[100%PATH%] 3=[x y]"), "{out}");
@@ -426,34 +433,66 @@ fn new_terminals_refresh_windows_settings_without_losing_runtime_variables() {
 }
 
 #[test]
-fn an_ssh_client_uses_an_existing_core_instead_of_starting_another() {
+fn local_and_ssh_clients_use_an_existing_core_instead_of_starting_another() {
     let s = Session::new();
     let first = s.json(&["server", "start"]);
-    let out = cmd(&s.name, &s.root).env("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22").args(["ls"]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(s.json(&["server", "status"])["pid"], first["pid"]);
-}
-
-#[test]
-fn implicit_ssh_start_reports_desktop_conflict_or_starts_headless() {
-    let s = Session::new();
-    let out = cmd(&s.name, &s.root).env("SSH_CLIENT", "10.0.0.1 50000 22").args(["ls"]).output().unwrap();
-    if out.status.success() {
-        assert!(s.json(&["server", "status"])["pid"].is_number());
-    } else {
-        let error: Value = serde_json::from_slice(&out.stderr).unwrap();
-        assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
-        assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
-        assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
+    for ssh in [false, true] {
+        let mut command = cmd(&s.name, &s.root);
+        if ssh {
+            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = command.args(["ls"]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(s.json(&["server", "status"])["pid"], first["pid"]);
     }
 }
 
 #[test]
-fn explicit_start_is_allowed_even_from_an_ssh_client() {
-    let s = Session::new();
-    // SSH_CLIENT triggers startup policy without the distinct kill-on-close job guard.
-    let out = cmd(&s.name, &s.root).env("SSH_CLIENT", "10.0.0.1 50000 22").args(["server", "start"]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+fn implicit_local_and_ssh_start_apply_the_same_desktop_policy() {
+    let mut outcomes = Vec::new();
+    for ssh in [false, true] {
+        let s = Session::new();
+        let mut command = cmd(&s.name, &s.root);
+        if ssh {
+            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = command.args(["ls"]).output().unwrap();
+        outcomes.push(out.status.success());
+        if out.status.success() {
+            assert!(s.json(&["server", "status"])["pid"].is_number());
+        } else {
+            let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
+            assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
+            assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
+        }
+        if !out.status.success() {
+            let exe = installed(&s);
+            let new = release(&s.root.join("new"), "new-build");
+            let mut update = cmd_at(&exe, &s.name, &s.root);
+            if ssh {
+                update.env("SSH_CLIENT", "10.0.0.1 50000 22");
+            }
+            let refused = update.args(["update", "--from", new.to_str().unwrap()]).output().unwrap();
+            assert!(!refused.status.success());
+            let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
+            assert!(marked(&exe, "old-build"), "refused update replaced the installed core");
+            assert!(!marked(&exe, "new-build"));
+            assert_ne!(s.out(&["server", "status"]).0, 0, "refused update left a core");
+        }
+        if out.status.success() {
+            assert_eq!(s.out(&["server", "stop"]).0, 0);
+        }
+        // Explicit startup must work even when implicit startup was refused.
+        let mut explicit = cmd(&s.name, &s.root);
+        if ssh {
+            explicit.env("SSH_CLIENT", "10.0.0.1 50000 22");
+        }
+        let out = explicit.args(["server", "start"]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    assert_eq!(outcomes[0], outcomes[1], "SSH variables must not change desktop startup policy");
 }
 
 #[test]
@@ -505,6 +544,7 @@ fn a_core_that_would_die_at_ssh_logout_is_refused_not_started() {
 #[test]
 fn run_waits_and_returns_the_output_and_exit_code() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let (code, out) = s.out(&["run", "--timeout", "20", "cmd", "/c", "echo hello & exit 3"]);
     assert!(out.contains("hello"), "{out}");
     assert_eq!(code, 3, "{out}");
@@ -513,6 +553,7 @@ fn run_waits_and_returns_the_output_and_exit_code() {
 #[test]
 fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let out = cmd(&s.name, &s.root).args(["exec", "echo a\tb& exit 3"]).output().unwrap();
     assert_eq!((out.stdout.as_slice(), out.status.code()), (&b"a\tb\r\n"[..], Some(3)), "cmd's line, tab kept");
 
@@ -528,6 +569,7 @@ fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
 #[test]
 fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let (code, out) = s.out(&["run", "--timeout", "20", "echo \"hi  there\" & exit 3"]);
     assert!(out.contains("\"hi  there\""), "{out}");
     assert_eq!(code, 3, "{out}");
@@ -565,6 +607,7 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
 #[test]
 fn send_types_a_line_into_a_program_waiting_for_one() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let t = s.bg(&["powershell", "-NoProfile", "-Command", "$x = Read-Host 'name'; \"got-$x\""]);
     s.shows(&t, "name");
     s.json(&["send", &t, "bob"]);
@@ -576,6 +619,7 @@ fn send_types_a_line_into_a_program_waiting_for_one() {
 #[test]
 fn a_program_reporting_7501_has_a_status_and_send_wait_waits_for_its_turn() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let agent = s.file(
         "agent.ps1",
         r#"$e = [char]27
@@ -601,6 +645,7 @@ while ($true) {
 #[test]
 fn kill_ends_what_the_program_started_too() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let pid_file = s.root.join("pid.txt");
     let child =
         s.file("child.ps1", &format!("$PID | Out-File -Encoding ascii '{}'; Start-Sleep 60", pid_file.display()));
@@ -617,6 +662,7 @@ fn interrupt_is_ctrl_c_the_program_takes() {
     // Started from a context that ignores Ctrl+C (an ssh session, a detached
     // parent), a program must still get it.
     let s = Session::new();
+    s.json(&["server", "start"]);
     let t = s.bg(&["ping", "-t", "127.0.0.1"]);
     s.shows(&t, "Reply from");
     s.json(&["interrupt", &t, "--timeout", "5"]);
@@ -769,6 +815,7 @@ fn a_failed_environment_handoff_still_restarts_the_core() {
 #[test]
 fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let t = s.bg(&["ping", "-n", "120", "127.0.0.1"]);
     let program = s.json(&["get", &t])["pid"].as_u64().unwrap();
     let status = s.json(&["server", "status"]);
@@ -805,6 +852,7 @@ fn what_a_shell_runs_is_in_front_until_it_ends() {
 #[test]
 fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let dir = s.root.join("moved here");
     std::fs::create_dir(&dir).unwrap();
     let dir = dir.display().to_string();
@@ -841,6 +889,7 @@ fn programs_get_the_cores_answers_to_their_questions() {
         Path::new(BIN).parent().unwrap().display()
     );
     let s = Session::new();
+    s.json(&["server", "start"]);
     let query = s.file(
         "query.ps1",
         r#"$e = [char]27
@@ -858,6 +907,7 @@ while ([Console]::KeyAvailable) { $got += [Console]::ReadKey($true).KeyChar }
 #[test]
 fn a_terminal_started_from_inside_a_terminal_has_it_as_parent() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let parent = s.bg(&["powershell", "-NoProfile"]);
     s.shows(&parent, "PS ");
     s.json(&["send", &parent, &format!("& '{BIN}' run --bg --name kid ping -n 30 127.0.0.1")]);
@@ -869,6 +919,7 @@ fn a_terminal_started_from_inside_a_terminal_has_it_as_parent() {
 fn attach_types_into_the_program_and_detaches_on_its_key() {
     // hc attach runs in a ConPTY console of its own, like over ssh.
     let s = Session::new();
+    s.json(&["server", "start"]);
     let inner = s.bg(&["cmd"]);
     s.shows(&inner, ">");
     let outer = s.bg(&[BIN, "attach", &inner]);
@@ -904,6 +955,7 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
     let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
     set_shell("configured-recovery");
     s.json(&["server", "stop"]);
+    s.json(&["server", "start"]);
     wait_until("configured shell restored", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != old));
     s.shows(&t, "configured-recovery");
     let pid = s.json(&["get", &t])["pid"].as_u64().unwrap();
