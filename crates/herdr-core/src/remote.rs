@@ -981,7 +981,12 @@ async fn forward_waiting(core: &Core, m: &Machine, method: &str, mut params: Val
         let Some(terminal) = target.clone() else { return Err(first) };
         let local = terminal.split_once('/').map_or(terminal.as_str(), |(_, t)| t).to_string();
         let left = deadline.saturating_duration_since(tokio::time::Instant::now()).as_secs_f64();
-        let wait = json!({"terminal": local, "timeout": left, "caller": caller});
+        // A wait asked again still waits for what it was asked to (its output,
+        // its children), on the terminal as it named it there: a parent whose
+        // children it waits on is named from here. A run or send waits for its turn.
+        let mut wait =
+            if method == "terminal.wait" { params.clone() } else { json!({"terminal": local, "caller": caller}) };
+        wait["timeout"] = json!(left);
         let r = match forward_once(core, m, "terminal.wait", wait).await {
             Err(e) if line_lost(&e) => continue,
             other => other?,

@@ -704,7 +704,14 @@ fn a_run_or_wait_there_rides_out_a_dropped_line() {
         cmd.args(["run", "--on", "rohan", "--timeout", "30", "sh", "-c", &body]);
         std::thread::spawn(move || cmd.output().unwrap())
     };
-    wait_until("started there", || rohan.json(&["ls"])["terminals"].as_array().is_some_and(|t| !t.is_empty()));
+    // It takes well under a second, but on macOS CI it has taken over 10 s (cause not
+    // yet known); a run that ended without starting says why.
+    let started = || rohan.json(&["ls"])["terminals"].as_array().is_some_and(|t| !t.is_empty());
+    wait_until_for("started there", std::time::Duration::from_secs(30), || started() || waited.is_finished());
+    if !started() {
+        let out = waited.join().unwrap();
+        panic!("the run ended before it started there: {}", String::from_utf8_lossy(&out.stderr));
+    }
     drop_line();
     touch(&s, "go");
     let out = waited.join().unwrap();
@@ -725,6 +732,55 @@ fn a_run_or_wait_there_rides_out_a_dropped_line() {
     let out = waiting.join().unwrap();
     let r: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     assert_eq!(r["reason"], "exit", "{r} / {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn a_wait_there_for_output_still_waits_for_it_after_a_dropped_line() {
+    let (rohan, s) = with_rohan();
+    let t = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "w go; while :; do echo now-ready; sleep 0.2; done")]);
+    let waiting = {
+        let mut cmd = s.cmd();
+        cmd.args(["wait", &t, "--output", "now-ready", "--timeout", "20"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    touch(&s, "go");
+    let out = waiting.join().unwrap();
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert_eq!(r["reason"], "output", "{r} / {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn waiting_on_children_there_still_counts_them_after_a_dropped_line() {
+    let (rohan, s) = with_rohan();
+    let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; r state=idle; sleep 100"));
+    let waiting = {
+        let mut cmd = s.cmd();
+        cmd.env("HC_TERMINAL_ID", &parent).args(["--json", "wait", "--children", "all", "--timeout", "20"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    let state = || s.json(&["machine", "ls"])["machines"][0]["state"].clone();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || state() == "unreachable");
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    wait_until("rohan back", || state() == "connected");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!waiting.is_finished(), "the child there is still working");
+    touch(&s, "go");
+    let out = waiting.join().unwrap();
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert_eq!(
+        (&r["ended"], &r["children"][0]["terminal"], &r["children"][0]["status"]),
+        (&json!(true), &json!(child), &json!("idle")),
+        "{r} / {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
