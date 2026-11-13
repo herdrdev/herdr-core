@@ -535,6 +535,37 @@ fn the_picker_starts_a_shell_on_another_machine() {
 }
 
 #[test]
+fn send_observation_uses_existing_remote_addresses_and_filters() {
+    let (rohan, s) = with_rohan();
+    let sender = run(&s, &["sh", "-c", "sleep 100"]);
+    let t = run(&s, &["--on", "rohan", "cat"]);
+    let (mut here, mut there) = (s.connect(), rohan.connect());
+    here.call(1, "events.subscribe", json!({"terminal": t}));
+    there.call(1, "events.subscribe", json!({}));
+    let sent = s.connect().call(1, "terminal.send", json!({"terminal": t, "text": "secret-body", "caller": sender}));
+    assert!(sent["result"]["started"].is_null(), "{sent}");
+    let e = next_params(&mut here, |e| e["type"] == "message_sent");
+    assert_eq!(e["terminal"], t);
+    assert_eq!(e["data"], json!({"from": sender}));
+    let e = next_params(&mut there, |e| e["type"] == "message_sent");
+    assert_eq!(e["terminal"], t.strip_prefix("rohan/").unwrap());
+    let peer = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    assert_eq!(e["data"], json!({"from": format!("{peer}/{sender}")}));
+
+    // A remote CLI has a qualified ppid, not a terminal sender.
+    s.json(&["send", &t, "plain shell"]);
+    for events in [&mut here, &mut there] {
+        let e = next_params(events, |e| e["type"] == "message_sent");
+        assert_eq!(e["data"], json!({"from": null}));
+    }
+    s.json(&["label", &t, "checked=once"]);
+    next_params(&mut here, |e| {
+        assert_ne!(e["type"], "message_sent", "no duplicate at the forwarding core: {e}");
+        e["type"] == "labels"
+    });
+}
+
+#[test]
 fn a_shell_or_a_shell_line_there_uses_that_machines_own_shell() {
     let mut rohan = Session::new();
     let shell = rohan.root.join("rohans-shell");
