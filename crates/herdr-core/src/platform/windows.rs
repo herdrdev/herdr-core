@@ -167,6 +167,30 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Err(io::Error::from(io::ErrorKind::TimedOut))
 }
 
+/// Extra principals that may open our pipes, as SDDL allow-ACE fragments.
+///
+/// `HERDR_PIPE_EXTRA_SIDS` holds a comma- or semicolon-separated list of
+/// SIDs to grant in addition to this account and SYSTEM. The reason it
+/// exists: a client that has to run as another account, such as a
+/// sandboxed helper, is refused by the pipe the core owns.
+///
+/// List the account's own SID, not a group it belongs to: an access check
+/// honours a restricted token's user SID but not its group SIDs, so a group
+/// SID on its own grants nothing.
+///
+/// Unset by default: without it only SYSTEM and this account are granted
+/// access, as before.
+fn extra_pipe_aces_from(list: &str) -> String {
+    list.split([',', ';']).map(str::trim).filter(|sid| !sid.is_empty()).map(|sid| format!("(A;;GA;;;{sid})")).collect()
+}
+
+fn extra_pipe_aces() -> String {
+    match std::env::var("HERDR_PIPE_EXTRA_SIDS") {
+        Ok(list) => extra_pipe_aces_from(&list),
+        Err(_) => String::new(),
+    }
+}
+
 /// Who may open our pipes: this account and SYSTEM (the default also lets
 /// everyone read, and names Administrators as owner when elevated). The
 /// integrity label keeps lower processes out: an unelevated program can't
@@ -200,7 +224,8 @@ fn pipe_security() -> io::Result<*const SECURITY_ATTRIBUTES> {
             &mut n,
         ))?;
         let level = if elevation.TokenIsElevated != 0 { "HI" } else { "ME" };
-        let sddl = wide(format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid_text})S:(ML;;NRNW;;;{level})").as_ref());
+        let extra = extra_pipe_aces();
+        let sddl = wide(format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid_text}){extra}S:(ML;;NRNW;;;{level})").as_ref());
         let mut sd = null_mut();
         check(ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
@@ -1201,5 +1226,33 @@ pub mod console {
             }
             Some(buf[..got as usize].to_vec())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extra_sids_become_allow_aces() {
+        assert_eq!(extra_pipe_aces_from("S-1-5-21-1-2-3-1009"), "(A;;GA;;;S-1-5-21-1-2-3-1009)");
+    }
+
+    #[test]
+    fn extra_sids_split_on_commas_and_semicolons() {
+        assert_eq!(
+            extra_pipe_aces_from("S-1-5-21-1-2-3-1009,S-1-5-21-1-2-3-1010"),
+            "(A;;GA;;;S-1-5-21-1-2-3-1009)(A;;GA;;;S-1-5-21-1-2-3-1010)"
+        );
+        assert_eq!(
+            extra_pipe_aces_from(" S-1-5-21-1-2-3-1009 ; S-1-5-21-1-2-3-1010 "),
+            "(A;;GA;;;S-1-5-21-1-2-3-1009)(A;;GA;;;S-1-5-21-1-2-3-1010)"
+        );
+    }
+
+    #[test]
+    fn no_extra_sids_grants_nothing() {
+        assert_eq!(extra_pipe_aces_from(""), "");
+        assert_eq!(extra_pipe_aces_from(" , ; "), "");
     }
 }

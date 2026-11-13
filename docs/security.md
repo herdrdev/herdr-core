@@ -28,6 +28,11 @@ On Windows, core uses named pipes. Their access rules allow the current account 
 The integrity label prevents a lower-integrity process from controlling an elevated core.
 State files use the filesystem's directory permissions; core does not install a separate Windows state-directory ACL.
 
+`HERDR_PIPE_EXTRA_SIDS` widens that access list on Windows: a comma- or semicolon-separated list of SIDs to allow in addition to the current account and SYSTEM.
+It is empty by default, and the core reads it when it starts, so every pipe the core creates carries the grants.
+Use it for a client that has to run as another account, such as a sandboxed helper.
+Grant the account's own SID: an access check honours a restricted token's user SID but not its group SIDs, so a group SID on its own grants nothing.
+
 Do not expose the socket or forward the raw API to people you would not trust with a shell on that machine.
 
 ## Sessions
