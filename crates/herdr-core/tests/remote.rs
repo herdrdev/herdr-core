@@ -662,6 +662,30 @@ fn a_viewer_rides_out_a_dropped_line_without_reattaching() {
 }
 
 #[test]
+fn returning_viewers_keep_the_last_active_viewers_size() {
+    let (rohan, s) = with_rohan();
+    let mark = rohan.root.join("mark");
+    let body = format!("while :; do cat {} 2>/dev/null; sleep 0.05; done", mark.display());
+    let t = run(&s, &["--on", "rohan", "sh", "-c", &body]);
+    let mut viewers: Vec<_> = (0..8).map(|_| Viewer::attach(&s, &t, 200, 120, json!({}))).collect();
+    let size = || (get(&rohan, "t1")["cols"].as_u64().unwrap(), get(&rohan, "t1")["rows"].as_u64().unwrap());
+    let active = &mut viewers[0];
+    active.conn.send(active.channel, herdr_core::wire::RESIZE, &[109, 0, 33, 0]);
+    wait_until("the visible viewer leads", || size() == (109, 33));
+
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    wait_until("rohan back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+    std::fs::write(&mark, "MARK-restored\n").unwrap();
+    for viewer in &mut viewers {
+        viewer.shows("MARK-restored");
+    }
+    assert_eq!(size(), (109, 33), "a hidden viewer must not take the size on recovery");
+}
+
+#[test]
 fn a_viewer_back_after_a_dropped_line_does_not_take_the_size() {
     let (rohan, s) = with_rohan();
     let mark = rohan.root.join("mark");
