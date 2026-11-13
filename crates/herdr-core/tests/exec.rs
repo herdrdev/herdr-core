@@ -168,6 +168,30 @@ fn exec_ends_when_its_caller_goes_away_here_or_across_a_line() {
     let pids = [pid_in(&s, "first"), pid_in(&s, "second")];
     drop(framed);
     pids.into_iter().for_each(gone);
+
+    // Done sending is not gone: it ends when the caller then leaves.
+    let conn = exec_on_conn(&s, json!({"argv": ["sh", "-c", format!("{} sleep 100", stubborn(&s, "half"))]}));
+    conn.writer.shutdown(std::net::Shutdown::Write).unwrap();
+    let pid = pid_in(&s, "half");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(running(pid), "a half-closed caller still waits for its reply");
+    drop(conn);
+    gone(pid);
+}
+
+#[test]
+fn a_caller_that_is_done_sending_still_gets_its_exec_reply() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let req = json!({"jsonrpc": "2.0", "id": 1, "method": "machine.exec", "params": {"argv": ["sh", "-c", "sleep 0.3; echo ok"]}});
+    // What `echo '{...}' | hc connect` does: stdin ends right after the request.
+    let out = s.hc_input(&["connect"], format!("{req}\n").as_bytes());
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert_eq!(
+        (reply["result"]["code"].clone(), reply["result"]["stdout"].clone()),
+        (json!(0), json!("b2sK")),
+        "{reply}"
+    );
 }
 
 #[test]

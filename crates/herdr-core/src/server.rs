@@ -192,7 +192,10 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         let handled = match method.as_deref() {
             Some("machine.exec") => tokio::select! {
                 handled = handling => handled,
-                () = closed(&mut read, &mut ahead) => return Ok(()),
+                () = async {
+                    closed(&mut read, &mut ahead).await;
+                    platform::reply_closed(read.get_ref()).await;
+                } => return Ok(()),
             },
             Some("terminal.send") => {
                 let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
