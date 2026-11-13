@@ -360,6 +360,32 @@ fn restarting_waits_for_the_old_cores_lock_after_its_connection_closes() {
 }
 
 #[test]
+fn a_crash_after_a_planned_restart_still_recovers_the_screen() {
+    let s = Session::new();
+    let go = s.root.join("go");
+    let script = format!("echo before; while [ ! -e {} ]; do sleep 0.02; done; echo during; sleep 100", go.display());
+    let t = run(&s, &["sh", "-c", &script]);
+    wait_text(&s, &t, "before");
+    let pid = get(&s, &t)["pid"].as_i64().unwrap();
+    // An update hands the screens over to the next core...
+    let core = s.json(&["server", "restart"])["pid"].as_i64().unwrap();
+    assert_eq!(get(&s, &t)["screen"], "exact");
+
+    // ...and when that core crashes, the holder's tail still holds what came
+    // before the handover, not only what came after it.
+    kill9(core);
+    std::fs::write(&go, "").unwrap();
+    wait_text(&s, &t, "during");
+
+    let rec = get(&s, &t);
+    assert_eq!((rec["state"].as_str(), rec["screen"].as_str()), (Some("live"), Some("inexact")));
+    assert_eq!(rec["pid"].as_i64().unwrap(), pid);
+    let text = text(&s, &t);
+    assert!(text.contains("before") && text.contains("during"), "{text:?}");
+    assert_eq!(text.matches("before").count(), 1, "replayed twice: {text:?}");
+}
+
+#[test]
 fn finished_terminals_and_ids_survive_server_stop() {
     let s = Session::new();
     let done = run(&s, &["sh", "-c", "echo bye"]);
