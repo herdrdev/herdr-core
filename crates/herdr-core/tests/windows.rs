@@ -526,6 +526,36 @@ fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
 }
 
 #[test]
+fn exec_gives_git_sh_and_batch_files_each_argument_as_given() {
+    let s = Session::new();
+    let lower = s.file("first.cmd", "@echo %1");
+    let upper = s.file("SECOND.BAT", "@echo %1");
+    for batch in [lower.clone(), upper] {
+        let out = cmd(&s.name, &s.root).args(["exec", &batch, "a&whoami"]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "\"a&whoami\"\r\n", "{batch:?} keeps std's escaping: {err}");
+    }
+    // With a trailing dot or space: refused, or run with std's escaping, never `whoami`.
+    for batch in [format!("{lower}."), format!("{lower} ")] {
+        let out = cmd(&s.name, &s.root).args(["exec", &batch, "a&whoami"]).output().unwrap();
+        let (got, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(got == "\"a&whoami\"\r\n" || got.is_empty() && !out.status.success(), "{batch:?}: {got:?} {err}");
+        eprintln!("{batch:?}: {:?} {got:?} {}", out.status.code(), err.trim());
+    }
+    let out = cmd(&s.name, &s.root).args(["exec", "cmd", "/c", "echo", "{\"a\":1}"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "{\\\"a\\\":1}\r\n", "cmd reads its own line, as before");
+
+    if std::process::Command::new("sh").args(["-c", "true"]).status().is_err() {
+        return; // no Git for Windows here
+    }
+    let args = ["{\"value\":\"demo\"}", "a\"b", "a b", "plain", "", "it's", "*", "~x", "@x", "a\nb"];
+    let out =
+        cmd(&s.name, &s.root).args(["exec", "sh", "-c", "printf '[%s]' \"$@\"", "sh"]).args(args).output().unwrap();
+    let want = "[{\"value\":\"demo\"}][a\"b][a b][plain][][it's][*][~x][@x][a\nb]";
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want, "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let s = Session::new();
     let (code, out) = s.out(&["run", "--timeout", "20", "echo \"hi  there\" & exit 3"]);
