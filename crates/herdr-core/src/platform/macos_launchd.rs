@@ -39,6 +39,13 @@ impl Inherited {
         env.remove(OsStr::new(DETACH));
         env.remove(OsStr::new(DIRECT));
         env.remove(OsStr::new("XPC_FLAGS"));
+        // An ssh login's agent dies with its connection; the job outlives it.
+        if super::SSH_LOGIN.iter().any(|key| env.contains_key(OsStr::new(key))) {
+            env.remove(OsStr::new(AGENT));
+        }
+        for key in super::SSH_LOGIN {
+            env.remove(OsStr::new(key));
+        }
         env.insert("XPC_SERVICE_NAME".into(), "0".into());
         let mut limits = Vec::new();
         // Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the
@@ -83,16 +90,27 @@ impl Inherited {
                 return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
             }
         }
+        let own = std::env::var_os(AGENT).map(OsStringExt::into_vec);
         unsafe {
             for (key, _) in std::env::vars_os() {
                 std::env::remove_var(key);
             }
-            for (key, value) in self.env {
+            for (key, value) in with_job_agent(self.env, own) {
                 std::env::set_var(OsString::from_vec(key), OsString::from_vec(value));
             }
         }
         Ok(())
     }
+}
+
+const AGENT: &str = "SSH_AUTH_SOCK";
+
+/// The job's own agent is the GUI session's, like the Linux service using the user manager's.
+fn with_job_agent(mut env: Vec<(Vec<u8>, Vec<u8>)>, own: Option<Vec<u8>>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    if let Some(own) = own.filter(|_| !env.iter().any(|(key, _)| key == AGENT.as_bytes())) {
+        env.push((AGENT.as_bytes().to_vec(), own));
+    }
+    env
 }
 
 /// Detach only the internal launchd sentinel before any CLI/runtime setup.
@@ -123,7 +141,10 @@ pub fn prepare_core() {
     unsafe {
         std::env::remove_var(DIRECT);
     }
-    if direct || std::env::args_os().nth(1).as_deref() == Some(OsStr::new(SENTINEL)) || ssh() {
+    if direct
+        || std::env::args_os().nth(1).as_deref() == Some(OsStr::new(SENTINEL))
+        || !through_launchd(ssh(), gui_domain)
+    {
         return;
     }
     let result = (|| {
@@ -149,10 +170,27 @@ fn ssh() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some()
 }
 
+/// SSH starts use the launchd job too when the user has a GUI session, else they start directly.
+fn through_launchd(ssh: bool, gui_domain: impl FnOnce() -> bool) -> bool {
+    !ssh || gui_domain()
+}
+
+/// An SSH login can still start jobs in the user's GUI session when one exists.
+fn gui_domain() -> bool {
+    use std::process::Stdio;
+    Command::new(LAUNCHCTL)
+        .args(["print", &format!("gui/{}", unsafe { libc::getuid() })])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Only `serve` uses this path. Holders and programs inherit its coalition.
-/// SSH is already outside the app, and must retain its existing lifetime.
+/// SSH starts use the GUI session's launchd job when one exists, otherwise they start directly.
 pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
-    if ssh() {
+    if !through_launchd(ssh(), gui_domain) {
         return false;
     }
     match launch(cmd, log) {
@@ -570,23 +608,55 @@ mod tests {
     }
 
     #[test]
+    fn ssh_starts_use_the_gui_session_only_when_it_exists() {
+        assert!(through_launchd(false, || panic!("desktop starts never probe")));
+        assert!(through_launchd(true, || true));
+        assert!(!through_launchd(true, || false));
+    }
+
+    #[test]
     fn environment_transfer_preserves_arbitrary_unix_bytes_and_removals() {
         let mut cmd = Command::new("hc");
         cmd.env("LESS_TERMCAP_md", OsStr::from_bytes(b"\x1b[1m\r\xff"))
             .env_remove("HOME")
             .env(DETACH, "old")
             .env(DIRECT, "1")
-            .env("XPC_FLAGS", "0x2");
+            .env("XPC_FLAGS", "0x2")
+            .env("SSH_CONNECTION", "1 2 3 4")
+            .env("SSH_CLIENT", "1 2 3")
+            .env("SSH_TTY", "/dev/ttys9")
+            .env(AGENT, "/forwarded-agent");
         let captured = Inherited::capture(&cmd).unwrap();
         let received: Inherited = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         assert_eq!(received.limits, captured.limits);
         assert!(received.limits.len() > libc::RLIMIT_NOFILE as usize);
         let env: BTreeMap<_, _> = received.env.into_iter().collect();
         assert_eq!(env.get(b"LESS_TERMCAP_md".as_slice()), Some(&b"\x1b[1m\r\xff".to_vec()));
-        for name in [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()] {
+        let ssh = super::super::SSH_LOGIN.iter().map(|key| key.as_bytes());
+        let removed = [b"HOME".as_slice(), DETACH.as_bytes(), DIRECT.as_bytes(), b"XPC_FLAGS".as_slice()];
+        for name in removed.into_iter().chain(ssh).chain([AGENT.as_bytes()]) {
             assert!(!env.contains_key(name));
         }
         assert_eq!(env.get(b"XPC_SERVICE_NAME".as_slice()), Some(&b"0".to_vec()));
+
+        let mut desktop = Command::new("hc");
+        desktop.env(AGENT, "/gui-agent");
+        for key in super::super::SSH_LOGIN {
+            desktop.env_remove(key);
+        }
+        let env: BTreeMap<_, _> = Inherited::capture(&desktop).unwrap().env.into_iter().collect();
+        assert_eq!(env.get(AGENT.as_bytes()), Some(&b"/gui-agent".to_vec()));
+    }
+
+    #[test]
+    fn the_job_keeps_its_own_agent_only_when_the_launcher_sent_none() {
+        let agent =
+            |env: &[(Vec<u8>, Vec<u8>)]| env.iter().find(|(k, _)| k == AGENT.as_bytes()).map(|(_, v)| v.clone());
+        let home = vec![(b"HOME".to_vec(), b"/h".to_vec())];
+        let sent = vec![(AGENT.as_bytes().to_vec(), b"/sent".to_vec())];
+        assert_eq!(agent(&with_job_agent(home.clone(), Some(b"/own".to_vec()))), Some(b"/own".to_vec()));
+        assert_eq!(agent(&with_job_agent(sent, Some(b"/own".to_vec()))), Some(b"/sent".to_vec()));
+        assert_eq!(agent(&with_job_agent(home, None)), None);
     }
 
     #[test]

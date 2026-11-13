@@ -270,10 +270,14 @@ fn serve_help_does_not_start_a_core_and_leading_global_options_still_escape() {
 }
 
 #[test]
-fn ssh_starts_directly_without_an_app_lifetime_warning() {
+fn ssh_starts_use_the_gui_session_job_only_when_there_is_one() {
     let mut s = Session::new();
     s.env.push(("SSH_CONNECTION".into(), "test".into()));
     let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap();
+    if gui() {
+        independent(&s, pid);
+        return;
+    }
     assert_eq!(coalition(pid), coalition(std::process::id() as i64));
     let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
     assert!(!log.contains("launchd startup failed"), "{log}");
