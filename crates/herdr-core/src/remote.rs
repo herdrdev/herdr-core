@@ -780,6 +780,31 @@ pub fn peer_address(core: &Core, address: &str) -> Option<String> {
     st.peers.iter().find(|(id, p)| *id == prefix || p.name == prefix).map(|(_, p)| format!("{}/{rest}", p.name))
 }
 
+/// A child here sent a message to `there` on `to`: a report when that is its
+/// parent's core and its parent there, however it named it (`desktop/lead`).
+pub async fn reported_afar(core: &Core, to: &To, caller: Option<&str>, there: &str) {
+    let parent =
+        caller.and_then(crate::terminals::parse_id).and_then(|c| core.lock().reg.terminals.get(&c)?.parent.clone());
+    let Some(parent) = parent else { return };
+    let Some((prefix, rest)) = parent.split_once('/') else { return };
+    let reached = match to {
+        To::Machine(m) => &m.id,
+        To::Peer { id, .. } => id,
+    };
+    let parents_core =
+        core.lock().peers.iter().find(|(id, p)| *id == prefix || p.name == prefix).map(|(id, _)| id.clone());
+    if parents_core.as_ref() != Some(reached) {
+        return;
+    }
+    let to_parent = there == rest
+        || forward_to(core, to, "terminal.get", json!({ "terminal": there }))
+            .await
+            .is_ok_and(|r| r["address"].as_str().and_then(|a| a.rsplit('/').next()) == Some(rest));
+    if to_parent {
+        core.reported(caller, &parent);
+    }
+}
+
 /// How terminals here are called on the peer `parent` lives on (`rohan`).
 pub fn called_there(st: &State, parent: &str) -> Option<String> {
     let prefix = parent.split_once('/')?.0;
