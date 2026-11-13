@@ -357,6 +357,29 @@ fn test_core() -> (Arc<Core>, PathBuf) {
     (core, root)
 }
 
+#[test]
+fn relay_startup_handles_unrepresentable_timeouts_without_panicking() {
+    for enabled in [false, true] {
+        let root = std::env::temp_dir().join(format!("hc-relay-timeout-{}", platform::random_hex()));
+        let paths = Paths {
+            state: root.join("state"),
+            config: root.join("config.toml"),
+            socket: root.join("run/core.sock"),
+            holder_socket: root.join("run/core.holder.sock"),
+        };
+        paths.create_dirs().unwrap();
+        std::fs::write(&paths.config, format!("ssh_agent_forwarding = {enabled}\nmachine_timeout = 1e100\n")).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() })
+                .map(|core| core.ssh_agent.enabled())
+                .map_err(|error| error.kind())
+        });
+        remove_root(&root);
+        let expected = if enabled { Err(io::ErrorKind::InvalidInput) } else { Ok(false) };
+        assert_eq!(result.expect("relay startup must not panic"), expected, "enabled={enabled}");
+    }
+}
+
 #[tokio::test]
 async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
     for method in ["terminal.kill", "terminal.label"] {

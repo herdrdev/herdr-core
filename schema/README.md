@@ -42,6 +42,17 @@ Errors are JSON-RPC errors with a stable kind and a hint:
 `hello` with `{"framed": true}` switches the connection to **framed mode**
 after its reply. Attach needs it; everything else works in both modes.
 
+An opted-in Unix destination advertises `ssh_agent_forwarding` in the hello
+reply's features. Its SSH-launched `hc connect` may add `ssh_agent_socket` to
+the initial framed hello: an absolute, destination-local socket path from the
+bridge's own `SSH_AUTH_SOCK`. Other hello fields and subsequent frames stay
+unchanged. The core scopes registration to that connection, revokes it on
+disconnect or peer silence, and does not save it. Plain clients and old peers
+can still connect without this field. This is not a path on the viewing laptop
+and not an instruction to enable SSH forwarding. See
+[machines](../docs/machines.md#forward-an-ssh-agent-into-persistent-terminals)
+and [security](../docs/security.md#opt-in-forwarded-ssh-agents).
+
 ## Framed mode
 
 Every frame: `[channel u32 LE][kind u8][len u32 LE][payload]`, payload at

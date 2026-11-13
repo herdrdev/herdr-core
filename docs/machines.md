@@ -66,6 +66,50 @@ hc machine add user@host --name sandbox --session scratch
 
 Sessions separate terminals and state, not permissions. See [security](security.md).
 
+## Forward an SSH agent into persistent terminals
+
+On a trusted Linux or macOS destination, opt in in that machine's
+`~/.config/herdr-core/config.toml`:
+
+```toml
+ssh_agent_forwarding = true
+```
+
+Restart that destination's core once with `hc server restart` from a normal
+terminal, then reconnect the saved machine. The setting is read at core
+startup. The destination's `hc connect` and running core must both support it;
+older clients and cores still attach without the relay.
+
+Enable OpenSSH agent forwarding for that trusted host in your local SSH config,
+using `ForwardAgent yes` or an explicit agent socket path. hc does not enable
+forwarding or start an SSH agent for you. Check ordinary `ssh host` first.
+
+New terminals, recovered kept terminals, and `hc exec` receive a stable
+`SSH_AUTH_SOCK`, `<core-client-socket>.ssh-agent`. Terminals opened before
+enabling the relay need reopening once. The endpoint stays the same after an
+SSH reconnect or a core restart; you do not need shell startup scripts or
+symlinks to `/tmp/ssh-*`. Explicit per-program environment overrides still win.
+
+Each new agent connection uses the most recently registered live client's
+forwarded socket. When opening it fails, another live client can supply one;
+an already delivered request is never retried. Existing channels stay with
+their original client and close when it disconnects. This selection can change
+which SSH identities programs see. With no provider, agent connections close
+immediately; terminals and their programs keep running.
+
+Idle Herdr app/core connections remain live through acknowledged event
+heartbeats. A client that sends nothing for `machine_timeout` plus one
+heartbeat interval (45 seconds by default) loses its registration until it
+reconnects. Opening an upstream socket takes at most 5 seconds, and a proxy
+connection closes after 120 seconds without bytes in either direction,
+including while waiting for a user to approve signing. Each session permits
+64 concurrent proxy connections. Ordinary SSH forwarding must remain usable
+for the relay to work; a disconnected laptop cannot sign requests.
+
+This is off by default and is not supported on Windows destinations. Enabling
+it gives programs under the destination account, including coding agents,
+access to the attached client's SSH identities. See [security](security.md).
+
 ## Use another way in
 
 A custom connection command receives a shell line as its last argument.

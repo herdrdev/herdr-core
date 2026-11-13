@@ -161,7 +161,7 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     cmd.args(&argv[1..]);
     cmd.current_dir(&cwd)
         .env_clear()
-        .envs(env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd))
+        .envs(env(core.program_env().await, crate::api::labels(&p.env), &token, &cwd))
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

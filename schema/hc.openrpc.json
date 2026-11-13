@@ -1612,6 +1612,18 @@
               "null"
             ]
           }
+        },
+        {
+          "description": "Destination-local Unix agent socket offered by an SSH bridge. Used only\nin framed mode with ssh_agent_forwarding enabled on the destination.",
+          "name": "ssh_agent_socket",
+          "required": false,
+          "schema": {
+            "description": "Destination-local Unix agent socket offered by an SSH bridge. Used only\nin framed mode with ssh_agent_forwarding enabled on the destination.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       ],
       "result": {
