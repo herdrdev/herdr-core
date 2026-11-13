@@ -122,12 +122,49 @@ fn here() -> String {
 }
 
 #[test]
+fn the_installer_warns_only_when_another_copy_wins_on_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut s = Session::new();
+    let r = Releases::new(&s, THIS, &[&here()]);
+    let bin = s.root.join("install bin");
+    let other = s.root.join("other bin");
+    std::fs::create_dir_all(&other).unwrap();
+    for name in ["hc", "herdr-core"] {
+        let path = other.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for (path, shadowed) in [
+        (format!("{}:{}:/usr/bin:/bin", other.display(), bin.display()), true),
+        (format!("{}:{}:/usr/bin:/bin", bin.display(), other.display()), false),
+        ("/usr/bin:/bin".to_owned(), false),
+    ] {
+        let out = s
+            .program("sh")
+            .arg(format!("{ROOT}/../../distribution/install.sh"))
+            .env("PATH", path)
+            .env("HERDR_RELEASES_URL", &r.url)
+            .env("HC_INSTALL_DIR", &bin)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(bin.join("hc").is_symlink());
+        s.bin = bin.join("herdr-core");
+        let text = String::from_utf8(out.stdout).unwrap();
+        for name in ["hc", "herdr-core"] {
+            assert_eq!(text.contains(&format!("another {name} at {}", other.join(name).display())), shadowed, "{text}");
+        }
+        assert_eq!(text.contains("comes first on your PATH"), shadowed, "{text}");
+    }
+}
+
+#[test]
 fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     let mut s = Session::new();
     let r = Releases::new(&s, THIS, &[&here()]);
     let bin = s.root.join("bin");
     let install = |s: &Session| {
-        // A PATH without the hc this machine already has: else no `hc` link is added.
+        // Keep the machine's installed commands out of this isolated install.
         let mut cmd = s.program("sh");
         cmd.arg(format!("{ROOT}/../../distribution/install.sh")).env("PATH", "/usr/bin:/bin");
         let out = cmd.env("HERDR_RELEASES_URL", &r.url).env("HC_INSTALL_DIR", &bin).output().unwrap();

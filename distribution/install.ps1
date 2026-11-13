@@ -3,8 +3,8 @@
 #   powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
 #
 # Into %LOCALAPPDATA%\Programs\herdr-core (herdr-core.exe, Microsoft's
-# ConPTY beside it), added to your PATH, with hc.exe linked to it only if no
-# `hc` exists. An hc that is already there is swapped the planned way (hc
+# ConPTY beside it), added to your PATH, with hc.exe linked beside it unless
+# that path already exists. An hc that is already there is swapped the planned way (hc
 # update --from): running terminals keep running. No admin needed.
 # HC_VERSION=0.2.0 picks a version; HERDR_RELEASES_URL points elsewhere
 # (tests); HC_INSTALL_DIR installs elsewhere.
@@ -22,6 +22,32 @@ $ProgressPreference = "SilentlyContinue"
 
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "hc: $why" }
+
+function File-Sha256($path) {
+    $stream = [IO.File]::OpenRead($path)
+    try { -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) } finally { $stream.Close() }
+}
+
+function Warn-PathShadowing($path, $dir) {
+    $saved = $env:Path
+    try {
+        $env:Path = [Environment]::ExpandEnvironmentVariables($path)
+        foreach ($name in "hc", "herdr-core") {
+            $found = Get-Command $name -CommandType Application, ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) { continue }
+            $foundPath = [IO.Path]::GetFullPath($found.Path)
+            $expected = [IO.Path]::GetFullPath((Join-Path $dir "$name.exe"))
+            $same = $foundPath -ieq $expected
+            # An existing local hc.exe is preserved, but might not be our alias.
+            if ($same -and $name -eq "hc") {
+                $same = (File-Sha256 $foundPath) -eq (File-Sha256 (Join-Path $dir "herdr-core.exe"))
+            }
+            if (-not $same) {
+                Write-Host "another $name at $foundPath comes first on your PATH; remove it and run the installer again, or put $dir ahead of it."
+            }
+        }
+    } finally { $env:Path = $saved }
+}
 
 $releases = if ($env:HERDR_RELEASES_URL) { $env:HERDR_RELEASES_URL.TrimEnd("/") } else { "https://releases.herdr.dev" }
 $dir = if ($env:HC_INSTALL_DIR) { $env:HC_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\herdr-core" }
@@ -57,8 +83,7 @@ try {
     curl.exe -fsSL $download -o "$tmp\hc.zip"
     if ($LASTEXITCODE) { Fail "download failed: $($t.url)" }
     # .NET, not Get-FileHash: that one fails when PowerShell 7 starts 5.1.
-    $stream = [IO.File]::OpenRead("$tmp\hc.zip")
-    try { $got = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) } finally { $stream.Close() }
+    $got = File-Sha256 "$tmp\hc.zip"
     if ($got -ne $t.sha256) { Fail "the download is damaged (checksum mismatch); try again" }
   }
     New-Item -ItemType Directory -Force "$tmp\hc" | Out-Null
@@ -80,7 +105,7 @@ try {
         Write-Host "hc $version installed into $dir."
     }
     Copy-Item -Recurse -Force "$tmp\hc\THIRD-PARTY-NOTICES" $dir -ErrorAction SilentlyContinue
-    if (-not (Get-Command hc -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $dir "hc.exe"))) {
+    if (-not (Test-Path (Join-Path $dir "hc.exe"))) {
         New-Item -ItemType HardLink -Path (Join-Path $dir "hc.exe") -Target $exe | Out-Null
     }
 
@@ -97,6 +122,9 @@ try {
         Write-Host "Added $dir to your PATH: new terminals have hc."
     }
     $key.Close()
+    # Windows builds a fresh terminal's PATH with machine entries before user entries.
+    $freshPath = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+    Warn-PathShadowing $freshPath $dir
     if (($env:Path -split ";") -notcontains $dir) { $env:Path += ";$dir" }
     Write-Host "Agents: hc --skill. People: hc --help."
 } finally {
