@@ -216,6 +216,8 @@ hc file edit --on vps /srv/app/src/x.rs --old 'exact text' --new 'replacement'
 hc file write --on vps /srv/app/src/y.rs < content.txt
 ```
 
+`exec` ends the command and everything it started after 60 s by default
+(`--timeout S`, at most 600); use `run` for anything longer.
 `exec -i` feeds piped input to the command. File writes replace the whole
 file and create parent folders. Edits require the old text exactly once;
 `edit_failed` means add enough context to make it unique. Repeat `--old` and
