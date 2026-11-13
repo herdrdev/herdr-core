@@ -110,7 +110,7 @@ pub(crate) async fn finish(core: &Core) -> io::Result<()> {
         core.handover().await?;
     }
     if let Err(e) = core.flush_saved().await {
-        eprintln!("core: final registry flush failed: {}", e.message);
+        let _ = writeln!(io::stderr(), "core: final registry flush failed: {}", e.message);
     }
     Ok(())
 }

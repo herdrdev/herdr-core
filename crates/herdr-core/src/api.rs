@@ -9,6 +9,7 @@ use crate::terminals::{NewTerminal, Public, Terminal};
 use crate::wait::{WaitResult, WaitSpec};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -236,7 +237,7 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     }
     crate::restart::discard(&core.paths);
     if let Err(e) = core.shutdown().await {
-        eprintln!("core: shutdown registry flush failed: {}", e.message);
+        let _ = writeln!(io::stderr(), "core: shutdown registry flush failed: {}", e.message);
     }
     Ok(StopResult { stopped: true })
 }
