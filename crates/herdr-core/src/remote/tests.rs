@@ -143,6 +143,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         core.lock().relayed.insert(
             (conn_key(&conn), 7),
             Relayed {
+                active_at: std::time::Instant::now(),
                 automatic_input: true,
                 line: Line::new(old_frames, &json!({"features": ["automatic_input"]})),
                 there: 9,
@@ -262,6 +263,7 @@ async fn failed_reattach_drains_pending_data_before_close() {
     core.lock().relayed.insert(
         (conn_key(&conn), 7),
         Relayed {
+            active_at: std::time::Instant::now(),
             automatic_input: true,
             line: old_line,
             there: 9,

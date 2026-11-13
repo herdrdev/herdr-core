@@ -1,6 +1,7 @@
 //! Viewer streams relayed to other cores, including reattachment.
 
 use super::*;
+use std::time::Instant;
 
 /// A viewer here on a terminal there. It outlives a dropped line: when the
 /// line is back, it is attached again on the same channel here.
@@ -12,6 +13,7 @@ pub struct Relayed {
     pub conn: Arc<Conn>,
     pub machine: String,
     pub params: Value,
+    pub active_at: Instant,
 }
 
 /// Why an opted-in stream was refused: a hop on the way lost resize support.
@@ -19,13 +21,15 @@ pub(super) const RESIZE_LOST: &str = "resize notifications lost";
 
 /// Viewers left waiting by a dropped line to `m` get their terminal back.
 pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
-    let waiting: Vec<((usize, u32), Relayed)> = core
+    let mut waiting: Vec<((usize, u32), Relayed)> = core
         .lock()
         .relayed
         .iter()
         .filter(|(_, r)| r.machine == m.id && !Arc::ptr_eq(&r.line, &line))
         .map(|(k, r)| (*k, r.clone()))
         .collect();
+    // Resumed viewers tie there; the last attached wins unless another viewer stayed active.
+    waiting.sort_by_key(|(_, r)| r.active_at);
     for ((key, here), r) in waiting {
         // The screen is painted again; the viewer already has its history.
         let mut params = r.params.clone();
@@ -100,7 +104,15 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
             params["resize_notifications"] = enabled.into();
             let automatic_input = automatic_input(&line, &r);
             r["automatic_input"] = automatic_input.into();
-            let viewer = Relayed { automatic_input, line, there, conn: conn.clone(), machine: m.id.clone(), params };
+            let viewer = Relayed {
+                automatic_input,
+                line,
+                there,
+                conn: conn.clone(),
+                machine: m.id.clone(),
+                params,
+                active_at: Instant::now(),
+            };
             core.lock().relayed.insert((conn_key(conn), here), viewer);
             r["channel"] = here.into();
             Ok(localize(core, &m.name, &[], r))
@@ -117,6 +129,13 @@ pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u
     let r = {
         let mut st = core.lock();
         let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
+        if r.params["observe"] != true
+            && (kind == wire::DATA
+                || (kind == wire::RESIZE && payload.len() == 4)
+                || (kind == wire::FOCUS && payload.first() == Some(&1)))
+        {
+            r.active_at = Instant::now();
+        }
         // What a reattach after a dropped line brings back.
         if kind == wire::RESIZE && payload.len() == 4 {
             r.params["cols"] = u16::from_le_bytes([payload[0], payload[1]]).into();
