@@ -704,7 +704,14 @@ fn a_run_or_wait_there_rides_out_a_dropped_line() {
         cmd.args(["run", "--on", "rohan", "--timeout", "30", "sh", "-c", &body]);
         std::thread::spawn(move || cmd.output().unwrap())
     };
-    wait_until("started there", || rohan.json(&["ls"])["terminals"].as_array().is_some_and(|t| !t.is_empty()));
+    // It takes well under a second, but a loaded macOS runner has taken over 10 s;
+    // a run that ended without starting says why.
+    let started = || rohan.json(&["ls"])["terminals"].as_array().is_some_and(|t| !t.is_empty());
+    wait_until_for("started there", std::time::Duration::from_secs(30), || started() || waited.is_finished());
+    if !started() {
+        let out = waited.join().unwrap();
+        panic!("the run ended before it started there: {}", String::from_utf8_lossy(&out.stderr));
+    }
     drop_line();
     touch(&s, "go");
     let out = waited.join().unwrap();
