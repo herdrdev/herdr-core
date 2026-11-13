@@ -341,6 +341,24 @@ fn a_cmd_shim_gets_its_arguments_literally() {
 }
 
 #[test]
+fn a_cmd_shim_uses_the_system_command_processor() {
+    // A same-named executable in the working directory must not change
+    // which command processor runs the batch file.
+    let s = Session::new();
+    let system = PathBuf::from(std::env::var("SystemRoot").unwrap()).join("System32");
+    std::fs::copy(system.join("hostname.exe"), s.root.join("cmd.exe")).unwrap();
+    let shim = s.file("agent.cmd", "@echo off\r\necho shim=[%~1]\r\n");
+    let out = cmd(&s.name, &s.root)
+        .env_remove("NoDefaultCurrentDirectoryInExePath")
+        .args(["run", "--timeout", "20", &shim, "ok"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8_lossy(&out.stdout);
+    assert!(out.contains("shim=[ok]"), "{out}");
+}
+
+#[test]
 fn the_exe_needs_no_visual_cpp_runtime_installed() {
     // Imported DLL names sit in the exe as plain text.
     let exe = String::from_utf8_lossy(&std::fs::read(BIN).unwrap()).to_ascii_lowercase();
