@@ -298,6 +298,70 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
     assert!(!bin.join("herdr-core.staged").exists(), "the stage is cleaned up");
 }
 
+/// A machine without hc where the copy of this hc fails to start, and the
+/// stand-in that makes it fail. A build by a package manager such as Nix needs
+/// its loader and libraries at their paths on the build machine, and fails to
+/// start where they are missing. The tests run both machines on one, so a
+/// stand-in fakes that: the machine's `chmod` leaves the first file it gets as
+/// it is, so that file, the copy of this hc, fails to start. It removes itself
+/// on that first call, so later calls are the real chmod.
+fn where_this_hc_does_not_run() -> (Session, PathBuf) {
+    let mut remote = Session::new();
+    remote.bin = remote.root.join("bin/herdr-core"); // no hc there
+    let tools = remote.root.join("fakebin");
+    std::fs::create_dir(&tools).unwrap();
+    let fake_chmod = tools.join("chmod");
+    std::fs::write(&fake_chmod, "#!/bin/sh\nrm \"$0\"\n").unwrap();
+    std::fs::set_permissions(&fake_chmod, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    (remote, fake_chmod)
+}
+
+#[test]
+fn a_machine_where_this_hc_does_not_run_gets_the_release() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut remote, fake_chmod) = where_this_hc_does_not_run();
+    let mut local = Session::new();
+    let r = Releases::new(&local, THIS, &[&here()]);
+    // This hc and the release differ, so the test can tell which one arrived.
+    // On macOS the release is the bundle that mac-sign signed again. Elsewhere
+    // it is this very binary, so this hc gets bytes after its end, which the
+    // loader ignores.
+    let mut own = std::fs::read(BIN).unwrap();
+    let release = if cfg!(target_os = "macos") {
+        local.root.join("Herdr Core.app/Contents/MacOS/herdr-core")
+    } else {
+        own.extend_from_slice(b"not the release");
+        PathBuf::from(BIN)
+    };
+    let release = std::fs::read(release).unwrap();
+    assert!(own != release, "this hc and the release are the same bytes");
+    local.bin = local.root.join("own/herdr-core");
+    std::fs::create_dir_all(local.bin.parent().unwrap()).unwrap();
+    std::fs::write(&local.bin, own).unwrap();
+    std::fs::set_permissions(&local.bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    local.env.push(("HERDR_RELEASES_URL".into(), r.url.clone()));
+    local.env.push(fake_ssh(&local, &[("bare", &remote)]));
+    remote.bin = remote.root.join(".local/bin/herdr-core"); // so it is stopped at the end
+    local.json(&["machine", "add", "bare", "--install"]);
+    assert!(!fake_chmod.exists(), "the copy of this hc was not tried first");
+    assert!(std::fs::read(&remote.bin).unwrap() == release, "the machine did not get the release");
+    local.json(&["machine", "rm", "bare"]);
+}
+
+#[test]
+fn without_a_release_to_download_a_copy_that_does_not_run_fails_the_install() {
+    let (remote, fake_chmod) = where_this_hc_does_not_run();
+    let mut local = Session::new();
+    // Nothing listens there, so no release can be downloaded.
+    local.env.push(("HERDR_RELEASES_URL".into(), "http://127.0.0.1:9".into()));
+    local.env.push(fake_ssh(&local, &[("bare", &remote)]));
+    let (_, err) = local.err(&["--json", "machine", "add", "bare", "--install"]);
+    assert!(!fake_chmod.exists(), "the copy of this hc was not tried first");
+    let message = format!("on bare: this hc does not run there, and hc {THIS} has no release to download");
+    assert_eq!(err["error"]["message"], message, "{err}");
+    assert!(!remote.root.join(".local/bin/herdr-core").exists(), "something was installed there");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn machine_installs_keep_the_complete_bundle_and_both_aliases() {

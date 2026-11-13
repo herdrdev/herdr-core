@@ -435,7 +435,11 @@ fn platform(uname: &str) -> String {
 /// Runs `command` there as its login shell takes it (riding the shared
 /// login), feeding it `input`: the last line it printed.
 fn run_there(paths: &crate::paths::Paths, to: Reach, command: &str, input: &[u8]) -> Result<String, RpcError> {
-    let out = run_raw(paths, to, command, input)?;
+    finished(to, run_raw(paths, to, command, input)?)
+}
+
+/// The last line `out` printed, or an install error with the last line of its stderr.
+fn finished(to: Reach, out: std::process::Output) -> Result<String, RpcError> {
     match out.status.success() {
         true => Ok(last_line(&out.stdout)),
         false => Err(RpcError::new(
@@ -468,7 +472,8 @@ fn run_raw(
     Ok(out)
 }
 
-/// Copies this very hc to `target` (same OS and CPU only), swaps it in at
+/// Installs hc on `target`: a copy of this very hc when the OS and CPU match
+/// and the copy starts there, else this version's release for it. Swaps it in at
 /// ~/.local/bin/herdr-core (adding `hc` beside it only if there is none),
 /// and restarts hc there in `session`, so terminals there keep running.
 /// Returns what the installed one says it is.
@@ -501,56 +506,68 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
             "nothing was changed there",
         ));
     }
-    // Same OS and CPU: this very hc. Else this version's released build for it.
+    // Same OS and CPU: this very hc, if it starts there. Else this version's released build for it.
     let scratch = crate::releases::Scratch::new()?;
     let macos = there.starts_with("macos ");
     let bundle = !macos || run_there(paths, to, "id -u", b"")? != "0";
     let current = std::env::current_exe()
         .and_then(|path| path.canonicalize())
         .map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
-    let bin = if there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core")) {
-        current
-    } else {
-        let version = env!("CARGO_PKG_VERSION");
-        let not_released = |_| {
-            RpcError::new(
-                "install_failed",
-                format!("{target} is {there}, and hc {version} has no release to download"),
-                "install hc there yourself",
-            )
-        };
-        let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
-        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, bundle)?
+    let version = env!("CARGO_PKG_VERSION");
+    // `why` is the error when this version has no release to download.
+    let release = |why: String| {
+        let m = crate::releases::manifest(Some(version), &scratch.0)
+            .map_err(|_| RpcError::new("install_failed", why, "install hc there yourself"))?;
+        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, bundle)
     };
-    let (exe, bundled) = install_payload(&bin, &scratch.0)?;
-    let n = exe.len();
+    let copy = there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core"));
     let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
-    if bundled {
-        let script = format!(
-            "set -e; d=$HOME/.local/bin; mkdir -p \"$d\"; t=$(mktemp -d); trap \"rm -rf \\\"$t\\\"\" EXIT; \
-             head -c {n} > \"$t/core.tar\"; [ $(wc -c < \"$t/core.tar\") -eq {n} ]; \
-             tar -xf \"$t/core.tar\" -C \"$t\"; b=\"$t/Herdr Core.app/Contents/MacOS/herdr-core\"; \
-             \"$b\" --hc-install-bundle \"$b\" \"$d/herdr-core\"; \
-             {session}\"$d/herdr-core\" server restart > /dev/null; \"$d/herdr-core\" --version"
-        );
-        return run_there(paths, to, &format!("sh -c '{script}'"), &exe);
-    }
     let guard = if macos {
         "case $(readlink \"$d/herdr-core\" || true) in */Contents/MacOS/herdr-core) \
          echo \"a bundled remote core needs a complete bundle; run hc update on that machine\" >&2; exit 5;; esac; "
     } else {
         ""
     };
-    // Into a temp file beside the target, checked whole and running, then swapped.
-    let script = format!(
-        "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
-         head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
-         chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this hc does not run there\" >&2; exit 4; }}; \
-         mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \
-         {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
-    );
-    run_there(paths, to, &format!("sh -c '{script}'"), &exe)
+    let put = |bin: &Path| {
+        let (exe, bundled) = install_payload(bin, &scratch.0)?;
+        let n = exe.len();
+        let script = if bundled {
+            format!(
+                "set -e; d=$HOME/.local/bin; mkdir -p \"$d\"; t=$(mktemp -d); trap \"rm -rf \\\"$t\\\"\" EXIT; \
+                 head -c {n} > \"$t/core.tar\"; [ $(wc -c < \"$t/core.tar\") -eq {n} ]; \
+                 tar -xf \"$t/core.tar\" -C \"$t\"; b=\"$t/Herdr Core.app/Contents/MacOS/herdr-core\"; \
+                 \"$b\" --hc-install-bundle \"$b\" \"$d/herdr-core\"; \
+                 {session}\"$d/herdr-core\" server restart > /dev/null; \"$d/herdr-core\" --version"
+            )
+        } else {
+            // Into a temp file beside the target, checked whole and running, then swapped.
+            format!(
+                "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
+                 head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
+                 chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"{NO_RUN}\" >&2; exit 4; }}; \
+                 mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \
+                 {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
+            )
+        };
+        run_raw(paths, to, &format!("sh -c '{script}'"), &exe)
+    };
+    let mut out = if copy {
+        put(&current)?
+    } else {
+        put(&release(format!("{target} is {there}, and hc {version} has no release to download"))?)?
+    };
+    // The copy fails to start where it needs files only this machine has: Nix
+    // links its build to libraries under /nix/store. The machine then gets the
+    // release, which needs only the OS.
+    if copy && out.status.code() == Some(4) && last_line(&out.stderr) == NO_RUN {
+        let bin = release(format!("on {target}: {NO_RUN}, and hc {version} has no release to download"))?;
+        out = put(&bin)?;
+    }
+    finished(to, out)
 }
+
+/// What the install script says when the file it got does not start there.
+const NO_RUN: &str = "this hc does not run there";
 
 fn install_payload(bin: &Path, scratch: &Path) -> Result<(Vec<u8>, bool), RpcError> {
     let bundled = bin.ends_with("Herdr Core.app/Contents/MacOS/herdr-core");
