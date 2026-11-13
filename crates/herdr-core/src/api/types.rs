@@ -377,6 +377,10 @@ pub struct ReadParams {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub lines: usize,
+    /// Keep styles as SGR escapes, e.g. faint `ESC[2m` (not for a full-screen app's history).
+    #[arg(long)]
+    #[serde(default)]
+    pub ansi: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
