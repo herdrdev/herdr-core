@@ -728,6 +728,26 @@ fn a_run_or_wait_there_rides_out_a_dropped_line() {
 }
 
 #[test]
+fn a_wait_there_for_output_still_waits_for_it_after_a_dropped_line() {
+    let (rohan, s) = with_rohan();
+    let t = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "w go; while :; do echo now-ready; sleep 0.2; done")]);
+    let waiting = {
+        let mut cmd = s.cmd();
+        cmd.args(["wait", &t, "--output", "now-ready", "--timeout", "20"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    touch(&s, "go");
+    let out = waiting.join().unwrap();
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert_eq!(r["reason"], "output", "{r} / {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
 fn a_machine_that_drops_off_is_shown_not_waited_on_and_comes_back() {
     let (rohan, s) = with_rohan();
     run(&s, &["--on", "rohan", "sh", "-c", "sleep 100"]);
