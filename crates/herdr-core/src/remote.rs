@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -382,7 +383,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 _ => break,
             },
             () = heard.silent_for(silence) => {
-                eprintln!("core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
+                let _ = writeln!(io::stderr(), "core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
                 break;
             }
         };
@@ -641,7 +642,7 @@ pub struct Peer {
 fn save_peers(core: &Core, st: &State) {
     let bytes = serde_json::to_vec(&st.peers).expect("peers serialize");
     if let Err(e) = crate::paths::write_atomic(&core.paths.state.join("peers.json"), &bytes) {
-        eprintln!("core: cannot save peers: {e}");
+        let _ = writeln!(io::stderr(), "core: cannot save peers: {e}");
     }
 }
 

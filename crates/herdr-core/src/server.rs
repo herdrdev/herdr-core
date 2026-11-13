@@ -8,7 +8,7 @@ use crate::rpc::{self, RpcError};
 use crate::runtime::Core;
 use crate::wire::{self, Conn};
 use serde_json::Value;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -239,7 +239,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         result = read_frames(&core, &conn, &mut read) => result,
         _ = &mut writer => Ok(()),
         () = conn.overflowed.notified() => {
-            eprintln!("core: a client stopped reading its replies: disconnected");
+            let _ = writeln!(io::stderr(), "core: a client stopped reading its replies: disconnected");
             Ok(())
         }
     };

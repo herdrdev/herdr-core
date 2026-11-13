@@ -1,6 +1,6 @@
 //! Ordered registry persistence, without disk IO on the core state lock.
 use crate::paths::write_atomic;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -35,7 +35,7 @@ impl RegistryWriter {
                 if let Some((version, bytes)) = pending.latest.take() {
                     drop(pending);
                     if let Err(e) = write(&bytes) {
-                        eprintln!("core: cannot save terminals: {e}");
+                        let _ = writeln!(io::stderr(), "core: cannot save terminals: {e}");
                     }
                     done.send_replace(version);
                     pending = mutex.lock().unwrap();

@@ -2,6 +2,7 @@
 use crate::holder_proto as proto;
 use crate::runtime::{Core, now_ms};
 use crate::terminals::{KEEP_RETRY_MS, Terminal};
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -52,7 +53,7 @@ impl Core {
             return;
         }
         if let Err(e) = self.ensure_holder().await {
-            eprintln!("core: kept terminals waiting for a holder: {e}");
+            let _ = writeln!(io::stderr(), "core: kept terminals waiting for a holder: {e}");
             return;
         }
         let (shell, restore_screen) = match crate::config::load(&self.paths.config)
@@ -60,7 +61,7 @@ impl Core {
         {
             Ok(settings) => settings,
             Err(e) => {
-                eprintln!("core: kept terminals waiting for a shell: {}", e.message);
+                let _ = writeln!(io::stderr(), "core: kept terminals waiting for a shell: {}", e.message);
                 return;
             }
         };
