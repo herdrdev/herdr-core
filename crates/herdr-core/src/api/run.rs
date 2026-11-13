@@ -27,6 +27,14 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
             p.env.insert(pager.into(), "cat".into());
         }
     }
+    // The person may be at another machine: a peer relaying this call, or a
+    // caller there (`desktop/t3`). Say so in the environment, so programs copy
+    // through the terminal to the viewer's clipboard instead of this host's (#84).
+    if p.caller.as_deref().is_some_and(|c| c.contains('/'))
+        || core.conn.is_some_and(|conn| crate::remote::is_peer(core, conn))
+    {
+        remote_viewer_env(&mut p.env);
+    }
     let started = start(core, p, template).await?;
     let id = started.id();
     let first_message = match first.filter(|text| !text.is_empty()) {
@@ -208,6 +216,24 @@ pub(super) async fn start(
     }
 }
 
+/// The marks of a terminal whose person is at another machine. The SSH family
+/// is how programs recognize a remote session, so they copy through the
+/// terminal (OSC 52) and the copy lands on the viewer's clipboard instead of
+/// this host's; `HERDR_ENV` is the marker Herdr 1 set, which Codex still keys
+/// on, and `HERDR_REMOTE_VIEWER` is the documented one. Zero addresses: the
+/// core knows the viewer's machine, not its addresses. What a caller passes in
+/// `env` itself wins.
+fn remote_viewer_env(env: &mut BTreeMap<String, String>) {
+    for (key, value) in [
+        ("SSH_CONNECTION", "0.0.0.0 0 0.0.0.0 0"),
+        ("SSH_CLIENT", "0.0.0.0 0 0"),
+        ("HERDR_ENV", "1"),
+        ("HERDR_REMOTE_VIEWER", "1"),
+    ] {
+        env.entry(key.into()).or_insert_with(|| value.into());
+    }
+}
+
 /// Per-program runtime fields, shared by initial runs and replacement shells.
 pub(crate) fn terminal_env(
     core: &Core,
@@ -252,6 +278,18 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_viewer_marks_never_overwrite_the_callers_own_env() {
+        let mut env = std::collections::BTreeMap::new();
+        super::remote_viewer_env(&mut env);
+        assert_eq!(env.get("HERDR_REMOTE_VIEWER").map(String::as_str), Some("1"));
+        assert_eq!(env.get("SSH_CONNECTION").map(String::as_str), Some("0.0.0.0 0 0.0.0.0 0"));
+        let mut theirs =
+            std::collections::BTreeMap::from([("SSH_CONNECTION".to_string(), "10.0.0.1 5000 10.0.0.2 22".to_string())]);
+        super::remote_viewer_env(&mut theirs);
+        assert_eq!(theirs.get("SSH_CONNECTION").map(String::as_str), Some("10.0.0.1 5000 10.0.0.2 22"));
+    }
+
     #[test]
     fn a_long_output_keeps_whole_lines_from_its_end_even_mid_character() {
         let text = "é".repeat(30_000) + "\nlast line";
