@@ -1,7 +1,7 @@
 //! Reading a full-screen app's history by scrolling it: glue each page onto
 //! what was already read. Rows are screen rows, each exactly as wide as the screen.
 
-use crate::runtime::Core;
+use crate::runtime::{Core, State};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -164,6 +164,25 @@ impl Capture {
     }
 }
 
+/// Check the current terminal and modes while holding the same lock used to
+/// enqueue wheel input or capture a page. Restoration needs this check too.
+fn scrollable(st: &State, id: u32) -> Option<&ghostty_vt::Terminal> {
+    let t = st.reg.terminals.get(&id).filter(|t| t.is_live())?;
+    if t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "working" | "blocked" | "error")) {
+        return None;
+    }
+    let screen = st.screens.get(&id)?;
+    (screen.alt_screen() && !screen.wheel(true).is_empty()).then_some(screen)
+}
+
+#[derive(Debug)]
+enum Stop {
+    /// End the read, even if the app becomes ready before restoration.
+    Unsafe,
+    /// A key or deadline: restore the view while scrolling remains safe.
+    Interrupted,
+}
+
 impl Core {
     /// Reads a full-screen app's history by scrolling it with the mouse wheel,
     /// then scrolls it back. Only for an app on the alternate screen that takes
@@ -171,13 +190,8 @@ impl Core {
     /// screen instead, marked incomplete (any doubt ends up here).
     pub async fn stitch(&self, id: u32, lines: usize) -> Option<(String, bool)> {
         // Nothing printed since a read that covers this one: answer from memory.
-        let ready = |st: &crate::runtime::State| -> Result<Option<(String, bool)>, ()> {
-            let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or(())?;
-            let screen = st.screens.get(&id).ok_or(())?;
-            let busy = t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "working" | "blocked" | "error"));
-            if !screen.alt_screen() || busy || screen.wheel(true).is_empty() {
-                return Err(());
-            }
+        let ready = |st: &State| -> Result<Option<(String, bool)>, ()> {
+            scrollable(st, id).ok_or(())?;
             Ok(st
                 .stitched
                 .get(&id)
@@ -217,6 +231,7 @@ impl Core {
             }
         }
         let capture = result?;
+        scrollable(&st, id)?;
         let answer = capture.answer(lines);
         if held.is_empty() {
             let seq = st.output_seq.get(&id).copied().unwrap_or(0);
@@ -233,18 +248,19 @@ impl Core {
         // One notch: a view that close to the bottom still moves all of it,
         // so one notch up puts it back exactly. Judge the last frame of the
         // step: a notch may redraw via in-between frames ("loading...").
-        self.wheel(id, false, 1);
+        self.wheel(id, false, 1)?;
         let started = Instant::now();
         let probe = loop {
             match self.next_page(id, started, &mut pace, deadline, true).await {
-                Some((page, true)) => break page,
-                Some(_) => {}
-                None => {
+                Ok((page, true)) => break page,
+                Ok(_) => {}
+                Err(Stop::Unsafe) => return None,
+                Err(Stop::Interrupted) => {
                     // A key (or the time limit) mid-probe. At the bottom the probe
                     // did nothing; above it, it moved the view down: undo only that.
                     // A screen that never settles can't be judged: leave it.
                     let short = Instant::now() + MAX_PACE * 2;
-                    if self.quiet_page(id, short).await.is_some_and(|now| !similar(&now, &initial)) {
+                    if self.quiet_page(id, short).await.is_ok_and(|now| !similar(&now, &initial)) {
                         self.undo_probe(id).await;
                     }
                     return None;
@@ -259,13 +275,17 @@ impl Core {
         let (mut history, mut previous) = (initial.clone(), initial.clone());
         let (mut ups, mut top, mut valid, mut still) = (0, false, true, false);
         'scroll: while history.len() < want {
-            self.wheel(id, true, NOTCHES);
+            self.wheel(id, true, NOTCHES)?;
             ups += NOTCHES;
             let started = Instant::now();
             loop {
-                let Some((next, step_over)) = self.next_page(id, started, &mut pace, deadline, true).await else {
-                    valid = false;
-                    break 'scroll;
+                let (next, step_over) = match self.next_page(id, started, &mut pace, deadline, true).await {
+                    Ok(page) => page,
+                    Err(Stop::Unsafe) => return None,
+                    Err(Stop::Interrupted) => {
+                        valid = false;
+                        break 'scroll;
+                    }
                 };
                 match merge_up(&mut history, &previous, &next) {
                     Merge::Advanced(_) => {
@@ -275,9 +295,13 @@ impl Core {
                     // A slow redraw looks like the top: believe it after two quiet
                     // steps and then a quiet second (wheel events may still be queued).
                     Merge::Unchanged if step_over && still => {
-                        let Some(last) = self.quiet_page(id, deadline).await else {
-                            valid = false;
-                            break 'scroll;
+                        let last = match self.quiet_page(id, deadline).await {
+                            Ok(page) => page,
+                            Err(Stop::Unsafe) => return None,
+                            Err(Stop::Interrupted) => {
+                                valid = false;
+                                break 'scroll;
+                            }
                         };
                         if !matches!(merge_up(&mut history, &previous, &last), Merge::Advanced(_)) {
                             top = true;
@@ -298,26 +322,23 @@ impl Core {
                 }
             }
         }
-        self.wheel(id, false, ups);
+        self.wheel(id, false, ups)?;
         let restored = self.put_back(id, &initial, &mut pace, ups).await;
         (valid && restored).then_some(Capture { rows: history, screen: initial.len(), top })
     }
 
     /// The probe moved a view someone scrolled up: one notch back, then let it draw.
     async fn undo_probe(&self, id: u32) {
-        self.wheel(id, true, 1);
-        let _ = self.quiet_page(id, Instant::now() + MAX_PACE * 2).await;
-    }
-
-    fn wheel(&self, id: u32, up: bool, notches: usize) {
-        let st = self.lock();
-        if let (Some(screen), Some(link)) = (st.screens.get(&id), st.link(id)) {
-            link.input(id, &screen.wheel(up).repeat(notches));
+        if self.wheel(id, true, 1).is_some() {
+            let _ = self.quiet_page(id, Instant::now() + MAX_PACE * 2).await;
         }
     }
 
-    fn rows(&self, id: u32) -> Option<Vec<String>> {
-        self.lock().screens.get(&id).map(|s| s.screen_rows())
+    fn wheel(&self, id: u32, up: bool, notches: usize) -> Option<()> {
+        let st = self.lock();
+        let screen = scrollable(&st, id)?;
+        st.link(id)?.input(id, &screen.wheel(up).repeat(notches));
+        Some(())
     }
 
     /// A person pressed a key: stop scrolling (the key goes in after we put the view back).
@@ -328,13 +349,12 @@ impl Core {
     /// The screen once output has gone quiet.
     async fn settled(&self, id: u32, deadline: Instant) -> Option<Vec<String>> {
         loop {
-            let quiet = {
+            {
                 let st = self.lock();
-                let sync = st.screens.get(&id).is_some_and(|s| s.dec_mode(2026));
-                st.last_output.get(&id).is_none_or(|t| t.elapsed() >= SETTLE) && !sync
-            };
-            if quiet {
-                return self.rows(id);
+                let screen = scrollable(&st, id)?;
+                if st.last_output.get(&id).is_none_or(|t| t.elapsed() >= SETTLE) && !screen.dec_mode(2026) {
+                    return Some(screen.screen_rows());
+                }
             }
             if Instant::now() >= deadline || self.interrupted(id) {
                 return None;
@@ -354,38 +374,38 @@ impl Core {
         pace: &mut Duration,
         deadline: Instant,
         stoppable: bool,
-    ) -> Option<(Vec<String>, bool)> {
+    ) -> Result<(Vec<String>, bool), Stop> {
         let seen = self.lock().output_seq.get(&id).copied();
         let mut measured = false;
         loop {
             tokio::time::sleep(Duration::from_millis(5)).await;
-            if Instant::now() >= deadline || (stoppable && self.interrupted(id)) {
-                return None;
-            }
-            let (printed, quiet) = {
+            {
                 let st = self.lock();
-                let sync = st.screens.get(&id).is_some_and(|s| s.dec_mode(2026));
-                let quiet = st.last_output.get(&id).is_none_or(|t| t.elapsed() >= SETTLE) && !sync;
-                (st.output_seq.get(&id).copied() != seen, quiet)
-            };
-            if printed && !measured {
-                measured = true;
-                *pace = (*pace).max(started.elapsed() * 3).min(MAX_PACE);
-            }
-            let over = started.elapsed() >= *pace;
-            if (printed && quiet) || (!printed && over) {
-                return Some((self.rows(id)?, over));
+                let screen = scrollable(&st, id).ok_or(Stop::Unsafe)?;
+                if Instant::now() >= deadline || (stoppable && st.gates.get(&id).is_some_and(|g| g.has_held())) {
+                    return Err(Stop::Interrupted);
+                }
+                let quiet = st.last_output.get(&id).is_none_or(|t| t.elapsed() >= SETTLE) && !screen.dec_mode(2026);
+                let printed = st.output_seq.get(&id).copied() != seen;
+                if printed && !measured {
+                    measured = true;
+                    *pace = (*pace).max(started.elapsed() * 3).min(MAX_PACE);
+                }
+                let over = started.elapsed() >= *pace;
+                if (printed && quiet) || (!printed && over) {
+                    return Ok((screen.screen_rows(), over));
+                }
             }
         }
     }
 
     /// The screen once a whole `MAX_PACE` passed with nothing printed: every
     /// queued wheel step has been drawn.
-    async fn quiet_page(&self, id: u32, deadline: Instant) -> Option<Vec<String>> {
+    async fn quiet_page(&self, id: u32, deadline: Instant) -> Result<Vec<String>, Stop> {
         loop {
             let mut quiet = MAX_PACE;
             if let (rows, true) = self.next_page(id, Instant::now(), &mut quiet, deadline, false).await? {
-                return Some(rows);
+                return Ok(rows);
             }
         }
     }
@@ -395,20 +415,20 @@ impl Core {
     async fn put_back(&self, id: u32, initial: &[String], pace: &mut Duration, steps: usize) -> bool {
         let deadline = Instant::now() + RESTORE_MAX.max(*pace * steps as u32 + MAX_PACE);
         loop {
-            let Some((rows, over)) = self.next_page(id, Instant::now(), pace, deadline, false).await else {
+            let Ok((rows, over)) = self.next_page(id, Instant::now(), pace, deadline, false).await else {
                 return false;
             };
             if similar(&rows, initial) {
                 // A slow app may still have wheel events queued: believe it once
                 // a whole second passed with nothing printed.
                 match self.quiet_page(id, deadline).await {
-                    Some(rows) if similar(&rows, initial) => return true,
-                    Some(_) => continue,
-                    None => return false,
+                    Ok(rows) if similar(&rows, initial) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
                 }
             }
-            if over {
-                self.wheel(id, false, (initial.len() / 2).max(1));
+            if over && self.wheel(id, false, (initial.len() / 2).max(1)).is_none() {
+                return false;
             }
         }
     }
@@ -429,6 +449,50 @@ mod tests {
     use super::*;
 
     const W: usize = 20;
+
+    #[tokio::test]
+    async fn an_unsafe_wait_stays_distinct_from_interruption_after_the_app_is_idle() {
+        let root = std::env::temp_dir().join(format!("hc-stitch-{}", crate::platform::random_hex()));
+        let paths = crate::paths::Paths {
+            state: root.join("state"),
+            config: root.join("config.toml"),
+            socket: root.join("run/core.sock"),
+            holder_socket: root.join("run/core.holder.sock"),
+        };
+        paths.create_dirs().unwrap();
+        let core = Core::start(paths, crate::api::CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+        let id = {
+            let mut st = core.lock();
+            let id = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0)
+                .unwrap();
+            st.reg.terminals.get_mut(&id).unwrap().status =
+                Some(serde_json::from_value(serde_json::json!({"state": "working"})).unwrap());
+            let mut screen = ghostty_vt::Terminal::new(20, 4, 4096);
+            screen.write(b"\x1b[?1049h\x1b[?1000h\x1b[?1006hready");
+            st.screens.insert(id, screen);
+            id
+        };
+        let mut pace = STEP;
+        let unsafe_stop = core.next_page(id, Instant::now(), &mut pace, Instant::now() + MAX_PACE, false).await;
+        {
+            let mut st = core.lock();
+            st.reg.terminals.get_mut(&id).unwrap().status = None;
+            let gate = st.gates.entry(id).or_default();
+            gate.set_busy(true);
+            gate.viewer(b"x", true);
+        }
+        let interrupted = core.next_page(id, Instant::now(), &mut pace, Instant::now() + MAX_PACE, true).await;
+        drop(core);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            format!("{unsafe_stop:?}"),
+            "Err(Unsafe)",
+            "an observed unsafe stop must keep its reason after idle, so restoration cannot revive the read"
+        );
+        assert_eq!(format!("{interrupted:?}"), "Err(Interrupted)", "a person's keys must still allow restoration");
+    }
 
     fn page(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|l| format!("{l:<W$}")).collect()
