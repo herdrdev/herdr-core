@@ -360,6 +360,40 @@ fn restarting_waits_for_the_old_cores_lock_after_its_connection_closes() {
 }
 
 #[test]
+fn stopping_waits_for_the_old_cores_lock_after_its_connection_closes() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let s = Session::new();
+    let state = s.root.join("state/herdr-core/test");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(s.socket().parent().unwrap()).unwrap();
+    let lock = std::fs::File::create(state.join("core.lock")).unwrap();
+    assert!(herdr_core::platform::try_lock(&lock));
+    let listener = UnixListener::bind(s.socket()).unwrap();
+    let socket = s.socket();
+    let old = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "server.stop");
+        writeln!(stream, "{}", serde_json::json!({"id": 1, "result": {"stopped": true}})).unwrap();
+        drop(listener);
+        std::fs::remove_file(socket).unwrap();
+        drop(stream);
+        // Runtime teardown closes clients before serve's lock is dropped.
+        std::thread::sleep(Duration::from_millis(400));
+        drop(lock);
+    });
+    let out = s.hc(&["server", "stop"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let after = std::fs::File::open(state.join("core.lock")).unwrap();
+    assert!(herdr_core::platform::try_lock(&after), "stop returned while the old core still held its lock");
+    old.join().unwrap();
+}
+
+#[test]
 fn finished_terminals_and_ids_survive_server_stop() {
     let s = Session::new();
     let done = run(&s, &["sh", "-c", "echo bye"]);
