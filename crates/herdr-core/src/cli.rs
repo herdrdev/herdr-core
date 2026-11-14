@@ -700,13 +700,90 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
 fn connect(paths: &Paths) -> Result<(), RpcError> {
     let stream = crate::platform::connect_for_app(paths)?;
     let mut to_core = stream.try_clone().map_err(|e| RpcError::internal(e.to_string()))?;
+    let owed = std::sync::Arc::new(std::sync::Mutex::new(Owed::default()));
+    let input = owed.clone();
     std::thread::spawn(move || {
-        pump(&mut *crate::platform::console::stdin(), &mut to_core);
-        let _ = to_core.shutdown(std::net::Shutdown::Write);
+        forward(&mut std::io::BufReader::new(&mut *crate::platform::console::stdin()), &mut to_core, &input);
+        let mut owed = input.lock().unwrap();
+        owed.input_done = true;
+        // A pipe can't half-close, so on Windows the core never sees this end:
+        // close once every plain request has its reply.
+        if cfg!(unix) || owed.replies == 0 {
+            let _ = to_core.shutdown(std::net::Shutdown::Write);
+        }
     });
     // Unbuffered: std's stdout holds bytes until a newline, and frames have none.
-    pump(&mut &stream, &mut *crate::platform::console::stdout());
+    let mut out = crate::platform::console::stdout();
+    let mut buf = [0u8; 64 * 1024];
+    let mut counting = true;
+    while let Ok(n @ 1..) = (&stream).read(&mut buf) {
+        if std::io::Write::write_all(&mut *out, &buf[..n]).is_err() {
+            break;
+        }
+        let mut owed = owed.lock().unwrap();
+        // Plain replies are one line each, in order.
+        for _ in buf[..n].iter().filter(|b| **b == b'\n') {
+            if !counting {
+                break;
+            }
+            owed.replies = owed.replies.saturating_sub(1);
+            counting = !(owed.plain_ended && owed.replies == 0);
+        }
+        if cfg!(windows) && owed.input_done && owed.replies == 0 {
+            break;
+        }
+    }
     Ok(())
+}
+
+/// Plain-mode replies the caller is still owed.
+#[derive(Default)]
+struct Owed {
+    replies: usize,
+    /// A framed `hello` or `events.subscribe` was sent: nothing after it is a plain reply.
+    plain_ended: bool,
+    input_done: bool,
+}
+
+/// Forwards the caller's input, counting the plain-mode lines the core answers.
+fn forward(from: &mut impl std::io::BufRead, to: &mut impl std::io::Write, owed: &std::sync::Mutex<Owed>) {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if !matches!(from.read_until(b'\n', &mut line), Ok(1..)) {
+            return;
+        }
+        // Input that ends mid-line still ends that line, as EOF does on Unix.
+        if line.last() != Some(&b'\n') {
+            line.push(b'\n');
+        }
+        let (answered, last) = plain_line(&line);
+        {
+            let mut owed = owed.lock().unwrap();
+            owed.replies += usize::from(answered);
+            owed.plain_ended |= last;
+        }
+        if to.write_all(&line).is_err() {
+            return;
+        }
+        if last {
+            return pump(from, to);
+        }
+    }
+}
+
+/// Whether the core answers this plain-mode line, and whether plain mode ends after it.
+fn plain_line(line: &[u8]) -> (bool, bool) {
+    let text = String::from_utf8_lossy(line);
+    if text.trim().is_empty() {
+        return (false, false);
+    }
+    let Ok(request) = serde_json::from_str::<Value>(&text) else { return (true, false) };
+    let method = request["method"].as_str();
+    // A notification (a method, no id) is the one message without a reply.
+    let answered = method.is_none() || request.get("id").is_some();
+    let last = method == Some("events.subscribe") || (method == Some("hello") && request["params"]["framed"] == true);
+    (answered, last)
 }
 
 fn pump(from: &mut impl Read, to: &mut impl std::io::Write) {

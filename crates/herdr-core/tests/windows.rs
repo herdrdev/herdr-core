@@ -398,6 +398,63 @@ fn only_this_account_may_open_the_cores_pipe() {
     }
 }
 
+/// `hc connect` fed by `stdin`, its output once it exits (or a failure after 20 s).
+fn connect_once(s: &Session, stdin: std::process::Stdio, input: Option<&str>) -> String {
+    let mut child =
+        cmd(&s.name, &s.root).arg("connect").stdin(stdin).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    if let Some(input) = input {
+        // Closed right after: `printf '%s\n' "$REQ" | hc connect`.
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    }
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output()));
+    let Ok(out) = rx.recv_timeout(Duration::from_secs(20)) else {
+        let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+        panic!("hc connect did not exit after its input ended");
+    };
+    let out = out.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn connect_answers_a_caller_that_is_done_sending() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let get = |id: u32| json!({"jsonrpc": "2.0", "id": id, "method": "doc.get", "params": {"name": "probe"}});
+    let file = s.root.join("request.json");
+    std::fs::write(&file, format!("{}\n", get(1))).unwrap();
+    for _ in 0..5 {
+        for out in [
+            connect_once(&s, std::process::Stdio::piped(), Some(&format!("{}\n", get(1)))),
+            connect_once(&s, std::fs::File::open(&file).unwrap().into(), None),
+        ] {
+            let reply: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out:?}"));
+            assert_eq!(reply["id"], 1, "{out}");
+            assert_eq!(reply["result"]["version"], 0, "{out}");
+        }
+        // Nothing owed at all: its input ends before it ever reads.
+        assert_eq!(connect_once(&s, std::process::Stdio::null(), None), "");
+    }
+    // One reply per answered line: none for a notification or a blank line, even without a final newline.
+    let notification = json!({"jsonrpc": "2.0", "method": "doc.get", "params": {"name": "probe"}});
+    let input = format!("{}\n{notification}\n\nnot json\n{}", get(1), get(2));
+    let out = connect_once(&s, std::process::Stdio::piped(), Some(&input));
+    let ids: Vec<Value> = out.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].clone()).collect();
+    assert_eq!(ids, [json!(1), Value::Null, json!(2)], "{out}");
+    // A subscription or a framed hello still ends with its own reply, as on Unix.
+    for last in [
+        json!({"jsonrpc": "2.0", "id": 3, "method": "events.subscribe", "params": {}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "hello", "params": {"framed": true}}),
+    ] {
+        let out = connect_once(&s, std::process::Stdio::piped(), Some(&format!("{last}\n")));
+        let first = out.lines().next().unwrap_or_default();
+        let reply: Value = serde_json::from_str(first).unwrap_or_else(|e| panic!("{e}: {out:?}"));
+        assert_eq!(reply["id"], 3, "{out}");
+    }
+}
+
 #[test]
 fn status_does_not_start_a_core() {
     let s = Session::new();
