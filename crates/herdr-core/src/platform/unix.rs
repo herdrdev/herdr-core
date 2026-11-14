@@ -41,10 +41,6 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Stream::connect(path)
 }
 
-pub fn may_autostart(_explicit: bool) -> Result<(), crate::rpc::RpcError> {
-    Ok(())
-}
-
 pub fn status_may_start_core() -> bool {
     true
 }
