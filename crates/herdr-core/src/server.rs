@@ -51,6 +51,11 @@ pub fn serve() -> io::Result<()> {
     if !platform::try_lock(&lock) {
         return Ok(());
     }
+    // A core of another state on this socket (another HOME or XDG_STATE_HOME):
+    // adopting would take its holders and end their programs.
+    if crate::client::connect_existing(&paths).is_some() {
+        return Err(io::Error::other(format!("another core already listens at {}", paths.socket.display())));
+    }
     // Where we listen, for clients whose env points elsewhere.
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;

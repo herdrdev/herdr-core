@@ -79,6 +79,36 @@ fn a_shell_looking_at_the_wrong_socket_is_told_where_the_core_is() {
 }
 
 #[test]
+fn a_core_with_other_state_leaves_a_running_core_and_its_programs_alone() {
+    use std::time::{Duration, Instant};
+    let s = Session::new();
+    let t = run(&s, &["sleep", "100"]);
+    let core = s.json(&["server", "status"])["pid"].clone();
+    // The same socket from a login with another HOME or XDG_STATE_HOME. Its own serve,
+    // not a successful intermediate launchd detach.
+    let mut other = s
+        .cmd()
+        .env("XDG_STATE_HOME", s.root.join("other"))
+        .env("SSH_CONNECTION", "test-direct")
+        .env("HC_LAUNCHD_DIRECT", std::process::id().to_string())
+        .arg("serve")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while other.try_wait().unwrap().is_none() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = other.kill();
+    let out = other.wait_with_output().unwrap();
+    assert!(out.status.code().is_some(), "the second core kept serving");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(&s.socket().display().to_string()), "{err}");
+    assert_eq!(s.json(&["server", "status"])["pid"], core);
+    assert_eq!(s.json(&["get", &t])["state"], "live");
+}
+
+#[test]
 fn a_label_filtered_subscriber_hears_a_terminal_leave_its_filter() {
     let s = Session::new();
     let t = s.json(&["run", "--bg", "--label", "team=red", "sleep", "100"])["address"].as_str().unwrap().to_string();
