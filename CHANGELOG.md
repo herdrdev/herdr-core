@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### New
+- On macOS, `HC_NO_LAUNCHD=1` keeps a core out of launchd: for an app that supervises its own core from a LaunchAgent or login item it already has, so the core doesn't add a second Background Items entry. Programs in its terminals inherit it, so a core one of them starts stays out too.
+
 ## [0.1.21] - 2026-11-12
 
 ### New
