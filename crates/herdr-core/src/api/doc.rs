@@ -12,28 +12,29 @@ pub(super) async fn doc_set(core: Ctx<'_>, p: DocSetParams) -> Result<DocSetResu
         return Err(RpcError::invalid_params("document exceeds 1 MiB of JSON"));
     }
     let mut st = core.lock();
-    let current = st.docs.get(&p.name).map_or(0, |d| d.version);
+    let name = p.name;
+    let current = st.docs.get(&name).map_or(0, |d| d.version);
     if p.version != current {
         return Err(RpcError::new(
             "conflict",
-            format!("document {:?} is at version {current}, not {}", p.name, p.version),
+            format!("document {name:?} is at version {current}, not {}", p.version),
             "read doc.get and retry with its version",
         ));
     }
     let version = current.checked_add(1).ok_or_else(|| RpcError::internal("document version exhausted"))?;
-    let previous = st.docs.insert(p.name.clone(), DocGetResult { value: p.value, version });
+    let previous = st.docs.insert(name.clone(), DocGetResult { value: p.value, version });
     let bytes = serde_json::to_vec(&st.docs).expect("documents serialize");
     if let Err(e) = write_atomic(&core.paths.state.join("docs.json"), &bytes) {
         match previous {
             Some(doc) => {
-                st.docs.insert(p.name, doc);
+                st.docs.insert(name, doc);
             }
             None => {
-                st.docs.remove(&p.name);
+                st.docs.remove(&name);
             }
         }
         return Err(RpcError::internal(format!("cannot save document: {e}")));
     }
-    core.doc_event(&mut st, json!({"name": p.name, "version": version}), None);
+    core.doc_event(&mut st, &name, json!({"name": name, "version": version}), None);
     Ok(DocSetResult { version })
 }

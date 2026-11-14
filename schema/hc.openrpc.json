@@ -3658,6 +3658,19 @@
           }
         },
         {
+          "description": "Documents by name (repeatable); a name ending in `*` is a prefix. Naming\nnarrows, so documents alone hear only them — name a terminal for both.",
+          "name": "docs",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Documents by name (repeatable); a name ending in `*` is a prefix. Naming\nnarrows, so documents alone hear only them — name a terminal for both.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
           "description": "Only terminals carrying all of these labels (repeatable).",
           "name": "labels",
           "required": false,

@@ -454,6 +454,11 @@ pub struct SubscribeParams {
     #[serde(default, with = "label_map")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub labels: Vec<Label>,
+    /// Documents by name (repeatable); a name ending in `*` is a prefix. Naming
+    /// narrows, so documents alone hear only them — name a terminal for both.
+    #[arg(long = "doc", value_name = "NAME")]
+    #[serde(default)]
+    pub docs: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]

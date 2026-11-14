@@ -539,7 +539,8 @@ fn mirror_event(core: &Core, m: &Machine, p: Value) {
     if kind == "doc" {
         // Only this machine, not docs it in turn watches on a third core.
         if p.get("machine").is_none() {
-            core.doc_event(&mut st, data, Some(&name));
+            let doc = data["name"].as_str().unwrap_or_default().to_string();
+            core.doc_event(&mut st, &doc, data, Some(&name));
         }
         return;
     }
