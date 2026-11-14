@@ -272,6 +272,8 @@ mod ffi {
 
 /// Unfinished escape sequences kept so a snapshot can be taken at any byte.
 const CONTINUATION_MAX_BYTES: usize = 64 * 1024;
+/// Titles kept by XTWINOPS 22, as in xterm; a push past it drops the oldest.
+const TITLE_STACK_DEPTH: usize = 10;
 /// Cell size reported in pixels until a viewer tells us its own.
 const DEFAULT_CELL: (u32, u32) = (10, 20);
 /// Ghostty's default theme, answered until a viewer tells us its own colors.
@@ -310,6 +312,10 @@ struct Hooks {
 pub struct Terminal {
     raw: ffi::Terminal,
     hooks: Box<Hooks>,
+    /// XTWINOPS 22's saved titles, oldest first: libghostty parses 22 and 23
+    /// but keeps no stack. `None` is an entry that saved only the icon title,
+    /// which a terminal here doesn't have.
+    titles: Vec<Option<String>>,
 }
 
 // The handle is only touched through `&mut self` / `&self`; libghostty keeps no thread state.
@@ -403,7 +409,7 @@ impl Terminal {
             cell: DEFAULT_CELL,
             dark: true,
         });
-        let term = Terminal { raw, hooks };
+        let term = Terminal { raw, hooks, titles: Vec::new() };
         let ud: *const Hooks = &*term.hooks;
         let continuation = CONTINUATION_MAX_BYTES;
         unsafe {
@@ -628,6 +634,51 @@ impl Terminal {
             return String::new();
         }
         String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    }
+
+    /// XTWINOPS 22 (`CSI 22 ; which ; index t`), as xterm does it: `which` 0
+    /// or 2 saves the window title, 1 only the icon title, which takes a slot
+    /// all the same. `index` 0 pushes; n replaces the nth saved entry.
+    pub fn push_title(&mut self, which: u16, index: u16) {
+        let entry = matches!(which, 0 | 2).then(|| self.title());
+        if index == 0 {
+            if self.titles.len() == TITLE_STACK_DEPTH {
+                self.titles.remove(0);
+            }
+            self.titles.push(entry);
+        } else if let Some(slot) = self.titles.get_mut(index as usize - 1) {
+            *slot = entry;
+        }
+    }
+
+    /// XTWINOPS 23: `index` 0 pops the newest entry, n reads the nth and keeps
+    /// it. Returns the window title to set again, for `which` 0 or 2 when the
+    /// entry saved one; nothing on an empty stack. The caller sets it, so it
+    /// reaches the screen and viewers like any title the program sets.
+    pub fn pop_title(&mut self, which: u16, index: u16) -> Option<String> {
+        let entry = match index {
+            0 => self.titles.pop()?,
+            n => self.titles.get(n as usize - 1)?.clone(),
+        };
+        entry.filter(|_| matches!(which, 0 | 2))
+    }
+
+    /// The saved titles, oldest first, to carry across a handover.
+    pub fn title_stack(&self) -> &[Option<String>] {
+        &self.titles
+    }
+
+    /// A saved stack, read back from disk. A title holding a control character
+    /// never came from an OSC and would reach every viewer: its entry keeps its
+    /// slot but restores nothing.
+    pub fn set_title_stack(&mut self, mut titles: Vec<Option<String>>) {
+        for t in &mut titles {
+            if t.as_deref().is_some_and(|s| s.chars().any(char::is_control)) {
+                *t = None;
+            }
+        }
+        titles.drain(..titles.len().saturating_sub(TITLE_STACK_DEPTH));
+        self.titles = titles;
     }
 
     /// The active screen and its scrollback as plain text, soft wraps joined.

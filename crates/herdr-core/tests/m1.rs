@@ -649,3 +649,23 @@ fn title_changes_are_saved_shortly_after_not_right_away() {
     assert_eq!(saved(), "", "saved on a title change");
     wait_until("title saved", || saved() == "spin 9");
 }
+
+#[test]
+fn a_title_a_program_saved_comes_back_when_it_restores_it_even_after_a_restart() {
+    let s = Session::new();
+    let body = script(
+        &s,
+        "printf '\\033]0;shell\\007\\033[22;0t\\033]0;editor\\007'; w quit; printf '\\033[23;0t'; \
+         w open; printf '\\033[22;0t\\033]0;editor again\\007'; w quit-again; printf '\\033[23;0t'; sleep 100",
+    );
+    let t = run(&s, &["sh", "-c", &body]);
+    wait_until("the editor's title", || get(&s, &t)["title"] == "editor");
+    touch(&s, "quit");
+    wait_until("the saved title", || get(&s, &t)["title"] == "shell");
+    touch(&s, "open");
+    wait_until("the editor's title again", || get(&s, &t)["title"] == "editor again");
+    s.json(&["server", "restart"]);
+    assert_eq!(get(&s, &t)["title"], "editor again");
+    touch(&s, "quit-again");
+    wait_until("the title saved before the restart", || get(&s, &t)["title"] == "shell");
+}

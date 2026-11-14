@@ -216,6 +216,9 @@ pub struct Registry {
     pub drafts: BTreeMap<u32, crate::input::SavedGate>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub replies: BTreeMap<u32, Vec<u8>>,
+    /// Title stacks (XTWINOPS 22) saved only for planned handover, with the screens.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub titles: BTreeMap<u32, Vec<Option<String>>>,
 }
 
 #[derive(Default)]
