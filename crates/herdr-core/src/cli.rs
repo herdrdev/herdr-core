@@ -1,8 +1,8 @@
 //! `hc`: one API call per command. Tables for people, JSON when piped or `--json`.
 
 use crate::api::{
-    AttachParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams, ReadParams, RunParams,
-    SendParams, SubscribeParams, TerminalParams, WaitParams,
+    AttachParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams, ReadParams,
+    ReportParams, RunParams, SendParams, SubscribeParams, TerminalParams, WaitParams,
 };
 use crate::client;
 use crate::paths::Paths;
@@ -51,6 +51,8 @@ enum Cmd {
     Label(LabelParams),
     /// Keep a live terminal after loss (--off disables).
     Keep(crate::api::KeepParams),
+    /// Report status for a terminal from outside its screen (an agent's hook): hc report state=working:id=bg.
+    Report(ReportParams),
     /// Paste text into a terminal and press Enter (waits for a person's unfinished draft).
     Send(SendParams),
     /// Wait for your children (--children any) or one terminal; a message to you also ends it.
@@ -454,6 +456,16 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = describe(&r);
             Out { json: r, human }
         }
+        Cmd::Report(mut p) => {
+            if p.terminal.is_empty() {
+                p.terminal = client::terminal_id().ok_or_else(|| {
+                    RpcError::new("needs_target", "not inside an hc terminal", "pass --terminal t7 or a name")
+                })?;
+            }
+            let r = call("terminal.report", to(&p))?;
+            let human = describe(&r);
+            Out { json: r, human }
+        }
         Cmd::Read(mut p) => {
             p.terminal = pick(p.terminal)?;
             p.caller = Some(caller());
@@ -803,6 +815,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("kill", "terminal.kill"),
     ("rm", "terminal.rm"),
     ("label", "terminal.label"),
+    ("report", "terminal.report"),
     ("keep", "terminal.keep"),
     ("send", "terminal.send"),
     ("wait", "terminal.wait"),

@@ -463,6 +463,22 @@ Options:
   -h, --help           Print help
 ```
 
+## hc report
+
+```text
+Report status for a terminal from outside its screen (an agent's hook): hc report state=working:id=bg
+
+Usage: hc report [OPTIONS] <BODY>
+
+Arguments:
+  <BODY>  The OSC 7501 report as a program would send it: `state=working:id=bg`
+
+Options:
+      --json                 JSON output even in a terminal
+      --terminal <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`. Default: the one you run in
+  -h, --help                 Print help
+```
+
 ## hc rm
 
 ```text

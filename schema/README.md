@@ -217,3 +217,12 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+`terminal.report` (`hc report`) applies one 7501 body to a live terminal as if
+its program had written it, for a process with no terminal to write to, such
+as an agent's hook. It goes through the same parser and the same records, and
+attached viewers get it in their stream, so a report sent this way and one
+written to the screen are indistinguishable. It is saved at once. One exception:
+after a core crash, the reports in the screen's recent output are applied
+again, so they win over an earlier `terminal.report` of the same record. A hook
+should report a record of its own (`id=bg`), not one its program reports.
