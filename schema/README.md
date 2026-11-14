@@ -200,7 +200,11 @@ Unfiltered event subscribers receive changes as:
 
 There is no `terminal` on a doc event. Changes on an added machine arrive in
 the same stream with `machine: "rohan"` (this core's name for it). Terminal,
-parent and label filters exclude doc events. The event carries no value;
+parent and label filters exclude doc events. A subscription may also name the
+documents it wants — `docs: ["name", "prefix*"]`, where a name ending in `*`
+is a prefix — and hears theirs; naming narrows, as it does in every other
+dimension, so naming documents and no terminal asks for documents alone,
+and naming both hears both. A subscriber that names no document is unchanged. The event carries no value;
 call `doc.get` to read it, using `on` for another machine.
 
 Subscribe before reading. Read documents after subscribing or reconnecting,

@@ -26,6 +26,10 @@ pub struct Filter {
     /// Children of this terminal (`t3`).
     pub children_of: Option<String>,
     pub labels: BTreeMap<String, String>,
+    /// Documents this subscriber asked for, by name or by a prefix ending in `*`
+    /// (`piher.cmd.t7`, `piher.*`). Empty hears every document event, as it always
+    /// has, but only while no terminal is selected: a document concerns no terminal.
+    pub docs: Vec<String>,
     /// A core that dialed in: only what is here. What it hears from us it
     /// passes on, so two machines that added each other would echo forever.
     pub here_only: bool,
@@ -38,6 +42,49 @@ impl Filter {
             && self.children_of.as_ref().is_none_or(|p| record["parent"] == p.as_str())
             && self.labels.iter().all(|(k, v)| record["labels"][k] == v.as_str())
     }
+
+    /// No terminal selection at all: this subscriber asked for everything.
+    fn all_terminals(&self) -> bool {
+        self.terminal.is_none() && self.children_of.is_none() && self.labels.is_empty()
+    }
+
+    /// Whether this subscriber hears the document event for `name`: the names it
+    /// asked for, or every one when it asked for none and selected no terminal.
+    fn wants_doc(&self, name: &str) -> bool {
+        if self.docs.is_empty() {
+            return self.all_terminals();
+        }
+        self.docs.iter().any(|pattern| match pattern.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => name == pattern,
+        })
+    }
+
+    /// Whether a lost document stream concerns it: a document reader (it named
+    /// names) or a subscriber that hears everything.
+    fn wants_documents(&self) -> bool {
+        !self.docs.is_empty() || self.all_terminals()
+    }
+
+    /// Whether it wants terminal facts at all. Naming anything narrows, as it does
+    /// in every other dimension of this filter, so naming documents and no terminal
+    /// asks for documents alone; naming both asks for both.
+    fn wants_terminals(&self) -> bool {
+        self.docs.is_empty() || !self.all_terminals()
+    }
+}
+
+/// What a delivered event is about, which is what a subscriber's filter is read
+/// against: a terminal (with the record it had, when it changed) or a document.
+pub(crate) enum Target<'a> {
+    Terminal {
+        record: &'a Value,
+        was: Option<&'a Value>,
+    },
+    /// A document fact concerns a name, not a terminal: `record` is `Null`.
+    Doc {
+        name: &'a str,
+    },
 }
 
 fn record(t: &Terminal) -> Value {
@@ -121,35 +168,51 @@ impl Core {
     /// concerns: `record` is it now (or as it was, when removed), `was` before.
     pub fn deliver(&self, st: &mut State, kind: &str, address: &str, data: Value, record: &Value, was: Option<&Value>) {
         let params = json!({"type": kind, "terminal": address, "data": data});
-        self.deliver_event(st, params, record, was);
+        self.deliver_event(st, params, Target::Terminal { record, was });
     }
 
-    /// Documents concern only unfiltered subscribers, never a terminal selection.
-    pub fn doc_event(&self, st: &mut State, data: Value, machine: Option<&str>) {
+    /// Documents concern the subscribers that named them, every subscriber while
+    /// nobody names any, and never a terminal selection on its own.
+    pub fn doc_event(&self, st: &mut State, name: &str, data: Value, machine: Option<&str>) {
         let mut params = json!({"type": "doc", "data": data});
         if let Some(machine) = machine {
             params["machine"] = machine.into();
         }
-        self.deliver_event(st, params, &Value::Null, None);
+        self.deliver_event(st, params, Target::Doc { name });
     }
 
-    fn deliver_event(&self, st: &mut State, mut params: Value, record: &Value, was: Option<&Value>) {
+    fn deliver_event(&self, st: &mut State, mut params: Value, target: Target<'_>) {
         st.events.seq += 1;
         params["seq"] = st.events.seq.into();
         let afar = params["machine"].is_string() || params["terminal"].as_str().is_some_and(|a| a.contains('/'));
         let plain = notification("event", params.clone());
-        let with_record = || {
+        let with_record = |record: &Value| {
             let mut params = params.clone();
             params["data"]["record"] = record.clone();
             notification("event", params)
         };
         let mut subs = std::mem::take(&mut st.events.subs);
         subs.retain(|sub| {
-            let (now, before) = (sub.filter.matches(record), was.is_some_and(|w| sub.filter.matches(w)));
-            if (!now && !before) || (afar && sub.filter.here_only) {
+            // `record` is `Some` only for a terminal the subscriber newly matches, which
+            // is also the only case that carries the record along with the fact.
+            let (now, before, added) = match target {
+                Target::Terminal { record, was } => (
+                    sub.filter.wants_terminals() && sub.filter.matches(record),
+                    sub.filter.wants_terminals() && was.is_some_and(|w| sub.filter.matches(w)),
+                    (was.is_some() && sub.filter.wants_terminals() && sub.filter.matches(record)).then_some(record),
+                ),
+                Target::Doc { name } => (sub.filter.wants_doc(name), false, None),
+            };
+            if !now && !before {
                 return true;
             }
-            let line = if now && was.is_some() && !before { with_record() } else { plain.clone() };
+            if afar && sub.filter.here_only {
+                return true;
+            }
+            let line = match added {
+                Some(record) if !before => with_record(record),
+                _ => plain.clone(),
+            };
             match &sub.sink {
                 Sink::Framed { conn, channel } => {
                     let fresh = || notification("missed", self.snapshot(st, &sub.filter));
@@ -180,7 +243,7 @@ impl Core {
     pub fn documents_missed(&self, st: &mut State) {
         let mut subs = std::mem::take(&mut st.events.subs);
         subs.retain(|sub| {
-            if !sub.filter.matches(&Value::Null) || sub.filter.here_only {
+            if !sub.filter.wants_documents() || sub.filter.here_only {
                 return true;
             }
             let line = notification("missed", self.snapshot(st, &sub.filter));
@@ -215,4 +278,56 @@ impl Core {
 
 pub fn heartbeat_line(seq: u64) -> String {
     notification("heartbeat", json!({"seq": seq}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Filter;
+
+    fn filter(docs: &[&str], terminal: Option<&str>) -> Filter {
+        Filter {
+            terminal: terminal.map(String::from),
+            docs: docs.iter().map(|p| (*p).to_string()).collect(),
+            ..Filter::default()
+        }
+    }
+
+    #[test]
+    fn a_document_subscriber_hears_the_names_it_named() {
+        let f = filter(&["app", "job.*"], None);
+        assert!(f.wants_doc("app"));
+        assert!(!f.wants_doc("app2"), "an exact name is not a prefix");
+        assert!(f.wants_doc("job.7"), "a trailing star is a prefix");
+        assert!(f.wants_doc("job."), "an empty tail still matches the prefix");
+        assert!(!f.wants_doc("jobs"), "the prefix includes its dot");
+    }
+
+    #[test]
+    fn no_names_means_every_document_unless_a_terminal_is_selected() {
+        assert!(filter(&[], None).wants_doc("anything"));
+        assert!(!filter(&[], Some("t7")).wants_doc("anything"));
+        assert!(filter(&["app"], Some("t7")).wants_doc("app"), "a named document is heard beside a terminal");
+    }
+
+    #[test]
+    fn naming_documents_alone_asks_for_documents_alone() {
+        let docs_only = filter(&["app"], None);
+        assert!(!docs_only.wants_terminals(), "nothing asked for terminals");
+        assert!(docs_only.wants_doc("app"));
+        let both = filter(&["app"], Some("t7"));
+        assert!(both.wants_terminals(), "a terminal was named too");
+        assert!(both.wants_doc("app"));
+        let terminals_only = filter(&[], Some("t7"));
+        assert!(terminals_only.wants_terminals());
+        assert!(!terminals_only.wants_doc("app"), "it named no document");
+        let everything = filter(&[], None);
+        assert!(everything.wants_terminals() && everything.wants_doc("app"));
+    }
+
+    #[test]
+    fn a_document_reader_cares_about_a_lost_stream() {
+        assert!(filter(&[], None).wants_documents());
+        assert!(!filter(&[], Some("t7")).wants_documents());
+        assert!(filter(&["app"], Some("t7")).wants_documents());
+    }
 }

@@ -592,7 +592,7 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
     };
     let terminal = p.terminal.as_deref().map(address).transpose()?;
     let children_of = p.children_of.as_deref().map(address).transpose()?;
-    let filter = Filter { terminal, children_of, labels: labels(&p.labels), here_only: from_afar(core) };
+    let filter = Filter { terminal, children_of, labels: labels(&p.labels), docs: p.docs, here_only: from_afar(core) };
     let (sink, channel) = match (core.conn, core.plain) {
         (Some(conn), _) => {
             let channel = conn.new_channel();

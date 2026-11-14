@@ -6,6 +6,28 @@ use common::*;
 use serde_json::json;
 
 #[test]
+fn a_subscription_can_ask_for_documents_by_name() {
+    let s = Session::new();
+    s.json(&["server", "status"]);
+    let mut c = s.connect();
+    // One subscriber names a document, the other asks for everything.
+    let mut named = s.connect();
+    named.call(1, "events.subscribe", json!({"docs": ["app"]}));
+    let mut all = s.connect();
+    all.call(1, "events.subscribe", json!({}));
+    c.call(2, "doc.set", json!({"name": "other", "value": 1, "version": 0}));
+    c.call(3, "doc.set", json!({"name": "app", "value": 2, "version": 0}));
+    // The named subscriber skipped `other`: its first document event is `app`.
+    let named_event = next_event(&mut named, |m| m["params"]["type"] == "doc");
+    assert_eq!(named_event["params"]["data"]["name"], "app");
+    // The unfiltered one hears both, in order.
+    let first = next_event(&mut all, |m| m["params"]["type"] == "doc");
+    let second = next_event(&mut all, |m| m["params"]["type"] == "doc");
+    assert_eq!(first["params"]["data"]["name"], "other");
+    assert_eq!(second["params"]["data"]["name"], "app");
+}
+
+#[test]
 fn documents_are_versioned_persisted_and_evented() {
     let s = Session::new();
     s.json(&["server", "status"]);
