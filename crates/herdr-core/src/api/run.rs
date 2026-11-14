@@ -110,7 +110,7 @@ pub(super) async fn start(
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
-    let env = child_env(crate::platform::program_env().await, p.env.clone());
+    let env = child_env(crate::platform::program_env(p.argv.first().map(String::as_str)).await, p.env.clone());
     let identity = format!(
         "{} {}",
         env.get("TERM_PROGRAM").map_or("", String::as_str),

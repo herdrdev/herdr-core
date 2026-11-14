@@ -418,3 +418,74 @@ fn a_display_on_another_machine_stays() {
     let out = s.hc(&["exec", "echo \"[${DISPLAY-unset}]\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "[otherhost:0]\n");
 }
+
+fn write_executable(path: &std::path::Path, content: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_running_core_picks_up_newly_installed_login_path_binaries() {
+    let mut remote = Session::new();
+    let mut local = Session::new();
+    let initial_profile =
+        "export SETTLED_VAR=initial\nif [ -d \"$HOME/.local/bin\" ]; then\n    PATH=\"$HOME/.local/bin:$PATH\"\nfi\n";
+    for s in [&remote, &local] {
+        std::fs::write(s.root.join(".profile"), initial_profile).unwrap();
+    }
+    remote.env.extend([("SHELL".into(), "/bin/sh".into()), ("SETTLED_VAR".into(), "initial".into())]);
+    local.env.extend([
+        ("SHELL".into(), "/bin/sh".into()),
+        ("SETTLED_VAR".into(), "initial".into()),
+        fake_ssh(&local, &[("box", &remote)]),
+    ]);
+
+    let remote_pid = remote.json(&["server", "start"])["pid"].clone();
+    local.json(&["machine", "add", "box"]);
+    let local_pid = local.json(&["server", "status"])["pid"].clone();
+
+    for target in [&[][..], &["--on", "box"][..]] {
+        let out = local.hc(&[&["exec"], target, &["printf '%s' \"$SETTLED_VAR\""]].concat());
+        assert!(out.status.success(), "{target:?}: {out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "initial");
+    }
+
+    let (_, missing) = local.err(&["--json", "exec", "--on", "box", "--", "late-agent-bin", "ok"]);
+    assert_eq!(missing["error"]["kind"], "spawn_failed");
+
+    // Creating ~/.local/bin after core startup without editing .profile exposes new binaries cleanly.
+    write_executable(&remote.root.join(".local/bin/late-agent-bin"), "#!/bin/sh\nprintf 'agent:%s' \"$1\"\n");
+    let out = local.hc(&["exec", "--on", "box", "--", "late-agent-bin", "ok"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "agent:ok");
+
+    // Adding new directories and runtime dependencies to the login profile reaches both run (including #!/usr/bin/env)
+    // and exec without restarting either core or mutating non-PATH settled exports.
+    for s in [&remote, &local] {
+        write_executable(
+            &s.root.join("opt-rt/late-runtime-bin"),
+            "#!/bin/sh\nprintf 'rt:%s:%s\\n' \"$(basename \"$1\")\" \"$2\"\n",
+        );
+        write_executable(&s.root.join("opt-codex/late-codex-bin"), "#!/usr/bin/env late-runtime-bin\n");
+        std::fs::write(
+            s.root.join(".profile"),
+            "export SETTLED_VAR=changed\nPATH=\"$HOME/opt-codex:$HOME/opt-rt:$PATH\"\n",
+        )
+        .unwrap();
+    }
+
+    for target in [&[][..], &["--on", "box"][..]] {
+        let out = local.hc(&[&["run", "--timeout", "20"], target, &["late-codex-bin", "--no-daemon"]].concat());
+        assert!(out.status.success(), "{target:?}: {out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("rt:late-codex-bin:--no-daemon"), "{target:?}: {out:?}");
+
+        let settled = local.hc(&[&["exec"], target, &["printf '%s' \"$SETTLED_VAR\""]].concat());
+        assert!(settled.status.success(), "{target:?}: {settled:?}");
+        assert_eq!(String::from_utf8_lossy(&settled.stdout), "initial");
+    }
+
+    assert_eq!(local.json(&["server", "status"])["pid"], local_pid);
+    assert_eq!(remote.json(&["server", "status"])["pid"], remote_pid);
+}
