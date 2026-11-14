@@ -94,6 +94,8 @@ pub struct State {
     pub peer_lines: HashMap<String, (usize, Arc<crate::remote::Line>)>,
     /// Notes from other machines for parents here, until typed.
     pub afar_notes: HashMap<u32, Vec<String>>,
+    /// Provisional callback grants: (parent, machine) -> (runs pending, keep after failure).
+    pub afar_runs: HashMap<(u32, String), (usize, bool)>,
     /// What a machine must hear once its line is back (a parent here finished).
     pub machine_outbox: HashMap<String, Vec<serde_json::Value>>,
     /// When each holder was last reconnected to after our reading of it failed.

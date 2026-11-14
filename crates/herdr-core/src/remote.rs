@@ -23,7 +23,9 @@ type Sink = (Arc<Conn>, u32);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
+mod run;
 mod viewers;
+use run::forward_once;
 #[cfg(test)]
 use viewers::automatic_input;
 use viewers::{RESIZE_LOST, negotiate_resize, reattach};
@@ -1009,45 +1011,6 @@ pub async fn forward(core: &Core, m: &Machine, method: &str, params: Value) -> R
         true => forward_waiting(core, m, method, params).await,
         false => forward_once(core, m, method, params).await,
     }
-}
-
-async fn forward_once(core: &Core, m: &Machine, method: &str, mut params: Value) -> Result<Value, RpcError> {
-    if method == "terminal.run" {
-        // An older core ends a child with its parent only when asked to.
-        params["die_with_parent"] = json!(params["outlive_parent"] != true);
-    }
-    let deadline = if method == "terminal.send" { Duration::MAX } else { deadline_for(core, method, &params) };
-    let line = line(core, m).await?;
-    // An older core would read no program as "nothing to run".
-    let own_shell = params["argv"].as_array().is_none_or(Vec::is_empty) || params.get("line").is_some();
-    if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {
-        return Err(RpcError::new(
-            "needs_update",
-            format!("{}'s hc is older and can't pick its own shell", m.name),
-            format!("hc machine update {}", m.name),
-        ));
-    }
-    let reply = line.call(&m.name, method, params, deadline).await.map_err(|e| match e.kind.as_str() {
-        "unknown_method" => RpcError::new(
-            "needs_update",
-            format!("{}'s hc is older and has no {method}", m.name),
-            format!("hc machine update {}", m.name),
-        ),
-        _ => e,
-    })?;
-    // Document contents are opaque: address-shaped keys belong to the client.
-    let reply = if method.starts_with("doc.") { reply } else { localize(core, &m.name, &[], reply) };
-    // It started work there: its child may now call back and send it notes.
-    if method == "terminal.run"
-        && let Some(parent) = reply["parent"].as_str().and_then(crate::terminals::parse_id)
-    {
-        let mut st = core.lock();
-        if let Some(t) = st.reg.terminals.get_mut(&parent) {
-            t.afar.insert(m.id.clone());
-            core.save(&st);
-        }
-    }
-    Ok(reply)
 }
 
 pub async fn forward_to(core: &Core, to: &To, method: &str, params: Value) -> Result<Value, RpcError> {

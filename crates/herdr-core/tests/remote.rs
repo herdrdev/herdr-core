@@ -357,6 +357,94 @@ fn parent_with_child_on_rohan(s: &Session, child: &str) -> (String, String) {
 }
 
 #[test]
+fn a_first_foreground_remote_child_can_reach_only_its_parent() {
+    let (rohan, s) = with_rohan();
+    let parent = run(&s, &["sleep", "100"]);
+    let unrelated = run(&s, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    let probe = format!("{BIN} --json get {core_id}/{parent}");
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", &parent)
+        .args(["--json", "run", "--on", "rohan", "--no-notify", "sh", "-c", &probe])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["wait"]["exit_code"], 0, "{result}");
+    assert!(result["output"].as_str().unwrap().contains("\"state\":\"live\""), "{result}");
+    let (_, denied) = rohan.err(&["--json", "get", &format!("{core_id}/{unrelated}")]);
+    assert_eq!(denied["error"]["kind"], "denied", "{denied}");
+}
+
+#[test]
+fn failed_or_detached_remote_runs_do_not_grant_access_to_the_caller() {
+    let (rohan, s) = with_rohan();
+    let remote_parent = run(&rohan, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    for args in [
+        vec!["--no-parent", "true"],
+        vec!["--parent", &remote_parent, "true"],
+        vec!["missing-program-for-callback-test"],
+    ] {
+        let parent = run(&s, &["sleep", "100"]);
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--on", "rohan", "--no-notify"])
+            .args(&args)
+            .output()
+            .unwrap();
+        if args.len() == 1 {
+            assert!(!out.status.success());
+            let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+            assert_eq!(error["error"]["kind"], "spawn_failed", "{error}");
+        } else {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(
+                result["parent"],
+                if args[0] == "--parent" { json!(format!("rohan/{remote_parent}")) } else { Value::Null },
+                "{result}"
+            );
+        }
+        let (_, denied) = rohan.err(&["--json", "get", &format!("{core_id}/{parent}")]);
+        assert_eq!(denied["error"]["kind"], "denied", "{denied}");
+    }
+}
+
+#[test]
+fn a_failed_remote_launch_preserves_a_concurrent_and_then_established_grant() {
+    let (rohan, s) = with_rohan();
+    let parent = run(&s, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    let address = format!("{core_id}/{parent}");
+    let probe = script(&rohan, &format!("w release; {BIN} --json get {address}"));
+    let mut command = s.cmd();
+    command.env("HC_TERMINAL_ID", &parent).args(["--json", "run", "--on", "rohan", "--no-notify", "sh", "-c", &probe]);
+    let foreground = std::thread::spawn(move || command.output().unwrap());
+    wait_until("remote child started", || !addresses(&rohan.json(&["ls"])).is_empty());
+    for pending in [true, false] {
+        let failed = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--on", "rohan", "missing-program-for-callback-test"])
+            .output()
+            .unwrap();
+        assert!(!failed.status.success());
+        assert_eq!(rohan.json(&["get", &address])["state"], "live");
+        if pending {
+            touch(&rohan, "release");
+            wait_until("foreground run completes", || foreground.is_finished());
+        }
+    }
+    let out = foreground.join().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["wait"]["exit_code"], 0, "{result}");
+}
+
+#[test]
 fn a_child_on_another_machine_reports_back_to_its_parent() {
     let (rohan, s) = with_rohan_env(&[("HC_QUIET_MS", "0")]);
     let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; exit 3"));
