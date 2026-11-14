@@ -132,5 +132,5 @@ async fn xpc_flags_belong_to_neither_a_replacement_core_nor_its_programs() {
     );
     assert!(!env.contains_key(OsStr::new("XPC_FLAGS")));
     assert_eq!(env.get(OsStr::new("XPC_SERVICE_NAME")).unwrap(), "0");
-    assert!(!super::program_env().await.contains_key("XPC_FLAGS"));
+    assert!(!super::program_env(None).await.contains_key("XPC_FLAGS"));
 }

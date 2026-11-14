@@ -65,7 +65,7 @@ impl Core {
                 return;
             }
         };
-        let base_env = crate::platform::program_env().await;
+        let base_env = crate::platform::program_env(shell.first().map(String::as_str)).await;
         let mut st = self.lock();
         if st.stopping
             || self.restart.load(Ordering::SeqCst)

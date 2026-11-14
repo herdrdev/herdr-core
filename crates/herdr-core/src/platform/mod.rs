@@ -11,15 +11,15 @@ mod unix;
 pub use unix::*;
 
 #[cfg(target_os = "linux")]
-mod linux_login;
-#[cfg(target_os = "linux")]
 pub mod systemd;
+#[cfg(unix)]
+mod unix_login;
 
 /// Only a new SSH-started Linux core imports login settings; holders inherit the core.
 #[allow(unused_variables)]
 pub fn core_environment(cmd: &mut std::process::Command, state: &std::path::Path) {
     #[cfg(target_os = "linux")]
-    linux_login::apply(cmd, state);
+    unix_login::apply(cmd, state);
 }
 
 #[cfg(target_os = "macos")]
@@ -320,9 +320,16 @@ pub(crate) fn restored_environment(
         if named(key, "XPC_FLAGS") {
             return true;
         }
-        [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
-            .iter()
-            .any(|name| named(key, name))
+        [
+            crate::sweep::VAR,
+            crate::sweep::RUNTIME,
+            "HC_LAUNCHD_DIRECT",
+            "HC_LAUNCHD_DETACH",
+            "_HC_RESPONSIBLE_PID",
+            "_HC_LOGIN_SEED",
+        ]
+        .iter()
+        .any(|name| named(key, name))
     };
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();
@@ -336,8 +343,9 @@ pub(crate) fn restored_environment(
 }
 
 /// The core's environment as programs get it: never an ssh login's marks,
-/// and on Linux the login session as the user manager has it now.
-pub async fn program_env() -> std::collections::BTreeMap<String, String> {
+/// and with fresh login/session settings where the OS provides them.
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub async fn program_env(program: Option<&str>) -> std::collections::BTreeMap<String, String> {
     #[allow(unused_mut)]
     let mut env: std::collections::BTreeMap<String, String> = utf8_vars().collect();
     #[cfg(target_os = "linux")]
@@ -346,6 +354,16 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
         if let Ok(Some(manager)) = tokio::task::spawn_blocking(systemd::manager_env).await {
             systemd::apply_session(&mut env, &manager);
         }
+    }
+    #[cfg(unix)]
+    {
+        let program = program.map(str::to_owned);
+        env = tokio::task::spawn_blocking(move || {
+            unix_login::refresh_path(&mut env, program.as_deref());
+            env
+        })
+        .await
+        .expect("login PATH reader panicked");
     }
     #[cfg(windows)]
     {

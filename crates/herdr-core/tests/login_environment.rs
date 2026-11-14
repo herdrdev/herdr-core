@@ -92,10 +92,18 @@ fn value(s: &Session) -> String {
 
 #[test]
 fn ssh_start_loads_login_exports_once_and_keeps_them_across_restart() {
+    use std::os::unix::fs::PermissionsExt;
     let s = ssh_session("echo profile chatter\nexport LOGIN_TEST='login value'\n");
     assert_eq!(value(&s), "login value");
-    std::fs::write(s.root.join(".bash_profile"), "export LOGIN_TEST=changed\n").unwrap();
-    assert_eq!(value(&s), "login value", "reconnecting must not reload profiles");
+    let tool = s.root.join("late-bin/late-tool");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::write(&tool, "#!/bin/sh\nprintf '%s:%s' \"$LOGIN_TEST\" \"$1\"\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(s.root.join(".bash_profile"), "export LOGIN_TEST=changed\nPATH=\"$HOME/late-bin:$PATH\"\n").unwrap();
+    assert_eq!(value(&s), "login value", "reconnecting must not reload non-PATH profiles");
+    let out = s.hc(&["exec", "--", "late-tool", "fresh"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "login value:fresh");
     s.json(&["server", "restart"]);
     assert_eq!(value(&s), "login value", "a restart keeps the settled environment");
 }
