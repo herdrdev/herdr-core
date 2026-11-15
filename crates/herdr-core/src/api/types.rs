@@ -86,6 +86,10 @@ fn cli_seconds(s: &str) -> Result<f64, String> {
     }
 }
 
+fn yes() -> bool {
+    true
+}
+
 /// Seconds from a request, checked before anything happens.
 pub(super) fn seconds(s: Option<f64>) -> Result<Option<Duration>, RpcError> {
     s.map(|s| {
@@ -485,7 +489,7 @@ pub struct PlainSub {
 pub struct SendParams {
     /// The terminal: `t7`, a name, or `machine/t7`.
     pub terminal: String,
-    /// Pasted, then submitted with Enter.
+    /// Pasted, then submitted with Enter (unless `no-submit`).
     pub text: String,
     /// Type even if the program is blocked (it may answer its dialog).
     #[arg(long)]
@@ -499,6 +503,11 @@ pub struct SendParams {
     #[arg(long)]
     #[serde(default)]
     pub wait: bool,
+    /// Paste only, without Enter (`submit: false`): no wait for a person's draft; later sends wait for
+    /// the text as a draft. Not with `wait`.
+    #[arg(long = "no-submit", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    #[serde(default = "yes")]
+    pub submit: bool,
     /// With wait: seconds before it checks in (default: config, else 180).
     #[arg(long, value_parser = cli_seconds)]
     pub timeout: Option<f64>,
@@ -515,7 +524,7 @@ pub struct SendResult {
     /// The turn when the text went in.
     pub turn: u64,
     /// Whether it went `working` within a few seconds; null when it doesn't
-    /// report status, so nobody can tell.
+    /// report status, so nobody can tell, or when nothing was submitted.
     pub started: Option<bool>,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -89,7 +89,9 @@ reports `spawn_failed`. Recovery stays pending and retries, with errors in
 ## Draft wait
 
 Sends and parent notes wait for you to send or clear an unfinished draft,
-up to 60 seconds after your last key. In the same config.toml:
+up to 60 seconds after your last key. `hc send --no-submit` pastes text
+without pressing Enter and leaves it as such a draft for you to edit and send,
+held up to 60 seconds after the paste. In the same config.toml:
 
 ```toml
 notes_quiet = 3 # seconds of quiet before a parent note

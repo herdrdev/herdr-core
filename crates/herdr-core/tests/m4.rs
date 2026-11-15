@@ -201,6 +201,49 @@ fn a_send_waits_for_the_person_to_send_or_clear_their_draft() {
 }
 
 #[test]
+fn no_submit_pastes_without_enter_and_has_no_turn_to_wait_for() {
+    let s = session();
+    let t = run(&s, &format!("printf '\\033[?2004h'; r state=idle; {BYTES}"));
+    wait_until("idle", || status(&s, &t) == "idle");
+    let (code, err) = s.err(&["send", "--no-submit", "--wait", &t, "refused"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (6, Some("invalid_params")), "{err}");
+    let r = s.json(&["send", "--no-submit", &t, "hi"]);
+    assert_eq!((r["status"].as_str(), r["turn"].as_u64()), (Some("idle"), Some(0)), "{r}");
+    assert!(r["started"].is_null(), "nothing was submitted, so nothing could start: {r}");
+    let start = Instant::now();
+    s.json(&["keys", &t, "enter"]);
+    assert!(start.elapsed() < Duration::from_secs(2), "keys waited for the pasted draft");
+    shows(&s, &t, "0d");
+    let typed = text(&s, &t).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(typed.ends_with("1b 5b 32 30 30 7e 68 69 1b 5b 32 30 31 7e 0d"), "{typed}");
+}
+
+#[test]
+fn a_pasted_draft_holds_later_sends_but_a_paste_does_not_wait_for_one() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "3000".into()));
+    let t = run(&s, BYTES);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    s.json(&["send", "--no-submit", &t, "pasted"]);
+    let sender = {
+        let mut cmd = s.cmd();
+        cmd.args(["send", &t, "x"]);
+        std::thread::spawn(move || cmd.output().unwrap())
+    };
+    std::thread::sleep(Duration::from_millis(900));
+    assert!(!sender.is_finished(), "submitted the pasted draft with its own message");
+    let sent = Instant::now();
+    person.typed(b"\r");
+    assert!(sender.join().unwrap().status.success());
+    assert!(sent.elapsed() < Duration::from_millis(750), "did not release on send: {:?}", sent.elapsed());
+
+    person.typed(b"mine");
+    let start = Instant::now();
+    s.json(&["send", "--no-submit", &t, "more"]);
+    assert!(start.elapsed() < Duration::from_millis(2000), "the paste waited for the draft: {:?}", start.elapsed());
+}
+
+#[test]
 fn planned_restart_keeps_the_draft_and_its_original_deadline() {
     let mut s = session();
     s.env.push(("HC_DRAFT_MS".into(), "4000".into()));

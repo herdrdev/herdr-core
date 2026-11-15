@@ -95,6 +95,25 @@ async fn a_send_on_an_already_closed_line_fails_without_waiting() {
     }
 }
 
+#[tokio::test]
+async fn a_paste_without_enter_needs_a_core_that_can_leave_it_unsent() {
+    for features in [json!([]), json!(["no_submit"])] {
+        let (frames, mut rx) = mpsc::unbounded_channel();
+        let line = Line::new(frames, &json!({"features": features}));
+        let params = json!({"terminal": "t1", "text": "hi", "submit": false});
+        let call = line.call("away", "terminal.send", params, Duration::from_secs(30));
+        let sent = tokio::time::timeout(Duration::from_millis(200), call).await;
+        if features.as_array().unwrap().is_empty() {
+            assert_eq!(sent.unwrap().unwrap_err().kind, "needs_update");
+            assert!(rx.try_recv().is_err(), "an older core would press Enter");
+        } else {
+            let request = rx.recv().await.unwrap();
+            let request: Value = serde_json::from_slice(&request[wire::HEADER..]).unwrap();
+            assert_eq!(request["params"]["submit"], false);
+        }
+    }
+}
+
 #[test]
 fn automatic_input_requires_support_at_every_hop() {
     for features in [json!([]), json!(["automatic_input"])] {
