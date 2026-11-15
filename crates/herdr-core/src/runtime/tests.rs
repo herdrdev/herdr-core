@@ -637,13 +637,13 @@ fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
     while reports.recv_timeout(Duration::from_secs(5)).unwrap() != "1 hello" {}
     // Adopting waits for this lock: slow, but after the welcome came in time.
     let st = core.lock();
-    std::thread::sleep(RELINK_WAIT * 3);
+    std::thread::sleep(holders::RELINK_WAIT * 3);
     drop(st);
     let start = Instant::now();
     while core.lock().holders.is_empty() && start.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(10));
     }
-    std::thread::sleep(RELINK_WAIT * 2);
+    std::thread::sleep(holders::RELINK_WAIT * 2);
     assert_eq!(core.lock().holders.len(), 1, "the new link stays");
     assert!(reports.try_iter().all(|r| r != "1 closed"), "and is not cut");
     assert!(still_live(&core, id));

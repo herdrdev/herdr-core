@@ -556,6 +556,4 @@ impl Core {
 }
 
 #[cfg(test)]
-use holders::RELINK_WAIT;
-#[cfg(test)]
 mod tests;
