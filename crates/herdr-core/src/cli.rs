@@ -356,12 +356,14 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             p.caller = Some(caller());
             let r = call("terminal.send", to(&p))?;
             let started = match r["started"].as_bool() {
+                _ if !p.submit => "Enter not pressed",
                 Some(true) => "it started working",
                 Some(false) => "it did not start working",
                 None => "it doesn't report status",
             };
+            let verb = if p.submit { "sent" } else { "pasted" };
             let mut human =
-                format!("sent at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
+                format!("{verb} at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
             if !r["wait"].is_null() {
                 human = format!("{human}\n{}", describe_wait(&r["wait"]));
             }

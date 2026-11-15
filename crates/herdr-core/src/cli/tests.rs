@@ -98,7 +98,7 @@ fn a_command_line_becomes_the_api_request() {
     let Cmd::Send(p) = parsed(&["send", "t3", "hi there", "--if", "idle", "--wait", "--timeout", "2.5"]) else {
         panic!()
     };
-    let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "wait": true, "timeout": 2.5, "caller": null});
+    let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "wait": true, "submit": true, "timeout": 2.5, "caller": null});
     assert_eq!(to(&p), want);
     assert!(serde_json::from_value::<SendParams>(want).is_ok(), "and the API reads it back");
 

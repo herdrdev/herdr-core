@@ -30,6 +30,8 @@ pub struct Gate {
     pasting: bool,
     sequence: Vec<u8>,
     draft_ended: bool,
+    /// When an agent's paste was left unsent: it holds submits like a person's draft.
+    pasted: Option<Instant>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -43,49 +45,71 @@ pub struct SavedGate {
     pasting: bool,
     sequence: Vec<u8>,
     draft_ended: bool,
+    #[serde(default)]
+    pasted_ms: Option<u64>,
+}
+
+fn wall_ms(at: Instant) -> u64 {
+    crate::runtime::now_ms().saturating_sub(at.elapsed().as_millis().min(u64::MAX as u128) as u64)
+}
+
+fn instant(wall_ms: u64) -> Option<Instant> {
+    Instant::now().checked_sub(Duration::from_millis(crate::runtime::now_ms().saturating_sub(wall_ms)))
 }
 
 impl Gate {
     pub fn snapshot(&self) -> Option<SavedGate> {
-        if self.last_human.is_none() && self.held.is_empty() {
+        if self.last_human.is_none() && self.held.is_empty() && self.pasted.is_none() {
             return None;
         }
         Some(SavedGate {
-            last_human_ms: self.last_human.map_or(0, |at| {
-                let elapsed = at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                crate::runtime::now_ms().saturating_sub(elapsed)
-            }),
+            last_human_ms: self.last_human.map_or(0, wall_ms),
             held: self.held.clone(),
             held_human: self.held_human,
             draft: self.draft,
             pasting: self.pasting,
             sequence: self.sequence.clone(),
             draft_ended: self.draft_ended,
+            pasted_ms: self.pasted.map(wall_ms),
         })
     }
 
     pub fn restore(saved: SavedGate) -> Self {
-        let elapsed = Duration::from_millis(crate::runtime::now_ms().saturating_sub(saved.last_human_ms));
         Self {
-            last_human: Instant::now().checked_sub(elapsed),
+            last_human: instant(saved.last_human_ms),
             held: saved.held,
             held_human: saved.held_human,
             draft: saved.draft,
             pasting: saved.pasting,
             sequence: saved.sequence,
             draft_ended: saved.draft_ended,
+            pasted: saved.pasted_ms.and_then(instant),
             ..Self::default()
         }
     }
 
-    /// Submitting input also waits for the draft, bounded since the last human key.
+    /// Submitting input also waits for the draft, bounded since the last human
+    /// key or the unsent paste, whichever holds longer.
     fn wait(&self, quiet: Duration, submits: bool, draft: Duration) -> Duration {
-        let Some(at) = self.last_human else { return Duration::ZERO };
+        let pasted = match self.pasted {
+            Some(at) if submits && self.draft > 0 => draft.saturating_sub(at.elapsed()),
+            _ => Duration::ZERO,
+        };
+        let Some(at) = self.last_human else { return pasted };
         if submits && self.draft_ended {
             return PASTE_GAP.saturating_sub(at.elapsed());
         }
         let hold = if submits && self.draft > 0 { quiet.max(draft) } else { quiet };
-        hold.saturating_sub(at.elapsed())
+        hold.saturating_sub(at.elapsed()).max(pasted)
+    }
+
+    /// An agent's paste left unsent: it counts as a draft, as a person's paste would.
+    fn drafted(&mut self, bytes: &[u8]) {
+        let mut typed = Gate::default();
+        typed.track(bytes);
+        self.draft = self.draft.saturating_add(typed.draft);
+        self.draft_ended = false;
+        self.pasted = Some(Instant::now());
     }
 
     fn key(&mut self, code: u32, modifiers: u32) {
@@ -257,6 +281,8 @@ pub enum Step {
     Write(Vec<u8>),
     Pause(Duration),
     EndDraft(Vec<u8>),
+    /// Written and left unsent.
+    Draft(Vec<u8>),
 }
 
 pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
@@ -362,6 +388,11 @@ impl Core {
                         if ends_draft {
                             gate.draft_ended = true;
                         }
+                        for step in &prepared.1 {
+                            if let Step::Draft(bytes) = step {
+                                gate.drafted(bytes);
+                            }
+                        }
                         break 'waiting (prepared.0, prepared.1, turn);
                     }
                     left
@@ -386,7 +417,7 @@ impl Core {
                         self.changed.notify_waiters();
                     }
                 }
-                Step::Write(bytes) | Step::EndDraft(bytes) => {
+                Step::Write(bytes) | Step::EndDraft(bytes) | Step::Draft(bytes) => {
                     if let Some(link) = self.lock().link(id) {
                         link.input(id, &bytes);
                     }
@@ -404,13 +435,21 @@ impl Core {
     }
 
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
-    /// program (typing would answer its dialog) unless `force`.
-    pub async fn send(&self, id: u32, text: &str, force: bool, only_if: Option<&str>) -> Result<Sent, RpcError> {
-        self.send_message(id, text, force, only_if, false).await
+    /// program (typing would answer its dialog) unless `force`. Without
+    /// `submit`, the paste is left unsent as a draft.
+    pub async fn send(
+        &self,
+        id: u32,
+        text: &str,
+        force: bool,
+        only_if: Option<&str>,
+        submit: bool,
+    ) -> Result<Sent, RpcError> {
+        self.send_message(id, text, force, only_if, submit, false).await
     }
 
     pub(crate) async fn send_first_task(&self, id: u32, text: &str) -> Result<Sent, RpcError> {
-        self.send_message(id, text, false, None, true).await
+        self.send_message(id, text, false, None, true, true).await
     }
 
     async fn send_message(
@@ -419,6 +458,7 @@ impl Core {
         text: &str,
         force: bool,
         only_if: Option<&str>,
+        submit: bool,
         first_task: bool,
     ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
@@ -426,7 +466,7 @@ impl Core {
         }
         self.settle(id).await?;
         let (status, turn, reported) = self
-            .type_in(id, quiet(), true, |st, t| {
+            .type_in(id, quiet(), submit, |st, t| {
                 let word = state_word(t);
                 if word.as_deref() == Some("blocked") && !force {
                     return Err(RpcError::new(
@@ -456,19 +496,22 @@ impl Core {
                     ));
                 }
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
+                let bytes = paste(screen.dec_mode(2004), text);
+                if !submit {
+                    return Ok(((word, t.turn, t.reported), vec![Step::Draft(bytes)]));
+                }
                 // A template may say how its agent submits (default: Enter after 200 ms).
                 let submit = match &t.submit {
                     Some(key) => crate::keys::encode(screen, key)?,
                     None => b"\r".to_vec(),
                 };
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
-                let bytes = paste(screen.dec_mode(2004), text);
                 let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
                 let steps = vec![paste, Step::Pause(gap), Step::Write(submit)];
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
-        let started = if reported {
+        let started = if reported && submit {
             let went =
                 |st: &State| st.reg.terminals.get(&id).is_none_or(|t| t.turn > turn || working(t) || !t.is_live());
             self.wait_for(started_window(), went).await;
@@ -677,6 +720,23 @@ mod tests {
         assert_eq!(restored.draft, 0);
         assert!(!restored.pasting);
         assert!(restored.draft_ended);
+    }
+
+    #[test]
+    fn an_unsent_paste_holds_submits_until_sent_or_its_cap_through_a_handover() {
+        let cap = Duration::from_secs(60);
+        let mut g = Gate::default();
+        g.drafted(&paste(true, "hi"));
+        assert!(!g.wait(Duration::ZERO, true, cap).is_zero());
+        assert!(g.wait(Duration::from_secs(3), false, cap).is_zero(), "keys and pastes do not wait for it");
+        let saved = serde_json::to_vec(&g.snapshot().unwrap()).unwrap();
+        let mut restored = Gate::restore(serde_json::from_slice(&saved).unwrap());
+        assert!(!restored.wait(Duration::ZERO, true, cap).is_zero(), "a handover keeps it");
+        restored.pasted = Some(Instant::now() - cap);
+        assert!(restored.wait(Duration::ZERO, true, cap).is_zero(), "it expires after the cap");
+        g.viewer(b"\r", true);
+        g.last_human = Some(Instant::now() - PASTE_GAP);
+        assert!(g.wait(Duration::from_secs(3), true, cap).is_zero(), "the person sent it");
     }
 
     #[test]

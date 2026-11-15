@@ -993,7 +993,7 @@
       "SendResult": {
         "properties": {
           "started": {
-            "description": "Whether it went `working` within a few seconds; null when it doesn't\nreport status, so nobody can tell.",
+            "description": "Whether it went `working` within a few seconds; null when it doesn't\nreport status, so nobody can tell, or when nothing was submitted.",
             "type": [
               "boolean",
               "null"
@@ -2504,7 +2504,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`. With `submit: false` (cores with `no_submit` in `hello.features`) it pastes after the quiet alone and presses nothing; that text is then a draft for later sends, held at most 60 s since the paste.",
       "errors": [
         {
           "code": -32000,
@@ -2568,6 +2568,13 @@
             "kind": "cancelled"
           },
           "message": "cancelled"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_update"
+          },
+          "message": "needs_update"
         }
       ],
       "name": "terminal.send",
@@ -2612,6 +2619,16 @@
           }
         },
         {
+          "description": "Paste only, without Enter (`submit: false`): no wait for a person's draft; later sends wait for\nthe text as a draft. Not with `wait`.",
+          "name": "submit",
+          "required": false,
+          "schema": {
+            "default": true,
+            "description": "Paste only, without Enter (`submit: false`): no wait for a person's draft; later sends wait for\nthe text as a draft. Not with `wait`.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "The terminal: `t7`, a name, or `machine/t7`.",
           "name": "terminal",
           "required": true,
@@ -2621,11 +2638,11 @@
           }
         },
         {
-          "description": "Pasted, then submitted with Enter.",
+          "description": "Pasted, then submitted with Enter (unless `no-submit`).",
           "name": "text",
           "required": true,
           "schema": {
-            "description": "Pasted, then submitted with Enter.",
+            "description": "Pasted, then submitted with Enter (unless `no-submit`).",
             "type": "string"
           }
         },

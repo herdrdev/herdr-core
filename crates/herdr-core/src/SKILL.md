@@ -61,6 +61,7 @@ hc ls                              # all live terminals, not just yours
 hc get review                      # one terminal's observed state/status
 hc send review "Focus on the first bug"
 hc send --wait review "Recheck the fix"
+hc send --no-submit review "Draft"  # paste for a person to edit and send; no Enter
 hc read --lines 100 review          # screen plus history; waits return status only
 hc interrupt review                # stop its current turn, not the process
 ```
@@ -101,7 +102,9 @@ children finish:
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
 Sends and parent notes wait for an unfinished draft, up to 60 seconds since
-the person's last key. Set `draft_wait = 5` (seconds) in
+the person's last key. A `send --no-submit` paste waits only for the quiet
+pause and leaves its text as such a draft, held up to 60 seconds since the
+paste; it cannot `--wait`, and its `started` is null. Set `draft_wait = 5` (seconds) in
 `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
 to change that limit; `0` keeps only the quiet pause. Like `notes_quiet`,
 it is read for each delivery and takes precedence over the test environment

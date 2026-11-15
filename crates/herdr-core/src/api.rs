@@ -23,6 +23,7 @@ pub const FEATURES: &[&str] = &[
     "resize_notifications",
     "automatic_input",
     "restart_environment",
+    "no_submit",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -105,8 +106,8 @@ methods! { Ctx<'_>;
         "Open a raw stream to a live terminal on this framed connection (see `hello` with `framed`). Loss ends the stream even when kept; reattach after the restarted event.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
-        "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
+        "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`. With `submit: false` (cores with `no_submit` in `hello.features`) it pastes after the quiet alone and presses nothing; that text is then a draft for later sends, held at most 60 s since the paste.",
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled", "needs_update"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
         errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
@@ -468,10 +469,16 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
 
 async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcError> {
     let timeout = wait_timeout(core, p.timeout)?; // checked before anything is typed
+    if p.wait && !p.submit {
+        return Err(RpcError::invalid_params("a send without submit starts no turn to wait for"));
+    }
     let id = resolve(core, &p.terminal)?;
     let text = core.tagged(p.caller.as_deref(), id, &p.text, false);
-    let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref()).await?;
-    if let Some(child) = p.caller.as_deref().and_then(crate::terminals::parse_id) {
+    let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref(), p.submit).await?;
+    // Text left unsent tells nobody anything and starts no turn.
+    if p.submit
+        && let Some(child) = p.caller.as_deref().and_then(crate::terminals::parse_id)
+    {
         let mut st = core.lock();
         if let Some(c) = st
             .reg
@@ -482,7 +489,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
             c.told_parent = true;
         }
     }
-    if sent.status.as_deref() == Some("working") {
+    if p.submit && sent.status.as_deref() == Some("working") {
         let mut st = core.lock();
         let from = p
             .caller
@@ -496,7 +503,9 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
         core.changed.notify_waiters();
     }
     core.saw(p.caller.as_deref(), id);
-    if let Some(caller) = &p.caller {
+    if p.submit
+        && let Some(caller) = &p.caller
+    {
         core.lock().last_send.insert((caller.clone(), id), sent.turn);
     }
     let wait = if p.wait && sent.started == Some(false) {

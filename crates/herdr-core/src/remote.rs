@@ -116,6 +116,14 @@ impl Line {
         sink: Option<(Sink, bool)>,
         deadline: Duration,
     ) -> Result<Value, RpcError> {
+        // An older core would ignore `submit` and press Enter.
+        if method == "terminal.send" && params["submit"] == false && !self.features.iter().any(|f| f == "no_submit") {
+            return Err(RpcError::new(
+                "needs_update",
+                format!("{machine}'s hc is older and can't paste without pressing Enter"),
+                format!("nothing was typed; hc machine update {machine}"),
+            ));
+        }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let req = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
         // Too big for one frame would end the whole line: refuse just this call.

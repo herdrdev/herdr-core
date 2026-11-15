@@ -527,13 +527,14 @@ Usage: hc send [OPTIONS] <TERMINAL> <TEXT>
 
 Arguments:
   <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`
-  <TEXT>      Pasted, then submitted with Enter
+  <TEXT>      Pasted, then submitted with Enter (unless `no-submit`)
 
 Options:
       --force              Type even if the program is blocked (it may answer its dialog)
       --json               JSON output even in a terminal
       --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]
       --wait               Then wait for the turn this send started
+      --no-submit          Paste only, without Enter (`submit: false`): no wait for a person's draft; later sends wait for the text as a draft. Not with `wait`
       --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)
   -h, --help               Print help
 ```
