@@ -162,7 +162,15 @@ return `unavailable`: "lost, waiting for its new shell"; retry after `restarted`
 Server stop parks kept terminals; the next core start gives them fresh shells.
 Waits end on `lost` as on `finished`: they follow the program, not the kept record.
 
-An initial spawn that times out remains claimed with `reason: "spawn_pending"`;
+`terminal.create` allocates a live terminal with `launch: "empty"` and no
+program, emitting `created` before anything executes so callers can save its
+address, attach, resize, or `put` files first (`send`, `keys`, and `interrupt`
+fail with `not_started`). `terminal.start` claims an `empty` terminal
+(`launch: "starting"`, then `"started"`), returning `already_started` on
+mismatched parameters while joining or replaying identical retries (even if the
+program exited or a restart happened). Synchronous pre-exec spawn failures
+revert a created terminal to `launch: "empty"`. An initial spawn that times out
+remains claimed (`launch: "starting"`, `reason: "spawn_pending"`);
 input/attach are unavailable until the holder answers. It may already be running,
 so core does not clear the claim or start another program on a guess. Explicit
 kill cancels it; a core restart reconciles the holder. A late spawn failure clears

@@ -141,3 +141,124 @@ fn a_program_that_says_it_stopped_working_returns_and_a_slow_one_keeps_running()
         "{full}"
     );
 }
+
+#[test]
+fn create_then_start_supports_pre_attach_put_and_idempotent_retry() {
+    use serde_json::json;
+    let s = Session::new();
+    let created = s.json(&["create", "--name", "worker", "--label", "role=yolo"]);
+    assert_eq!((created["state"].as_str(), created["launch"].as_str()), (Some("live"), Some("empty")));
+    let info = get(&s, "worker");
+    assert_eq!((info["launch"].as_str(), &info["argv"]), (Some("empty"), &json!([])));
+    assert_eq!(info["labels"]["role"], "yolo");
+
+    assert_eq!(s.err(&["--json", "send", "worker", "hi"]).1["error"]["kind"], "not_started");
+    assert_eq!(s.err(&["--json", "keys", "worker", "enter"]).1["error"]["kind"], "not_started");
+    assert_eq!(s.err(&["--json", "interrupt", "worker"]).1["error"]["kind"], "not_started");
+
+    let note = s.root.join("note.txt");
+    std::fs::write(&note, "staged-ok").unwrap();
+    let landed = s.json(&["put", "worker", note.to_str().unwrap()])["path"].as_str().unwrap().to_string();
+
+    let _v = framed::Viewer::attach(&s, "worker", 93, 27, json!({}));
+    let resized = get(&s, "worker");
+    assert_eq!((resized["cols"].as_u64(), resized["rows"].as_u64()), (Some(93), Some(27)));
+
+    let body = format!("printf 'grid=%s;file=%s\\n' \"$(stty size)\" \"$(cat '{landed}')\"; sleep 100");
+    let r1 = s.json(&["start", "worker", "--bg", "sh", "-c", &body]);
+    assert_eq!(r1["address"], created["address"]);
+    wait_until("grid and staged file", || text(&s, "worker").contains("grid=27 93;file=staged-ok"));
+    let started = get(&s, "worker");
+    assert_eq!(started["launch"], "started");
+    let pid = started["pid"].as_u64().unwrap();
+
+    let r2 = s.json(&["start", "worker", "--bg", "sh", "-c", &body]);
+    assert_eq!(r2["address"], created["address"]);
+    assert_eq!(get(&s, "worker")["pid"].as_u64(), Some(pid));
+    assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
+
+    assert_eq!(s.err(&["--json", "start", "worker", "--bg", "sleep", "50"]).1["error"]["kind"], "already_started");
+
+    let quick = s.json(&["create", "--name", "quick"]);
+    let (code, out) = hc(&s, &["start", "quick", "sh", "-c", "echo done-once"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("done-once"), "{out:?}");
+    wait_until("quick finished", || get(&s, "quick")["state"] == "finished");
+    let replay = s.json(&["start", "quick", "--bg", "sh", "-c", "echo done-once"]);
+    assert_eq!(replay["address"], quick["address"]);
+    assert_eq!(s.err(&["--json", "start", "quick", "--bg", "true"]).1["error"]["kind"], "already_started");
+}
+
+#[test]
+fn create_handles_failed_spawn_kill_keep_and_restart_before_start() {
+    let s = Session::new();
+    s.json(&["create", "--keep", "--name", "retryable"]);
+    assert_eq!(
+        s.err(&["--json", "start", "retryable", "--bg", "/nonexistent-hc-bin-xyz"]).1["error"]["kind"],
+        "spawn_failed"
+    );
+    let after_fail = get(&s, "retryable");
+    assert_eq!((after_fail["state"].as_str(), after_fail["launch"].as_str()), (Some("live"), Some("empty")));
+
+    let (code, out) = hc(&s, &["start", "retryable", "sh", "-c", "echo recovered"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("recovered"), "{out:?}");
+
+    s.json(&["create", "--keep", "--name", "doomed"]);
+    s.json(&["server", "restart"]);
+    let after_restart = get(&s, "doomed");
+    assert_eq!((after_restart["state"].as_str(), after_restart["launch"].as_str()), (Some("live"), Some("empty")));
+
+    s.json(&["kill", "doomed"]);
+    let killed = get(&s, "doomed");
+    assert_eq!((killed["state"].as_str(), killed["reason"].as_str()), (Some("finished"), Some("killed")));
+    assert_eq!(s.err(&["--json", "start", "doomed", "--bg", "true"]).1["error"]["kind"], "finished");
+}
+
+#[test]
+fn concurrent_starts_with_template_send_first_message_once() {
+    use serde_json::json;
+    let s = Session::new();
+    let prog = executable(
+        &s,
+        &format!(
+            "#!/bin/sh\nstty -echo\n{}",
+            script(
+                &s,
+                "r state=idle; while IFS= read -r line; do printf 'MSG:%s\\n' \"$line\"; r state=working; sleep 0.05; r state=done; done"
+            )
+        ),
+    );
+    let tdir = s.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&tdir).unwrap();
+    std::fs::write(tdir.join("worker.md"), format!("---\ndescription: test worker\ncommand: {prog}\n---\nPrefix."))
+        .unwrap();
+
+    s.json(&["create", "--name", "tmpl"]);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut c1 = s.connect();
+    let mut c2 = s.connect();
+    let b1 = barrier.clone();
+    let t1 = std::thread::spawn(move || {
+        b1.wait();
+        c1.call(1, "terminal.start", json!({"terminal": "tmpl", "argv": ["worker", "only-once"]}))
+    });
+    let t2 = std::thread::spawn(move || {
+        barrier.wait();
+        c2.call(1, "terminal.start", json!({"terminal": "tmpl", "argv": ["worker", "only-once"]}))
+    });
+    let r1 = t1.join().unwrap();
+    let r2 = t2.join().unwrap();
+    assert!(r1["error"].is_null() && r2["error"].is_null(), "r1={r1} r2={r2}");
+    assert_eq!(r1["result"]["address"], r2["result"]["address"]);
+    assert_eq!(r1["result"]["pid"], r2["result"]["pid"]);
+    assert_eq!(
+        (&r1["result"]["first_message"]["sent"], &r2["result"]["first_message"]["sent"]),
+        (&json!(true), &json!(true))
+    );
+
+    wait_until("first message received", || text(&s, "tmpl").contains("MSG:only-once"));
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let screen = text(&s, "tmpl");
+    assert_eq!(screen.matches("only-once").count(), 1, "{screen}");
+}

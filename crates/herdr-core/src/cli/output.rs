@@ -13,7 +13,14 @@ pub(super) fn status(t: &Value) -> (String, &'static str) {
         };
         return (word, HOLLOW);
     }
-    let Some(word) = t["status"]["state"].as_str() else { return ("running".into(), HOLLOW) };
+    let Some(word) = t["status"]["state"].as_str() else {
+        let word = match t["launch"].as_str() {
+            Some("empty") => "empty",
+            Some("starting") => "starting",
+            _ => "running",
+        };
+        return (word.into(), HOLLOW);
+    };
     let dot = match word {
         "working" => "\x1b[33m\u{25cf}\x1b[39m",
         "blocked" | "error" => "\x1b[31m\u{25cf}\x1b[39m",
@@ -127,7 +134,13 @@ pub(super) fn items(terminals: &[Value], header: bool) -> Vec<picker::Item> {
     });
     let rows = terminals.iter().zip(cells).map(|(t, row)| {
         let (word, dot) = status(t);
-        let place = place(t).unwrap_or_else(|| format!("{} \u{b7} {}", row[1], row[3]));
+        let place = place(t).unwrap_or_else(|| {
+            [row[1].as_str(), row[3].as_str()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" \u{b7} ")
+        });
         let short =
             [row[0].as_str(), &place].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" \u{b7} ");
         picker::Item {
@@ -145,7 +158,8 @@ pub(super) fn items(terminals: &[Value], header: bool) -> Vec<picker::Item> {
 
 /// The facts an agent acts on; `hc get` has the full record.
 pub(super) fn short(t: &Value) -> Value {
-    let keep = ["address", "name", "template", "parent", "state", "turn", "exit_code", "signal", "reason", "cwd"];
+    let keep =
+        ["address", "name", "template", "parent", "state", "launch", "turn", "exit_code", "signal", "reason", "cwd"];
     let mut out: serde_json::Map<String, Value> =
         keep.iter().filter_map(|k| t.get(*k).filter(|v| !v.is_null()).map(|v| (k.to_string(), v.clone()))).collect();
     if let Some(word) = t["status"]["state"].as_str() {
@@ -191,7 +205,11 @@ pub(super) fn summary(t: &Value) -> String {
     match t["state"].as_str() {
         Some("live") => match t["status"]["state"].as_str() {
             Some(word) => format!("live, {word} (turn {})", t["turn"]),
-            None => "live".into(),
+            None => match t["launch"].as_str() {
+                Some("empty") => "live (empty)".into(),
+                Some("starting") => "live (starting)".into(),
+                _ => "live".into(),
+            },
         },
         _ => {
             let reason = t["reason"].as_str().unwrap_or("finished");

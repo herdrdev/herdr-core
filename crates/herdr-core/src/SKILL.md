@@ -10,7 +10,7 @@ It does not arrange windows; use `herdr-app --skill` for that.
 `$HC_TERMINAL_ID` is your address. Terminals you start are your children.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
-Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
+Piped output is JSON except `run`, `start`, `exec`, `read`, and `file read` (text).
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 ## Delegate a task
@@ -53,6 +53,22 @@ NOT sent; `hc get <t>` keeps `first_message: {sent: false, reason}` for later
 inspection, even after the core restarts. To recover: `hc read <t>`; resolve readiness first (a trust dialog may need
 `hc keys <t> down enter`), then send the task. Do not blindly resend after a
 failed send: it may still have arrived; read first.
+
+To reserve the terminal address first or make a launch safe to retry after a
+timeout or dropped reply, split allocation from process start:
+
+```sh
+hc create --name worker --label role=yolo --cwd /path/to/repo
+hc start worker --bg reviewer "Inspect src/x.rs only. Report with hc send $HC_TERMINAL_ID when done or stuck."
+```
+
+`hc create` allocates a live terminal (`launch: "empty"`, no program yet;
+`put` and `attach` work, while `send`, `keys`, and `interrupt` return
+`not_started`). Repeating the same `hc start` is idempotent and returns the
+same terminal without spawning twice; a different command fails with
+`already_started`. A synchronous spawn error reverts the terminal to `empty`
+so you can retry with fixed arguments; once running (or after a spawn timeout),
+use `hc get <t>` to check state.
 
 ## Talk, wait, and collect results
 

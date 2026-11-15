@@ -16,7 +16,10 @@ struct RunGrant<'a> {
 impl<'a> RunGrant<'a> {
     fn start(core: &'a Core, m: &Machine, method: &str, params: &Value) -> Option<Self> {
         // An explicit parent is resolved on the destination, not on this core.
-        if method != "terminal.run" || params["no_parent"] == true || !params["parent"].is_null() {
+        if !matches!(method, "terminal.run" | "terminal.create")
+            || params["no_parent"] == true
+            || !params["parent"].is_null()
+        {
             return None;
         }
         let caller = crate::addr::local(params["caller"].as_str()?, &core.info.id, &core.info.name).ok()?;
@@ -75,7 +78,7 @@ fn not_started(e: &RpcError) -> bool {
 }
 
 pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut params: Value) -> Result<Value, RpcError> {
-    if method == "terminal.run" {
+    if matches!(method, "terminal.run" | "terminal.create") {
         // An older core ends a child with its parent only when asked to.
         params["die_with_parent"] = json!(params["outlive_parent"] != true);
     }
@@ -83,7 +86,7 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
     let line = line(core, m).await?;
     // An older core would read no program as "nothing to run".
     let own_shell = params["argv"].as_array().is_none_or(Vec::is_empty) || params.get("line").is_some();
-    if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {
+    if matches!(method, "terminal.run" | "terminal.start") && own_shell && !line.features.iter().any(|f| f == "shell") {
         return Err(RpcError::new(
             "needs_update",
             format!("{}'s hc is older and can't pick its own shell", m.name),

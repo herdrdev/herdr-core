@@ -45,7 +45,12 @@ impl Core {
     }
 
     pub(crate) async fn recover_kept(self: Arc<Self>, startup: bool) {
-        let pending = self.lock().reg.terminals.values().any(|t| t.is_live() && t.keep && t.holder.is_none());
+        let pending = self
+            .lock()
+            .reg
+            .terminals
+            .values()
+            .any(|t| t.is_live() && t.launch != crate::terminals::Launch::Empty && t.keep && t.holder.is_none());
         if !pending || crate::platform::host_shutdown_in_progress() {
             return;
         }
@@ -78,7 +83,13 @@ impl Core {
             .reg
             .terminals
             .values()
-            .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
+            .filter(|t| {
+                t.is_live()
+                    && t.launch != crate::terminals::Launch::Empty
+                    && t.keep
+                    && t.holder.is_none()
+                    && (startup || t.restart_after_ms <= now_ms())
+            })
             .map(|t| t.id())
             .collect();
         for id in ids {

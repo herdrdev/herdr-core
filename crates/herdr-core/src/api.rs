@@ -29,9 +29,11 @@ pub const FINISHED_LINES: usize = 1000;
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;
+mod machine;
 mod run;
 mod types;
 use doc::*;
+use machine::*;
 mod waiting;
 use run::*;
 pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
@@ -75,6 +77,12 @@ methods! { Ctx<'_>;
     "server.restart" => server_restart, RestartParams => StopResult,
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
         errors ["invalid_params"];
+    "terminal.create" => terminal_create, CreateParams => Public,
+        "Create a live empty terminal without starting a program yet. Its address, labels, and screen exist at once so callers can attach or stage files before `terminal.start`.",
+        errors ["invalid_params", "name_taken", "unavailable", "not_found", "machine_unknown", "config"];
+    "terminal.start" => terminal_start, StartParams => RunResult,
+        "Start a program or template in a terminal created by `terminal.create`. Safe to retry with the same command.",
+        errors ["invalid_params", "not_found", "already_started", "finished", "spawn_failed", "unavailable", "invalid_template", "machine_unknown", "config"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
         errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
@@ -106,16 +114,16 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
         "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
+        errors ["not_found", "machine_unknown", "finished", "not_started", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
         errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
         "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
+        errors ["not_found", "machine_unknown", "finished", "not_started", "unavailable", "invalid_params"];
     "terminal.interrupt" => terminal_interrupt, InterruptParams => InterruptResult,
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
+        errors ["not_found", "machine_unknown", "finished", "not_started", "unavailable", "invalid_params"];
     "terminal.put" => terminal_put, PutParams => PutResult,
         "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). Types nothing: paste the path yourself.",
         errors ["not_found", "machine_unknown", "finished", "invalid_params"];
@@ -347,7 +355,8 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
             return Err(RpcError::invalid_params("only live terminals can be kept"));
         }
         t.keep = p.keep;
-        let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
+        let lost = (!p.keep && t.launch != crate::terminals::Launch::Empty && t.holder.is_none())
+            .then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
         core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
         if let Some(reason) = lost {
             core.record_finish(&mut st, id, proto::Exit { code: None, signal: None }, &reason);
@@ -618,141 +627,6 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
         crate::server::heartbeat(core.core.clone(), core.conn.expect("framed").clone(), channel);
     }
     Ok(SubscribeResult { seq, terminals, channel })
-}
-
-/// A machine name that is free: valid, not another machine's, not this core's own.
-fn free_name(core: &Core, st: &crate::runtime::State, name: &str) -> Result<(), RpcError> {
-    crate::addr::check_name(name)?;
-    if name == core.info.name || name == core.info.id || st.machines.iter().any(|m| m.name == name) {
-        return Err(RpcError::new(
-            "name_taken",
-            format!("{name:?} is already a machine here"),
-            "pick another with --name",
-        ));
-    }
-    Ok(())
-}
-
-async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machines::Machine, RpcError> {
-    let (target, via) = match (p.target, p.via) {
-        (Some(target), None) => (crate::machines::ssh_target(target), false),
-        (None, Some(command)) => (command, true),
-        _ => return Err(RpcError::invalid_params("give either target or via")),
-    };
-    let to = crate::machines::Reach { target: &target, via };
-    crate::machines::check_target(to)?;
-    if let Some(session) = &p.session {
-        crate::addr::check_name(session)?;
-    }
-    let name = |st: &crate::runtime::State| match &p.name {
-        Some(name) => free_name(core, st, name).map(|_| name.clone()),
-        None => (!via)
-            .then(|| crate::machines::default_name(&target, |name| free_name(core, st, name).is_err()))
-            .flatten()
-            .ok_or_else(|| {
-                RpcError::invalid_params(format!("can't make a name from {target:?}")).with_hint("give one with --name")
-            }),
-    };
-    name(&core.lock())?;
-    let hello = crate::machines::hello(&core.paths, to, p.session.as_deref()).await?;
-    let text = |k: &str| hello["core"][k].as_str().unwrap_or_default().to_string();
-    let mut st = core.lock();
-    let machine = crate::machines::Machine {
-        name: name(&st)?,
-        target,
-        via,
-        temporary: p.temporary,
-        session: p.session,
-        id: text("id"),
-        host: text("name"),
-        version: hello["version"].as_str().unwrap_or_default().into(),
-        keeps_running_after_logout: hello["keeps_running_after_logout"].as_bool(),
-        logout_linger_user: hello["logout_linger_user"].as_str().map(String::from),
-    };
-    if machine.id == core.info.id {
-        return Err(RpcError::invalid_params(format!("{} is this core", machine.target))
-            .with_hint("add another machine, or another --session"));
-    }
-    if let Some(m) = st.machines.iter().find(|m| m.id == machine.id) {
-        // Reached another way yet the same core: a copy of that machine's disk
-        // whose system kept its machine id (some container images).
-        if (m.target.as_str(), m.via) != (machine.target.as_str(), machine.via) {
-            return Err(RpcError::new(
-                "already_added",
-                format!("{} answers as {}'s core: it looks like a copy of {}", machine.target, m.name, m.name),
-                "on the copy, stop hc and delete its core.json in hc's state folder, then add it again",
-            ));
-        }
-        return Err(RpcError::new(
-            "already_added",
-            format!("that core is already added as {}", m.name),
-            format!("rename it: hc machine rename {} <name>", m.name),
-        ));
-    }
-    st.machines.push(machine.clone());
-    crate::machines::save(&core.paths.state, &st.machines);
-    drop(st);
-    crate::remote::keep_up(core.core, machine.id.clone());
-    Ok(machine)
-}
-
-async fn machine_list(core: Ctx<'_>, _: Empty) -> Result<MachineListResult, RpcError> {
-    let st = core.lock();
-    Ok(MachineListResult { machines: st.machines.iter().map(|m| crate::remote::view(&st, m)).collect() })
-}
-
-async fn machine_connect(core: Ctx<'_>, p: MachineParams) -> Result<crate::remote::MachineView, RpcError> {
-    let m = {
-        let st = core.lock();
-        st.machines
-            .iter()
-            .find(|m| m.name == p.machine)
-            .cloned()
-            .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?
-    };
-    let connected = matches!(core.lock().lines.get(&m.id), Some(crate::remote::LineState::Connected(_)));
-    if !connected {
-        crate::remote::keep_up(core.core, m.id.clone());
-        crate::remote::dialed(core, &m.id).await;
-    }
-    Ok(crate::remote::view(&core.lock(), &m))
-}
-
-async fn machine_rename(core: Ctx<'_>, p: MachineRenameParams) -> Result<crate::machines::Machine, RpcError> {
-    let mut st = core.lock();
-    let i = st
-        .machines
-        .iter()
-        .position(|m| m.name == p.machine)
-        .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?;
-    if p.new_name != p.machine {
-        free_name(core, &st, &p.new_name)?;
-    }
-    let id = st.machines[i].id.clone();
-    st.machines[i].name = p.new_name.clone();
-    if p.new_name != p.machine {
-        crate::remote::rename_mirror(core, &mut st, &id, &p.machine, &p.new_name);
-    }
-    crate::machines::save(&core.paths.state, &st.machines);
-    Ok(st.machines[i].clone())
-}
-
-async fn machine_rm(core: Ctx<'_>, p: MachineParams) -> Result<RemoveResult, RpcError> {
-    let mut st = core.lock();
-    let i = st
-        .machines
-        .iter()
-        .position(|m| m.name == p.machine)
-        .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?;
-    let gone = st.machines.remove(i);
-    crate::remote::forget(core, &mut st, &gone.id);
-    crate::machines::save(&core.paths.state, &st.machines);
-    let last_on_target = !st.machines.iter().any(|m| m.target == gone.target);
-    drop(st);
-    if last_on_target {
-        crate::machines::logout(&core.paths, gone.reach());
-    }
-    Ok(RemoveResult { removed: gone.name })
 }
 
 async fn rpc_discover(_: Ctx<'_>, _: Empty) -> Result<serde_json::Value, RpcError> {

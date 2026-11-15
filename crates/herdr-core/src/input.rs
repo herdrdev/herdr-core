@@ -349,7 +349,7 @@ impl Core {
                             format!("hc read {}", crate::terminals::address(id)),
                         )
                     })?;
-                    t.check_program()?;
+                    t.check_input()?;
                     let left = st.gates.get(&id).map_or(Duration::ZERO, |g| g.wait(quiet, submits, draft));
                     if left.is_zero() {
                         let prepared = prepare(&st, t)?;
@@ -422,7 +422,7 @@ impl Core {
         first_task: bool,
     ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
-            t.check_program()?;
+            t.check_input()?;
         }
         self.settle(id).await?;
         let (status, turn, reported) = self
@@ -488,11 +488,11 @@ impl Core {
         loop {
             let ready = {
                 let st = self.lock();
-                let age = st
-                    .reg
-                    .terminals
-                    .get(&id)
-                    .map(|t| Duration::from_millis(crate::runtime::now_ms().saturating_sub(t.created_ms)));
+                let age = st.reg.terminals.get(&id).map(|t| {
+                    Duration::from_millis(
+                        crate::runtime::now_ms().saturating_sub(t.program_started_ms.unwrap_or(t.created_ms)),
+                    )
+                });
                 age.is_none_or(|age| {
                     age >= Duration::from_millis(STARTUP_MS)
                         || st.last_output.get(&id).map_or(age, Instant::elapsed) >= env_ms("HC_SETTLE_MS", 800)
@@ -534,7 +534,7 @@ impl Core {
         let (reported, pid) = {
             let st = self.lock();
             let t = st.reg.terminals.get(&id).ok_or_else(|| RpcError::new("not_found", "terminal removed", ""))?;
-            t.check_program()?;
+            t.check_input()?;
             (t.reported, t.pid.unwrap_or(0) as i32)
         };
         let before = if reported { -1 } else { self.foreground(id).await };

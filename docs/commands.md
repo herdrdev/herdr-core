@@ -15,6 +15,8 @@ Usage: hc <command> [options]
 
 Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
+  create                      make an empty terminal first (then: hc start <t> …)
+  start <t> <cmd|template>    start a program in an empty terminal (safe to retry)
   ls                          list live terminals (--all: finished too)
   get <t>                     show one terminal
   attach [t]                  put this terminal on it (ctrl+\ detaches)
@@ -53,7 +55,7 @@ More
 
 <t> is an address like t7 or t1b, or a name. In a terminal, attach, read, get,
 kill, rm, wait and interrupt pick one when it's left out.
-Options: --json (default when piped; run and read print text), -V --version,
+Options: --json (default when piped; run, start and read print text), -V --version,
 --licenses (what hc includes, and their licenses).
 Per command: hc <command> --help
 Settings: ~/.config/herdr-core/config.toml. notes = false: hc types nothing
@@ -99,6 +101,28 @@ Options:
       --json               JSON output even in a terminal
       --session <SESSION>  The hc session to reach, like HC_SESSION (one command that reads the same in sh, cmd and PowerShell)
   -h, --help               Print help
+```
+
+## hc create
+
+```text
+Create a live empty terminal without starting a program yet
+
+Usage: hc create [OPTIONS]
+
+Options:
+      --json             JSON output even in a terminal
+      --name <NAME>      Name, unique among live terminals: 1-32 of a-z 0-9 - _ 
+      --cwd <CWD>        Working directory (default: where hc runs; through the API, the core's; with --on, that machine's home)
+      --on <MACHINE>     Create it on another machine (see `hc machine ls`); its address is `machine/t7`
+      --label <K=V>      Labels, key=value (repeatable)
+      --parent <PARENT>  Parent terminal (default: the terminal it is created from)
+      --no-parent        No parent, even when started from a terminal
+      --no-notify        Don't type notes about it into its parent
+      --outlive-parent   Keep it running when its parent's program ends (by default it ends too)
+      --rm               Remove it right after it exits (once a waiting parent has the exit code)
+      --keep             Replace lost programs with a shell in place, never re-run the original command
+  -h, --help             Print help
 ```
 
 ## hc events
@@ -493,9 +517,9 @@ Options:
       --json               JSON output even in a terminal
       --name <NAME>        Name, unique among live terminals: 1-32 of a-z 0-9 - _ 
       --cwd <CWD>          Working directory (default: where hc runs; through the API, the core's; with --on, that machine's home)
-      --on <MACHINE>       Run it on another machine (see `hc machine ls`); its address is `machine/t7`
+      --on <MACHINE>       Create it on another machine (see `hc machine ls`); its address is `machine/t7`
       --label <K=V>        Labels, key=value (repeatable)
-      --parent <PARENT>    Parent terminal (default: the terminal it is started from)
+      --parent <PARENT>    Parent terminal (default: the terminal it is created from)
       --no-parent          No parent, even when started from a terminal
       --no-notify          Don't type notes about it into its parent
       --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
@@ -598,6 +622,24 @@ Usage: hc server stop [OPTIONS]
 Options:
       --json  JSON output even in a terminal
   -h, --help  Print help
+```
+
+## hc start
+
+```text
+Start a program or template in a terminal created with `hc create`
+
+Usage: hc start [OPTIONS] <TERMINAL> [ARGV]...
+
+Arguments:
+  <TERMINAL>  Terminal address (`t7`, `host/t7`) or name
+  [ARGV]...   Program and arguments, or a template name and its task. With neither argv nor line: that machine's own shell
+
+Options:
+      --bg                 Start it and come back at once (a server, several workers)
+      --json               JSON output even in a terminal
+      --timeout <TIMEOUT>  Seconds before a wait checks in, leaving it running (default: config `wait_timeout`, else 180)
+  -h, --help               Print help
 ```
 
 ## hc templates

@@ -857,3 +857,45 @@ fn a_machine_that_drops_off_is_shown_not_waited_on_and_comes_back() {
     wait_until("rohan back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
     assert_eq!(addresses(&s.json(&["ls"])), ["rohan/t1"]);
 }
+
+#[test]
+fn two_phase_create_and_idempotent_start_work_on_another_machine() {
+    let (rohan, s) = with_rohan_env(&[("HC_QUIET_MS", "0")]);
+    let parent = run(&s, &["sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("parent reported", || get(&s, &parent)["reported"] == true);
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", &parent)
+        .args(["--json", "create", "--on", "rohan", "--name", "rworker", "--label", "role=yolo"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let created: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((created["address"].as_str(), created["launch"].as_str()), (Some("rohan/t1"), Some("empty")));
+    assert_eq!(get(&s, "rohan/t1")["labels"]["role"], "yolo");
+
+    let body = script(&rohan, "echo remote-started; w go; exit 5");
+    let r1 = s.json(&["start", "rohan/t1", "--bg", "sh", "-c", &body]);
+    assert_eq!(r1["address"], "rohan/t1");
+    wait_until("remote started", || text(&s, "rohan/t1").contains("remote-started"));
+    let pid = get(&s, "rohan/t1")["pid"].as_u64().unwrap();
+
+    let r2 = s.json(&["start", "rohan/t1", "--bg", "sh", "-c", &body]);
+    assert_eq!(r2["address"], "rohan/t1");
+    assert_eq!(get(&s, "rohan/t1")["pid"].as_u64(), Some(pid));
+    assert_eq!(rohan.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
+
+    assert_eq!(s.err(&["--json", "start", "rohan/t1", "--bg", "true"]).1["error"]["kind"], "already_started");
+
+    let parent_there = get(&rohan, "t1")["parent"].as_str().unwrap().to_string();
+    let said = rohan.cmd().env("HC_TERMINAL_ID", "t1").args(["send", &parent_there, "hi-two-phase"]).output().unwrap();
+    assert!(said.status.success(), "{}", String::from_utf8_lossy(&said.stderr));
+    wait_until("reverse send from remote two-phase child", || {
+        text(&s, &parent).contains("<hc from=\"rohan/t1\">hi-two-phase</hc>")
+    });
+
+    touch(&rohan, "go");
+    wait_until("parent exit note from remote two-phase child", || {
+        text(&s, &parent).contains("rohan/t1 rworker exited (exit 5)")
+    });
+}

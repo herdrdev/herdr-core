@@ -5,6 +5,8 @@ Usage: hc <command> [options]
 
 Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
+  create                      make an empty terminal first (then: hc start <t> …)
+  start <t> <cmd|template>    start a program in an empty terminal (safe to retry)
   ls                          list live terminals (--all: finished too)
   get <t>                     show one terminal
   attach [t]                  put this terminal on it (ctrl+\ detaches)
@@ -43,7 +45,7 @@ More
 
 <t> is an address like t7 or t1b, or a name. In a terminal, attach, read, get,
 kill, rm, wait and interrupt pick one when it's left out.
-Options: --json (default when piped; run and read print text), -V --version,
+Options: --json (default when piped; run, start and read print text), -V --version,
 --licenses (what hc includes, and their licenses).
 Per command: hc <command> --help
 Settings: ~/.config/herdr-core/config.toml. notes = false: hc types nothing

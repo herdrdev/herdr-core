@@ -1,4 +1,4 @@
-//! `hc run …`: flags after a template's task, and what a run that waited prints.
+//! `hc run …` / `hc start …`: flags after a template's task, and what a run prints.
 
 use super::*;
 
@@ -7,43 +7,55 @@ use super::*;
 /// Flags given before the program stay; flags after the task are added.
 /// Also says whether those flags asked for --json.
 pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), RpcError> {
-    let Some((q, json)) = trailing_flags(paths, &p.argv)? else { return Ok((p, false)) };
+    let Some((Cmd::Run(q), json)) = trailing_flags(paths, "run", &["run"], &p.argv)? else { return Ok((p, false)) };
     let merged = RunParams {
         argv: q.argv,
-        name: q.name.or(p.name),
-        cwd: q.cwd.or(p.cwd),
-        on: q.on.or(p.on),
-        labels: [p.labels, q.labels].concat(),
-        parent: q.parent.or(p.parent),
-        no_parent: p.no_parent || q.no_parent,
-        no_notify: p.no_notify || q.no_notify,
-        outlive_parent: p.outlive_parent || q.outlive_parent,
-        rm: p.rm || q.rm,
-        keep: p.keep || q.keep,
+        create: CreateParams {
+            name: q.create.name.or(p.create.name),
+            cwd: q.create.cwd.or(p.create.cwd),
+            on: q.create.on.or(p.create.on),
+            labels: [p.create.labels, q.create.labels].concat(),
+            parent: q.create.parent.or(p.create.parent),
+            no_parent: p.create.no_parent || q.create.no_parent,
+            no_notify: p.create.no_notify || q.create.no_notify,
+            outlive_parent: p.create.outlive_parent || q.create.outlive_parent,
+            rm: p.create.rm || q.create.rm,
+            keep: p.create.keep || q.create.keep,
+            ..p.create
+        },
         bg: p.bg || q.bg,
         timeout: q.timeout.or(p.timeout),
         ..p
     };
-    if merged.parent.is_some() && merged.no_parent {
+    if merged.create.parent.is_some() && merged.create.no_parent {
         return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
     }
     Ok((merged, json))
 }
 
+pub(super) fn start_flags_after_task(paths: &Paths, p: StartParams) -> Result<(StartParams, bool), RpcError> {
+    let Some((Cmd::Start(q), json)) = trailing_flags(paths, "start", &["start", &p.terminal], &p.argv)? else {
+        return Ok((p, false));
+    };
+    let merged = StartParams { argv: q.argv, bg: p.bg || q.bg, timeout: q.timeout.or(p.timeout), ..p };
+    Ok((merged, json))
+}
+
 /// The task with hc's flags moved out of it, parsed on their own (behind a
 /// `--`, so a flag missing its value can't take the template's name).
-fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, bool)>, RpcError> {
+fn trailing_flags(paths: &Paths, sub: &str, prefix: &[&str], argv: &[String]) -> Result<Option<(Cmd, bool)>, RpcError> {
     use clap::CommandFactory;
     if argv.len() < 2 || !matches!(crate::templates::load(paths, &argv[0]), Ok(Some(_))) {
         return Ok(None);
     }
     let cli = Cli::command();
-    let Some(run) = cli.find_subcommand("run") else { return Ok(None) };
+    let Some(subcmd) = cli.find_subcommand(sub) else { return Ok(None) };
     let (mut flags, mut task) = (Vec::new(), Vec::new());
     let mut rest = argv[1..].iter();
     while let Some(a) = rest.next() {
         let long = a.strip_prefix("--").map(|l| l.split('=').next().unwrap_or(l));
-        match long.and_then(|l| run.get_arguments().chain(cli.get_arguments()).find(|arg| arg.get_long() == Some(l))) {
+        match long.and_then(|l| subcmd.get_arguments().chain(cli.get_arguments()).find(|arg| arg.get_long() == Some(l)))
+        {
             Some(arg) => {
                 flags.push(a.clone());
                 if arg.get_action().takes_values() && !a.contains('=') {
@@ -56,13 +68,38 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
     if flags.is_empty() {
         return Ok(None);
     }
-    let args =
-        ["hc".to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
+    let args = ["hc".into()]
+        .into_iter()
+        .chain(prefix.iter().map(|s| (*s).to_string()))
+        .chain(flags)
+        .chain(["--".into(), argv[0].clone()])
+        .chain(task);
     match Cli::try_parse_from(args) {
-        Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((q, json))),
+        Ok(Cli { cmd: Some(cmd), json, .. }) => Ok(Some((cmd, json))),
         Ok(_) => Ok(None),
-        Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
+        Err(e) => Err(RpcError::new("usage", usage_message(&e), format!("see `hc {sub} --help`"))),
     }
+}
+
+pub(super) fn run_result_out(r: &Value, wait: bool, asked: bool) -> Result<Option<Out>, RpcError> {
+    if wait && !asked {
+        return ran(r);
+    }
+    let address = r["address"].as_str().unwrap_or("?");
+    let mut human = format!("{address} started");
+    if let Some(first) = r.get("first_message") {
+        match first["sent"].as_bool() {
+            Some(true) => human.push_str("; first message sent"),
+            _ => human.push_str(&format!("; first message NOT sent: {}", first["reason"].as_str().unwrap_or("?"))),
+        }
+    }
+    let mut json = short(r);
+    for key in ["first_message", "wait", "output"] {
+        if let Some(v) = r.get(key) {
+            json[key] = v.clone();
+        }
+    }
+    Ok(Some(Out { json, human }))
 }
 
 /// A run that waited: its output as text (like read), a last line when there

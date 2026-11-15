@@ -80,6 +80,7 @@ fn check_span(span: &str, reference: &Reference) -> Result<(), String> {
         return Ok(());
     }
     let mut path = String::new();
+    let mut positionals = 0usize;
     let mut i = start.map_or(0, |i| i + 1);
     while i < tokens.len() {
         let word = tokens[i];
@@ -109,8 +110,11 @@ fn check_span(span: &str, reference: &Reference) -> Result<(), String> {
                 if !reference.contains_key(&path) {
                     return Err(format!("unknown command hc {path}"));
                 }
-            } else if matches!(path.as_str(), "run" | "exec") {
-                break;
+            } else {
+                positionals += 1;
+                if matches!(path.as_str(), "run" | "exec") || (path == "start" && positionals >= 2) {
+                    break;
+                }
             }
         }
         i += 1;
@@ -171,7 +175,9 @@ fn checker_catches_drift_without_treating_program_arguments_as_hc_flags() {
     let reference = reference();
     for good in [
         "hc machine add --via 'ssh -p 2222 host' --name box",
+        "hc create --name worker --label role=yolo",
         "hc run --bg pi --provider whatever",
+        "hc start worker --bg pi --provider whatever",
         "hc exec --on box git diff --stat",
         "hc file read --on box /srv/app/a.rs --limit 10",
         "hc send review 'check hc nonsense --not-an-hc-flag'",
@@ -186,6 +192,7 @@ fn checker_catches_drift_without_treating_program_arguments_as_hc_flags() {
         "hc made-up",
         "hc machine nope",
         "hc run --bgg pi",
+        "hc start worker --bgg pi",
         "hc ls --via box",
         "hc --agent-help",
         "--agent-help",

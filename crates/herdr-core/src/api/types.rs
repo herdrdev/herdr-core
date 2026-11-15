@@ -217,18 +217,7 @@ pub struct InitialSize {
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
-pub struct RunParams {
-    /// Program and arguments, or a template name and its task. With neither
-    /// argv nor line: that machine's own shell.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    #[serde(default)]
-    pub argv: Vec<String>,
-    /// A shell line instead of argv, run by that machine's shell (`sh -c`;
-    /// Windows `%COMSPEC% /d /s /c`). The CLI sends one string with spaces or
-    /// shell signs as a line.
-    #[arg(skip)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<String>,
+pub struct CreateParams {
     /// Initial size before the program starts. Omitted: the configured
     /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
     #[arg(skip)]
@@ -246,21 +235,16 @@ pub struct RunParams {
     /// with --on, that machine's home).
     #[arg(long)]
     pub cwd: Option<String>,
-    /// Run it on another machine (see `hc machine ls`); its address is `machine/t7`.
+    /// Create it on another machine (see `hc machine ls`); its address is `machine/t7`.
     #[arg(long, value_name = "MACHINE")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
-    /// Override the core's environment and terminal identity. Omit terminal
-    /// identity variables to use the core's defaults.
-    #[arg(skip)]
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
     /// Labels, key=value (repeatable).
     #[arg(long = "label", value_name = "K=V")]
     #[serde(default, with = "label_map")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub labels: Vec<Label>,
-    /// Parent terminal (default: the terminal it is started from).
+    /// Parent terminal (default: the terminal it is created from).
     #[arg(long, conflicts_with = "no_parent")]
     pub parent: Option<String>,
     /// No parent, even when started from a terminal.
@@ -287,6 +271,68 @@ pub struct RunParams {
     #[arg(long)]
     #[serde(default)]
     pub keep: bool,
+    /// Who is calling (`HC_TERMINAL_ID` inside a terminal).
+    #[arg(skip)]
+    pub caller: Option<String>,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct RunParams {
+    /// Program and arguments, or a template name and its task. With neither
+    /// argv nor line: that machine's own shell.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[serde(default)]
+    pub argv: Vec<String>,
+    /// A shell line instead of argv, run by that machine's shell (`sh -c`;
+    /// Windows `%COMSPEC% /d /s /c`). The CLI sends one string with spaces or
+    /// shell signs as a line.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub create: CreateParams,
+    /// Override the core's environment and terminal identity. Omit terminal
+    /// identity variables to use the core's defaults.
+    #[arg(skip)]
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Then wait until it is not working, like `terminal.wait`, and return its
+    /// output (the CLI waits unless --bg).
+    #[arg(skip)]
+    #[serde(default)]
+    pub wait: bool,
+    /// Start it and come back at once (a server, several workers).
+    #[arg(long)]
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub bg: bool,
+    /// Seconds before a wait checks in, leaving it running (default: config
+    /// `wait_timeout`, else 180).
+    #[arg(long, value_parser = cli_seconds)]
+    pub timeout: Option<f64>,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct StartParams {
+    /// Terminal address (`t7`, `host/t7`) or name.
+    pub terminal: String,
+    /// Program and arguments, or a template name and its task. With neither
+    /// argv nor line: that machine's own shell.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[serde(default)]
+    pub argv: Vec<String>,
+    /// A shell line instead of argv, run by that machine's shell (`sh -c`;
+    /// Windows `%COMSPEC% /d /s /c`). The CLI sends one string with spaces or
+    /// shell signs as a line.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// Override the core's environment and terminal identity. Omit terminal
+    /// identity variables to use the core's defaults.
+    #[arg(skip)]
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// Then wait until it is not working, like `terminal.wait`, and return its
     /// output (the CLI waits unless --bg).
     #[arg(skip)]
