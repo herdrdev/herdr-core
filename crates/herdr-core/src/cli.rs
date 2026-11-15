@@ -1,8 +1,8 @@
 //! `hc`: one API call per command. Tables for people, JSON when piped or `--json`.
 
 use crate::api::{
-    AttachParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams, ReadParams, RunParams,
-    SendParams, SubscribeParams, TerminalParams, WaitParams,
+    AttachParams, CreateParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams,
+    ReadParams, RunParams, SendParams, StartParams, SubscribeParams, TerminalParams, WaitParams,
 };
 use crate::client;
 use crate::paths::Paths;
@@ -37,6 +37,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Create a live empty terminal without starting a program yet.
+    Create(CreateParams),
+    /// Start a program or template in a terminal created with `hc create`.
+    Start(StartParams),
     /// Start a program, or a template by name with its task: hc run reviewer "review src/x.rs".
     Run(RunParams),
     /// List live terminals.
@@ -161,6 +165,10 @@ pub fn main() -> i32 {
     let (cmd, asked) = match cli.cmd {
         Some(Cmd::Run(p)) => match Paths::from_env().and_then(|paths| flags_after_task(&paths, p)) {
             Ok((p, trailing)) => (Some(Cmd::Run(p)), cli.json || trailing),
+            Err(err) => return fail(&err, cli.json || piped),
+        },
+        Some(Cmd::Start(p)) => match Paths::from_env().and_then(|paths| start_flags_after_task(&paths, p)) {
+            Ok((p, trailing)) => (Some(Cmd::Start(p)), cli.json || trailing),
             Err(err) => return fail(&err, cli.json || piped),
         },
         cmd => (cmd, cli.json),
@@ -378,36 +386,37 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let human = format!("sent {}: {}", r["key"].as_str().unwrap_or("?"), r["outcome"].as_str().unwrap_or("?"));
             Out { json: r, human }
         }
-        Cmd::Run(mut p) => {
+        Cmd::Create(mut p) => {
             if p.on.is_none() {
                 p.cwd = from_here(p.cwd); // our folder means nothing on another machine
             }
+            p.caller = Some(caller());
+            p.die_with_parent = !p.outlive_parent; // what an older core reads
+            let r = call("terminal.create", to(&p))?;
+            let address = r["address"].as_str().unwrap_or("?");
+            Out { json: short(&r), human: format!("{address} created") }
+        }
+        Cmd::Start(mut p) => {
             p.caller = Some(caller());
             if let Some(line) = shell_line(&p.argv) {
                 (p.line, p.argv) = (Some(line), Vec::new());
             }
             p.wait = !p.bg;
-            p.die_with_parent = !p.outlive_parent; // what an older core reads
+            let r = call("terminal.start", to(&p))?;
+            return run_result_out(&r, p.wait, asked);
+        }
+        Cmd::Run(mut p) => {
+            if p.create.on.is_none() {
+                p.create.cwd = from_here(p.create.cwd); // our folder means nothing on another machine
+            }
+            p.create.caller = Some(caller());
+            if let Some(line) = shell_line(&p.argv) {
+                (p.line, p.argv) = (Some(line), Vec::new());
+            }
+            p.wait = !p.bg;
+            p.create.die_with_parent = !p.create.outlive_parent; // what an older core reads
             let r = call("terminal.run", to(&p))?;
-            if p.wait && !asked {
-                return ran(&r);
-            }
-            let address = r["address"].as_str().unwrap_or("?");
-            let mut human = format!("{address} started");
-            if let Some(first) = r.get("first_message") {
-                match first["sent"].as_bool() {
-                    Some(true) => human.push_str("; first message sent"),
-                    _ => human
-                        .push_str(&format!("; first message NOT sent: {}", first["reason"].as_str().unwrap_or("?"))),
-                }
-            }
-            let mut json = short(&r);
-            for key in ["first_message", "wait", "output"] {
-                if let Some(v) = r.get(key) {
-                    json[key] = v.clone();
-                }
-            }
-            Out { json, human }
+            return run_result_out(&r, p.wait, asked);
         }
         Cmd::Ls(p) => {
             let r = call("terminal.list", to(&p))?;
@@ -797,6 +806,8 @@ fn pump(from: &mut impl Read, to: &mut impl std::io::Write) {
 
 /// Which API method each command calls. Methods missing here are API-only.
 pub const COMMANDS: &[(&str, &str)] = &[
+    ("create", "terminal.create"),
+    ("start", "terminal.start"),
     ("run", "terminal.run"),
     ("ls", "terminal.list"),
     ("get", "terminal.get"),

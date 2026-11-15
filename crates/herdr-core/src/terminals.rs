@@ -10,6 +10,34 @@ pub const RETAIN_MS: u64 = 24 * 60 * 60 * 1000;
 pub const MAX_FINISHED: usize = 500;
 pub const KEEP_RETRY_MS: u64 = 1500;
 
+/// Where a terminal stands in two-phase launch (`create` -> `start`).
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Launch {
+    /// Allocated by `terminal.create`; no command claimed yet.
+    Empty,
+    /// `terminal.start` (or initial `terminal.run`) claimed the slot and is spawning.
+    Starting,
+    /// The program was handed to the holder (or loaded from an older core).
+    #[default]
+    Started,
+}
+
+/// Canonical command specification used for idempotent `terminal.start` deduplication.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchSpec {
+    pub argv: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub first: Option<String>,
+}
+
+/// Outcome of claiming an empty terminal slot for launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    Claimed,
+    IdempotentReplay,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct Terminal {
     /// `t7`: this terminal forever on this core.
@@ -34,6 +62,9 @@ pub struct Terminal {
     pub program_started_ms: Option<u64>,
     /// "live" or "finished".
     pub state: String,
+    /// Launch phase: "empty", "starting", or "started".
+    #[serde(default)]
+    pub launch: Launch,
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -138,6 +169,14 @@ pub struct Terminal {
     /// Machines (core ids) it started work on: they may call back to it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub afar: std::collections::BTreeSet<String>,
+    /// Canonical `terminal.start` spec (private) for idempotent retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub launch_spec: Option<LaunchSpec>,
+    /// Template first message outcome persisted for idempotent replay (private).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub sent_first_message: Option<crate::templates::FirstMessage>,
 }
 
 impl Terminal {
@@ -161,6 +200,25 @@ impl Terminal {
             ));
         }
         Ok(())
+    }
+
+    pub fn check_input(&self) -> Result<(), RpcError> {
+        self.check_program()?;
+        if self.is_live() && self.launch != Launch::Started {
+            return Err(RpcError::new(
+                "not_started",
+                format!("{} has no program yet", self.address),
+                format!("start one with `hc start {} ...`", self.address),
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_template(&mut self, template: Option<&crate::templates::Template>) {
+        self.submit = template.and_then(|t| t.submit.clone());
+        self.stop = template.and_then(|t| t.stop.clone());
+        self.paste_gap_ms = template.and_then(|t| t.paste_gap_ms);
+        self.template = template.map(|t| t.name.clone());
     }
 }
 
@@ -236,8 +294,8 @@ pub struct NewTerminal {
 }
 
 impl Registry {
-    /// Validates and records a new live terminal (pid set once the holder spawned it).
-    pub fn create(&mut self, new: NewTerminal, now_ms: u64) -> Result<u32, RpcError> {
+    /// Validates and records a new empty live terminal (launch = empty).
+    pub fn create_empty(&mut self, new: NewTerminal, now_ms: u64) -> Result<u32, RpcError> {
         if let Some(name) = &new.name {
             crate::addr::check_name(name)?;
             if self.live_named(name).is_some() {
@@ -251,9 +309,6 @@ impl Registry {
         for key in new.labels.keys() {
             check_label_key(key)?;
         }
-        if new.argv.is_empty() {
-            return Err(RpcError::invalid_params("nothing to run"));
-        }
         let id = self.next_id.max(1);
         self.next_id = id.checked_add(1).ok_or_else(|| {
             RpcError::new("unavailable", "this core has used every terminal id", "wipe its state to start over")
@@ -264,7 +319,7 @@ impl Registry {
                 address: address(id),
                 name: new.name,
                 labels: new.labels.into_iter().filter(|(_, v)| !v.is_empty()).collect(),
-                argv: new.argv,
+                argv: Vec::new(),
                 cwd: new.cwd,
                 keep: new.keep,
                 last_cwd: None,
@@ -273,6 +328,7 @@ impl Registry {
                 restart_delay_ms: 0,
                 program_started_ms: None,
                 state: "live".into(),
+                launch: Launch::Empty,
                 pid: None,
                 exit_code: None,
                 signal: None,
@@ -303,17 +359,84 @@ impl Registry {
                 full_screen: false,
                 win32_input: false,
                 seen_ms: None,
-                submit: new.template.as_ref().and_then(|t| t.submit.clone()),
-                stop: new.template.as_ref().and_then(|t| t.stop.clone()),
-                paste_gap_ms: new.template.as_ref().and_then(|t| t.paste_gap_ms),
+                submit: None,
+                stop: None,
+                paste_gap_ms: None,
                 foreground: None,
                 afar: Default::default(),
-                template: new.template.map(|t| t.name),
+                launch_spec: None,
+                sent_first_message: None,
+                template: None,
                 first_message: None,
                 holder: None,
             },
         );
         Ok(id)
+    }
+
+    /// Validates and records a new live terminal (pid set once the holder spawned it).
+    pub fn create(&mut self, mut new: NewTerminal, now_ms: u64) -> Result<u32, RpcError> {
+        if new.argv.is_empty() {
+            return Err(RpcError::invalid_params("nothing to run"));
+        }
+        let argv = std::mem::take(&mut new.argv);
+        let template = new.template.take();
+        let id = self.create_empty(new, now_ms)?;
+        let t = self.terminals.get_mut(&id).expect("just created");
+        t.argv = argv;
+        t.set_template(template.as_ref());
+        t.launch = Launch::Started;
+        Ok(id)
+    }
+
+    /// Claims an empty terminal for launch, or matches an existing claim for idempotent retry.
+    pub fn claim_start(
+        &mut self,
+        id: u32,
+        spec: LaunchSpec,
+        template: Option<crate::templates::Template>,
+        restart_env: BTreeMap<String, String>,
+    ) -> Result<ClaimOutcome, RpcError> {
+        let Some(t) = self.terminals.get_mut(&id) else {
+            return Err(RpcError::new("not_found", format!("{} was removed", address(id)), "see `hc ls --all`"));
+        };
+        if t.launch != Launch::Empty {
+            if t.launch_spec.as_ref() == Some(&spec) {
+                return Ok(ClaimOutcome::IdempotentReplay);
+            }
+            return Err(RpcError::new(
+                "already_started",
+                format!("{} already started a different command", t.address),
+                "use `hc create` for a new terminal, or retry `hc start` with the same command",
+            ));
+        }
+        if !t.is_live() {
+            return Err(RpcError::new(
+                "finished",
+                format!("{} has already finished", t.address),
+                "create a new terminal with `hc create`",
+            ));
+        }
+        t.launch = Launch::Starting;
+        t.argv = spec.argv.clone();
+        t.launch_spec = Some(spec);
+        t.restart_env = restart_env;
+        t.set_template(template.as_ref());
+        Ok(ClaimOutcome::Claimed)
+    }
+
+    /// Releases a claimed terminal back to `Empty` when spawn never took hold.
+    pub fn release_unstarted(&mut self, id: u32) {
+        let Some(t) = self.terminals.get_mut(&id) else { return };
+        if t.is_live() && t.launch == Launch::Starting && t.pid.is_none() && t.reason.is_none() {
+            t.launch = Launch::Empty;
+            t.launch_spec = None;
+            t.argv.clear();
+            t.restart_env.clear();
+            t.holder = None;
+            t.scope = None;
+            t.set_template(None);
+        }
     }
 
     fn live_named(&self, name: &str) -> Option<&Terminal> {
@@ -337,6 +460,7 @@ impl Registry {
     pub fn finish(&mut self, id: u32, code: Option<i32>, signal: Option<i32>, reason: &str, now_ms: u64) {
         if let Some(t) = self.terminals.get_mut(&id).filter(|t| t.is_live()) {
             let pending = t.keep
+                && t.launch != Launch::Empty
                 && matches!(
                     reason,
                     "holder_lost" | "stopped_by_restart" | "server_stop" | "host_shutdown" | "signaled"
@@ -398,12 +522,21 @@ impl Registry {
             .collect();
         finished.sort();
         let over = finished.len().saturating_sub(MAX_FINISHED);
-        finished
+        let mut expired: Vec<u32> = finished
             .iter()
             .enumerate()
             .filter(|(i, (_, _, clock))| *i < over || clock.is_some_and(|c| now_ms.saturating_sub(c) > retain_ms()))
             .map(|(_, (_, id, _))| *id)
-            .collect()
+            .collect();
+        expired.extend(
+            self.terminals
+                .values()
+                .filter(|t| {
+                    t.is_live() && t.launch == Launch::Empty && now_ms.saturating_sub(t.created_ms) > retain_ms()
+                })
+                .map(Terminal::id),
+        );
+        expired
     }
 }
 
@@ -426,6 +559,8 @@ const PRIVATE: &[&str] = &[
     "restart_after_ms",
     "restart_delay_ms",
     "program_started_ms",
+    "launch_spec",
+    "sent_first_message",
 ];
 
 /// A terminal as clients see it (API results, events): its facts, without
@@ -568,5 +703,116 @@ mod tests {
         let old = r.expired(RETAIN_MS + 100);
         assert_eq!(old.len(), 100);
         assert!(!old.contains(&live));
+    }
+
+    #[test]
+    fn create_empty_claim_replay_and_mismatch() {
+        let mut r = Registry::default();
+        let id = r
+            .create_empty(
+                NewTerminal {
+                    name: Some("yolo".into()),
+                    cwd: "/work".into(),
+                    cols: 80,
+                    rows: 24,
+                    ..Default::default()
+                },
+                10,
+            )
+            .unwrap();
+        let t = &r.terminals[&id];
+        assert_eq!(t.launch, Launch::Empty);
+        assert!(t.argv.is_empty());
+        assert!(t.is_live());
+        assert_eq!(t.check_input().unwrap_err().kind, "not_started");
+        let public = serde_json::to_value(Public(t.clone())).unwrap();
+        assert_eq!(public["launch"], "empty");
+        assert!(public.get("launch_spec").is_none());
+        assert!(public.get("sent_first_message").is_none());
+
+        assert_eq!(
+            r.create_empty(NewTerminal { name: Some("yolo".into()), cwd: "/".into(), ..Default::default() }, 11)
+                .unwrap_err()
+                .kind,
+            "name_taken"
+        );
+
+        let spec1 = LaunchSpec { argv: vec!["claude".into()], env: BTreeMap::new(), first: Some("hi".into()) };
+        assert_eq!(r.claim_start(id, spec1.clone(), None, BTreeMap::new()).unwrap(), ClaimOutcome::Claimed);
+        assert_eq!(r.terminals[&id].launch, Launch::Starting);
+        assert_eq!(r.terminals[&id].argv, vec!["claude"]);
+        assert_eq!(r.terminals[&id].check_input().unwrap_err().kind, "not_started");
+        assert_eq!(r.claim_start(id, spec1.clone(), None, BTreeMap::new()).unwrap(), ClaimOutcome::IdempotentReplay);
+
+        r.terminals.get_mut(&id).unwrap().reason = Some("spawn_pending".into());
+        assert_eq!(r.terminals[&id].check_input().unwrap_err().kind, "unavailable");
+        r.terminals.get_mut(&id).unwrap().reason = None;
+        r.terminals.get_mut(&id).unwrap().launch = Launch::Started;
+        assert!(r.terminals[&id].check_input().is_ok());
+
+        let spec2 = LaunchSpec { argv: vec!["codex".into()], env: BTreeMap::new(), first: None };
+        assert_eq!(r.claim_start(id, spec2.clone(), None, BTreeMap::new()).unwrap_err().kind, "already_started");
+
+        r.finish(id, Some(0), None, "exited", 20);
+        assert_eq!(r.claim_start(id, spec1, None, BTreeMap::new()).unwrap(), ClaimOutcome::IdempotentReplay);
+        assert_eq!(r.claim_start(id, spec2, None, BTreeMap::new()).unwrap_err().kind, "already_started");
+    }
+
+    #[test]
+    fn release_unstarted_and_kill_before_start() {
+        let mut r = Registry::default();
+        let id = r
+            .create_empty(NewTerminal { keep: true, cwd: "/work".into(), cols: 80, rows: 24, ..Default::default() }, 10)
+            .unwrap();
+        let spec1 = LaunchSpec { argv: vec!["bad-bin".into()], env: BTreeMap::new(), first: None };
+        let mut restart_env = BTreeMap::new();
+        restart_env.insert("FOO".into(), "bar".into());
+        assert_eq!(r.claim_start(id, spec1, None, restart_env).unwrap(), ClaimOutcome::Claimed);
+        r.terminals.get_mut(&id).unwrap().holder = Some("h1".into());
+        r.terminals.get_mut(&id).unwrap().scope = Some("s1".into());
+
+        // Pre-holder / synchronous failure releases back to Empty cleanly.
+        r.release_unstarted(id);
+        let t = &r.terminals[&id];
+        assert_eq!(t.launch, Launch::Empty);
+        assert!(t.argv.is_empty());
+        assert!(t.launch_spec.is_none());
+        assert!(t.holder.is_none());
+        assert!(t.scope.is_none());
+        assert!(t.restart_env.is_empty());
+
+        let spec2 = LaunchSpec { argv: vec!["sh".into()], env: BTreeMap::new(), first: None };
+        assert_eq!(r.claim_start(id, spec2, None, BTreeMap::new()).unwrap(), ClaimOutcome::Claimed);
+        r.terminals.get_mut(&id).unwrap().reason = Some("spawn_pending".into());
+        r.release_unstarted(id);
+        assert_eq!(r.terminals[&id].launch, Launch::Starting, "spawn_pending stays claimed");
+
+        for reason in ["killed", "server_stop"] {
+            let empty_kept =
+                r.create_empty(NewTerminal { keep: true, cwd: "/".into(), ..Default::default() }, 30).unwrap();
+            r.finish(empty_kept, None, None, reason, 50);
+            let t = &r.terminals[&empty_kept];
+            assert!(!t.is_live(), "empty --keep finishes directly on {reason}");
+            assert_eq!(t.finished_ms, Some(50));
+            assert_eq!(
+                r.claim_start(empty_kept, LaunchSpec::default(), None, BTreeMap::new()).unwrap_err().kind,
+                "finished"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_deserialization_and_empty_retention() {
+        let mut r = Registry::default();
+        let started = r.create(new(None), 0).unwrap();
+        let mut val = serde_json::to_value(&r.terminals[&started]).unwrap();
+        val.as_object_mut().unwrap().remove("launch");
+        let parsed: Terminal = serde_json::from_value(val).unwrap();
+        assert_eq!(parsed.launch, Launch::Started);
+        assert!(parsed.launch_spec.is_none());
+
+        let empty = r.create_empty(NewTerminal { cwd: "/".into(), ..Default::default() }, 0).unwrap();
+        assert!(r.expired(RETAIN_MS).is_empty());
+        assert_eq!(r.expired(RETAIN_MS + 1), vec![empty]);
     }
 }

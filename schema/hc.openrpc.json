@@ -462,6 +462,26 @@
         ],
         "type": "object"
       },
+      "Launch": {
+        "description": "Where a terminal stands in two-phase launch (`create` -> `start`).",
+        "oneOf": [
+          {
+            "const": "empty",
+            "description": "Allocated by `terminal.create`; no command claimed yet.",
+            "type": "string"
+          },
+          {
+            "const": "starting",
+            "description": "`terminal.start` (or initial `terminal.run`) claimed the slot and is spawning.",
+            "type": "string"
+          },
+          {
+            "const": "started",
+            "description": "The program was handed to the holder (or loaded from an older core).",
+            "type": "string"
+          }
+        ]
+      },
       "ListResult": {
         "properties": {
           "hidden_finished": {
@@ -823,6 +843,11 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "launch": {
+            "$ref": "#/components/schemas/Launch",
+            "default": "started",
+            "description": "Launch phase: \"empty\", \"starting\", or \"started\"."
           },
           "name": {
             "type": [
@@ -1312,6 +1337,11 @@
             },
             "type": "object"
           },
+          "launch": {
+            "$ref": "#/components/schemas/Launch",
+            "default": "started",
+            "description": "Launch phase: \"empty\", \"starting\", or \"started\"."
+          },
           "name": {
             "type": [
               "string",
@@ -1685,6 +1715,388 @@
       }
     },
     {
+      "description": "Create a live empty terminal without starting a program yet. Its address, labels, and screen exist at once so callers can attach or stage files before `terminal.start`.",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "name_taken"
+          },
+          "message": "name_taken"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "config"
+          },
+          "message": "config"
+        }
+      ],
+      "name": "terminal.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Who is calling (`HC_TERMINAL_ID` inside a terminal).",
+          "name": "caller",
+          "required": false,
+          "schema": {
+            "description": "Who is calling (`HC_TERMINAL_ID` inside a terminal).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Working directory (default: where hc runs; through the API, the core's;\nwith --on, that machine's home).",
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "description": "Working directory (default: where hc runs; through the API, the core's;\nwith --on, that machine's home).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Ignored: children end with their parent unless `outlive_parent`.",
+          "name": "die_with_parent",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Ignored: children end with their parent unless `outlive_parent`.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "name": "display",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Display"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
+          }
+        },
+        {
+          "description": "Replace lost programs with a shell in place, never re-run the original command.",
+          "name": "keep",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Replace lost programs with a shell in place, never re-run the original command.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Labels, key=value (repeatable).",
+          "name": "labels",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Labels, key=value (repeatable).",
+            "type": "object"
+          }
+        },
+        {
+          "description": "Name, unique among live terminals: 1-32 of a-z 0-9 - _ .",
+          "name": "name",
+          "required": false,
+          "schema": {
+            "description": "Name, unique among live terminals: 1-32 of a-z 0-9 - _ .",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Don't type notes about it into its parent.",
+          "name": "no_notify",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Don't type notes about it into its parent.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "No parent, even when started from a terminal.",
+          "name": "no_parent",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "No parent, even when started from a terminal.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Create it on another machine (see `hc machine ls`); its address is `machine/t7`.",
+          "name": "on",
+          "required": false,
+          "schema": {
+            "description": "Create it on another machine (see `hc machine ls`); its address is `machine/t7`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Keep it running when its parent's program ends (by default it ends too).",
+          "name": "outlive_parent",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Keep it running when its parent's program ends (by default it ends too).",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Parent terminal (default: the terminal it is created from).",
+          "name": "parent",
+          "required": false,
+          "schema": {
+            "description": "Parent terminal (default: the terminal it is created from).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Remove it right after it exits (once a waiting parent has the exit code).",
+          "name": "rm",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Remove it right after it exits (once a waiting parent has the exit code).",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "name": "size",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InitialSize"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Terminal"
+        }
+      }
+    },
+    {
+      "description": "Start a program or template in a terminal created by `terminal.create`. Safe to retry with the same command.",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "already_started"
+          },
+          "message": "already_started"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "spawn_failed"
+          },
+          "message": "spawn_failed"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "invalid_template"
+          },
+          "message": "invalid_template"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "config"
+          },
+          "message": "config"
+        }
+      ],
+      "name": "terminal.start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Program and arguments, or a template name and its task. With neither\nargv nor line: that machine's own shell.",
+          "name": "argv",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Program and arguments, or a template name and its task. With neither\nargv nor line: that machine's own shell.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Who is calling (`HC_TERMINAL_ID` inside a terminal).",
+          "name": "caller",
+          "required": false,
+          "schema": {
+            "description": "Who is calling (`HC_TERMINAL_ID` inside a terminal).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
+          "name": "env",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Override the core's environment and terminal identity. Omit terminal\nidentity variables to use the core's defaults.",
+            "type": "object"
+          }
+        },
+        {
+          "description": "A shell line instead of argv, run by that machine's shell (`sh -c`;\nWindows `%COMSPEC% /d /s /c`). The CLI sends one string with spaces or\nshell signs as a line.",
+          "name": "line",
+          "required": false,
+          "schema": {
+            "description": "A shell line instead of argv, run by that machine's shell (`sh -c`;\nWindows `%COMSPEC% /d /s /c`). The CLI sends one string with spaces or\nshell signs as a line.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Terminal address (`t7`, `host/t7`) or name.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "Terminal address (`t7`, `host/t7`) or name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Seconds before a wait checks in, leaving it running (default: config\n`wait_timeout`, else 180).",
+          "name": "timeout",
+          "required": false,
+          "schema": {
+            "description": "Seconds before a wait checks in, leaving it running (default: config\n`wait_timeout`, else 180).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Then wait until it is not working, like `terminal.wait`, and return its\noutput (the CLI waits unless --bg).",
+          "name": "wait",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Then wait until it is not working, like `terminal.wait`, and return its\noutput (the CLI waits unless --bg).",
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunResult"
+        }
+      }
+    },
+    {
       "description": "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
       "errors": [
         {
@@ -1891,11 +2303,11 @@
           }
         },
         {
-          "description": "Run it on another machine (see `hc machine ls`); its address is `machine/t7`.",
+          "description": "Create it on another machine (see `hc machine ls`); its address is `machine/t7`.",
           "name": "on",
           "required": false,
           "schema": {
-            "description": "Run it on another machine (see `hc machine ls`); its address is `machine/t7`.",
+            "description": "Create it on another machine (see `hc machine ls`); its address is `machine/t7`.",
             "type": [
               "string",
               "null"
@@ -1913,11 +2325,11 @@
           }
         },
         {
-          "description": "Parent terminal (default: the terminal it is started from).",
+          "description": "Parent terminal (default: the terminal it is created from).",
           "name": "parent",
           "required": false,
           "schema": {
-            "description": "Parent terminal (default: the terminal it is started from).",
+            "description": "Parent terminal (default: the terminal it is created from).",
             "type": [
               "string",
               "null"
@@ -2530,6 +2942,13 @@
         {
           "code": -32000,
           "data": {
+            "kind": "not_started"
+          },
+          "message": "not_started"
+        },
+        {
+          "code": -32000,
+          "data": {
             "kind": "unavailable"
           },
           "message": "unavailable"
@@ -2802,6 +3221,13 @@
         {
           "code": -32000,
           "data": {
+            "kind": "not_started"
+          },
+          "message": "not_started"
+        },
+        {
+          "code": -32000,
+          "data": {
             "kind": "unavailable"
           },
           "message": "unavailable"
@@ -2879,6 +3305,13 @@
             "kind": "finished"
           },
           "message": "finished"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_started"
+          },
+          "message": "not_started"
         },
         {
           "code": -32000,
