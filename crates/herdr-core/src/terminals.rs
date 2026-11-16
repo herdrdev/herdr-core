@@ -98,6 +98,12 @@ pub struct Terminal {
     /// It messaged its parent during this turn: the turn's end tells nothing new.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub told_parent: bool,
+    /// Text whose printed lines are news (`run --watch`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch: Vec<String>,
+    /// Watched lines it printed that its parent hasn't seen, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched: Vec<String>,
     /// Lines it printed, at least: more than its history holds means some
     /// were dropped, so a read reaching back that far is not complete.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -223,6 +229,7 @@ pub struct NewTerminal {
     pub template: Option<crate::templates::Template>,
     pub parent: Option<String>,
     pub notify: bool,
+    pub watch: Vec<String>,
     pub die_with_parent: bool,
     pub rm: bool,
     pub keep: bool,
@@ -253,6 +260,9 @@ impl Registry {
         }
         if new.argv.is_empty() {
             return Err(RpcError::invalid_params("nothing to run"));
+        }
+        if new.watch.iter().any(String::is_empty) {
+            return Err(RpcError::invalid_params("watch for some text, not an empty string"));
         }
         let id = self.next_id.max(1);
         self.next_id = id.checked_add(1).ok_or_else(|| {
@@ -298,6 +308,8 @@ impl Registry {
                 seen: 0,
                 noted: 0,
                 told_parent: false,
+                watch: new.watch,
+                matched: Vec::new(),
                 scope: None,
                 printed: 0,
                 full_screen: false,
@@ -415,6 +427,7 @@ const PRIVATE: &[&str] = &[
     "noted",
     "seen_ms",
     "told_parent",
+    "matched",
     "scope",
     "holder",
     "printed",

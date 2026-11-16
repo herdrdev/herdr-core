@@ -226,6 +226,13 @@ impl Core {
         if !reports.is_empty() {
             self.report_status(st, id, &reports);
         }
+        let State { reg, watched, .. } = st;
+        if let Some(t) = reg.terminals.get(&id).filter(|t| !t.watch.is_empty() && !scrolling) {
+            let lines = watched.entry(id).or_default().feed(&t.watch, &out);
+            if !lines.is_empty() {
+                self.matched(st, id, lines);
+            }
+        }
         if let Some(title) = title {
             st.reg.terminals.get_mut(&id).expect("live terminal").title = title.clone();
             self.save_soon();

@@ -149,6 +149,7 @@ pub(super) async fn start(
             die_with_parent: parent.is_some() && !p.outlive_parent,
             parent,
             notify: !p.no_notify,
+            watch: p.watch,
             rm: p.rm,
             keep: p.keep,
             name: p.name,

@@ -498,6 +498,7 @@ Options:
       --parent <PARENT>    Parent terminal (default: the terminal it is started from)
       --no-parent          No parent, even when started from a terminal
       --no-notify          Don't type notes about it into its parent
+      --watch <TEXT>       A line it prints containing this text is news: a note to its parent and a `matched` event (plain text, escape sequences stripped; repeatable)
       --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
       --rm                 Remove it right after it exits (once a waiting parent has the exit code)
       --keep               Replace lost programs with a shell in place, never re-run the original command

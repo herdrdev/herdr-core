@@ -271,6 +271,11 @@ pub struct RunParams {
     #[arg(long)]
     #[serde(default)]
     pub no_notify: bool,
+    /// A line it prints containing this text is news: a note to its parent and a
+    /// `matched` event (plain text, escape sequences stripped; repeatable).
+    #[arg(long, value_name = "TEXT")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch: Vec<String>,
     /// Keep it running when its parent's program ends (by default it ends too).
     #[arg(long)]
     #[serde(default)]

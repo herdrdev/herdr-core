@@ -90,6 +90,14 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
             format!("hc machine update {}", m.name),
         ));
     }
+    let watches = params["watch"].as_array().is_some_and(|w| !w.is_empty());
+    if method == "terminal.run" && watches && !line.features.iter().any(|f| f == "watch") {
+        return Err(RpcError::new(
+            "needs_update",
+            format!("{}'s hc is older and can't watch output", m.name),
+            format!("hc machine update {}", m.name),
+        ));
+    }
     let grant = RunGrant::start(core, m, method, &params);
     let result = line.call(&m.name, method, params, deadline).await;
     if let Some(grant) = grant {

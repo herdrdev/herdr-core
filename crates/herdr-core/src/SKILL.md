@@ -145,7 +145,13 @@ hc run "cd app && bun test"        # one quoted string is a shell command
 hc run --bg --name web bun dev     # background server; exit comes as a note
 hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
+hc run --bg --name api --watch 'listening on' --watch ERROR bun dev
 ```
+
+`--watch TEXT` (repeatable) makes each finished line containing it news
+without blocking you: a note with the lines (`<hc>t4 api printed:…</hc>`),
+an end to `hc wait --children any` (child reason `output`), and a `matched`
+event. Text is plain, escape sequences stripped; it starts watching at launch.
 
 ### Slow commands: don't block yourself
 

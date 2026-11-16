@@ -192,8 +192,9 @@ pub(super) async fn wait_children_everywhere(
 
 /// Decided from the children's current facts, again on every change:
 /// `all`: none is working (unreported children and sent first tasks still pending count too);
-/// the reply lists every child, finished ones too. `any`: a child with news
-/// (for the parent itself: news it hasn't seen, even from before the wait), or
+/// the reply lists every child, finished ones too. `any`: a child with news,
+/// watched lines it printed among them (for the parent itself: news it hasn't
+/// seen, even from before the wait), or
 /// a message typed into the waiting parent (it sits in its queue until this
 /// call ends); idle children are waited on too.
 /// `others`: children on other machines count too, so none here is no answer.
@@ -274,7 +275,13 @@ pub(super) async fn wait_children(
         }
         if let Some(results) = ready {
             seen(&results.iter().map(|t| t.id()).collect::<Vec<_>>());
-            let mut r = done(results.iter().map(|t| as_is(t, true)).collect());
+            // A live child whose news is lines it printed (`--watch`) says so.
+            let printed = |t: &Terminal| any && t.is_live() && !t.matched.is_empty();
+            let result = |t: &Terminal| match printed(t) {
+                true => WaitResult { reason: "output".into(), ..as_is(t, true) },
+                false => as_is(t, true),
+            };
+            let mut r = done(results.iter().map(|t| result(t)).collect());
             if let Some(from) = message {
                 if r.children.is_empty() {
                     r.reason = "message".into();
