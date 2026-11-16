@@ -235,6 +235,11 @@ paths start at your current folder. Prefer explicit paths for remote work.
   Direct programs and shell command/script wrappers keep status while their tools run.
   Returning to a nested shell is not detected; a shell's own status and a backgrounded
   agent's status clear. Windows and Unix PowerShell do not clear on shell return yet.
+- A process with no terminal to write to (an agent's hook) reports with
+  `hc report state=working:id=bg` (its terminal from `HC_TERMINAL_ID`, else
+  `--terminal t7`). The body is the 7501 report itself and is stored exactly
+  like screen output; `state=clear:id=bg` removes that record. Report a
+  record id of your own, not one the program itself reports.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
