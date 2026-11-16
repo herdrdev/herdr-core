@@ -66,10 +66,11 @@ pub fn who(t: &Terminal) -> String {
     }
 }
 
-/// What a child can't say itself: it is blocked, it hit an error, or it is
-/// gone. Everything else it reports with hc send. `address`: the child as
-/// its parent calls it (`rohan/t7` from another machine). `last`: the last
-/// lines of a plain program that ended, shown before where to read more.
+/// What a child can't say itself: it is blocked, it hit an error, it is gone,
+/// or it ended a turn its parent asked for without reporting. Everything else
+/// it reports with hc send. `address`: the child as its parent calls it
+/// (`rohan/t7` from another machine). `last`: the last lines of a plain
+/// program that ended, shown before where to read more.
 fn note(t: &Terminal, address: &str, last: &[String]) -> String {
     let status = t.status.as_ref();
     let (what, look) = if blocked(t) {
@@ -80,6 +81,8 @@ fn note(t: &Terminal, address: &str, last: &[String]) -> String {
             Some(msg) => (format!("hit an error: {}", msg.chars().take(200).collect::<String>()), "See"),
             None => ("hit an error".into(), "See"),
         }
+    } else if t.is_live() {
+        ("ended its turn without reporting".into(), "Read")
     } else {
         let how = match (t.exit_code, t.signal) {
             (Some(code), _) => format!("exit {code}"),
@@ -123,15 +126,31 @@ impl Core {
         }
     }
 
+    /// `caller` sent `to` a message: if `to` is its parent, this turn reported.
+    pub fn reported(&self, caller: Option<&str>, to: &str) {
+        let mut st = self.lock();
+        let child = caller.and_then(parse_id).and_then(|c| st.reg.terminals.get_mut(&c));
+        if let Some(c) = child.filter(|c| c.parent.as_deref() == Some(to)) {
+            c.told_parent = true;
+            c.asked = None;
+            self.save(&st);
+        }
+    }
+
     /// The caller looked at `id`; if it is the parent, that news is seen.
     pub fn saw(&self, caller: Option<&str>, id: u32) {
+        self.saw_until(caller, id, u64::MAX);
+    }
+
+    /// `saw`, for its news up to `news` only.
+    pub fn saw_until(&self, caller: Option<&str>, id: u32, news: u64) {
         let mut st = self.lock();
         if let Some(t) = st.reg.terminals.get_mut(&id)
             && caller.is_some()
             && t.parent.as_deref() == caller
-            && t.seen < t.news
+            && t.seen < t.news.min(news)
         {
-            t.seen = t.news;
+            t.seen = t.news.min(news);
             t.seen_ms = Some(now_ms());
             self.save(&st);
         }
@@ -163,15 +182,18 @@ impl Core {
         }
     }
 
-    /// Children of `parent` that are stuck or gone with news it hasn't seen,
-    /// been told, or isn't already waiting for.
+    /// Children of `parent` that are stuck, gone or ended its turn unreported,
+    /// with news it hasn't seen, been told, or isn't already waiting for.
     fn unseen(&self, st: &State, address: &str) -> Vec<u32> {
         let address = address.to_string();
         st.reg
             .terminals
             .values()
             .filter(|t| t.parent.as_deref() == Some(address.as_str()) && t.notify)
-            .filter(|t| t.news > t.seen.max(t.noted) && (stuck(t) || !t.is_live()))
+            .filter(|t| {
+                let unseen = t.seen.max(t.noted);
+                t.news > unseen && (stuck(t) || !t.is_live() || t.unreported > unseen)
+            })
             .filter(|t| !st.waiting.contains_key(&(address.clone(), t.id())))
             .map(Terminal::id)
             .collect()
@@ -337,6 +359,8 @@ mod tests {
         );
         t.status.as_mut().unwrap().msg.clear();
         assert_eq!(note(t, "t1", &[]), "<hc>t1 reviewer hit an error. See: hc read t1</hc>");
+        t.status.as_mut().unwrap().state = "done".into();
+        assert_eq!(note(t, "t1", &[]), "<hc>t1 reviewer ended its turn without reporting. Read: hc read t1</hc>");
         r.finish(id, Some(3), None, "exited", 1);
         assert_eq!(
             note(&r.terminals[&id], "rohan/t1", &[]),

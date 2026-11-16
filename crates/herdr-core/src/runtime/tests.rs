@@ -252,7 +252,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
     // Ignore attach's resize frames. From here the fake holder sees only input.
     while frames.try_recv().is_ok() {}
     {
-        let sending = core.send(id, "abc", false, None);
+        let sending = core.send(id, "abc", false, None, false);
         tokio::pin!(sending);
         poll_fn(|cx| {
             assert!(sending.as_mut().poll(cx).is_pending(), "the paste must pause before submit");
