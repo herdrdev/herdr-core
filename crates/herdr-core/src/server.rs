@@ -197,7 +197,10 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         let handled = match method.as_deref() {
             Some("machine.exec") => tokio::select! {
                 handled = handling => handled,
-                () = closed(&mut read, &mut ahead) => return Ok(()),
+                () = async {
+                    closed(&mut read, &mut ahead).await;
+                    platform::reply_closed(read.get_ref()).await;
+                } => return Ok(()),
             },
             // A put ends only once its reply can't arrive: a caller done
             // sending (`printf … | hc connect`) still waits for its path.
