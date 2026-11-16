@@ -737,8 +737,8 @@ impl Pty {
         self.reader()
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
-        let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    pub fn resize(&self, cols: u16, rows: u16, xpixel: u16, ypixel: u16) {
+        let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: xpixel, ws_ypixel: ypixel };
         unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &size) };
     }
 

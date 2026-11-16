@@ -1032,7 +1032,8 @@ impl Pty {
         self.input.try_clone()
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
+    /// A pseudo console has no pixel size.
+    pub fn resize(&self, cols: u16, rows: u16, _xpixel: u16, _ypixel: u16) {
         if let Some(hpc) = *self.console.0.lock().unwrap_or_else(|p| p.into_inner())
             && let Ok(api) = conpty()
         {

@@ -249,7 +249,7 @@ impl Holder {
                     if let Some(t) = st.terms.get_mut(&id) {
                         t.cols = size.cols;
                         t.rows = size.rows;
-                        t.pty.resize(size.cols, size.rows);
+                        t.pty.resize(size.cols, size.rows, size.xpixel, size.ypixel);
                     }
                 }
                 proto::SIGNAL => {

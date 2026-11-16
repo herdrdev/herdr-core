@@ -49,6 +49,19 @@ pub struct Spawn {
 pub struct Size {
     pub cols: u16,
     pub rows: u16,
+    /// The text area in pixels for the PTY (0: unknown). Older peers omit them.
+    #[serde(default)]
+    pub xpixel: u16,
+    #[serde(default)]
+    pub ypixel: u16,
+}
+
+impl Size {
+    /// `cols` x `rows` cells of `cell` pixels each.
+    pub fn of(cols: u16, rows: u16, (width, height): (u32, u32)) -> Size {
+        let px = |n: u16, cell: u32| (u32::from(n) * cell).min(u32::from(u16::MAX)) as u16;
+        Size { cols, rows, xpixel: px(cols, width), ypixel: px(rows, height) }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
