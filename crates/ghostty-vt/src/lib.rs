@@ -34,20 +34,35 @@ mod ffi {
     }
 
     pub const SUCCESS: i32 = 0;
-    pub const OPT_USERDATA: i32 = 0;
-    pub const OPT_WRITE_PTY: i32 = 1;
-    pub const OPT_XTVERSION: i32 = 4;
-    pub const OPT_TITLE_CHANGED: i32 = 5;
-    pub const OPT_PROGRAM_STATUS: i32 = 46;
-    pub const OPT_SIZE: i32 = 6;
-    pub const OPT_COLOR_SCHEME: i32 = 7;
-    pub const OPT_DEVICE_ATTRIBUTES: i32 = 8;
-    pub const OPT_COLOR_FOREGROUND: i32 = 11;
-    pub const OPT_COLOR_BACKGROUND: i32 = 12;
-    pub const OPT_COLOR_CURSOR: i32 = 13;
-    pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 27;
-    pub const OPT_CONTINUATION_MAX_BYTES: i32 = 31;
-    pub const OPT_MODE_DEFAULT: i32 = 33;
+    pub const OPT_USERDATA: i32 = 1;
+    pub const OPT_WRITE_PTY: i32 = 2;
+    pub const OPT_XTVERSION: i32 = 5;
+    pub const OPT_TITLE_CHANGED: i32 = 6;
+    pub const OPT_PROGRAM_STATUS: i32 = 47;
+    pub const OPT_SIZE: i32 = 7;
+    pub const OPT_COLOR_SCHEME: i32 = 8;
+    pub const OPT_DEVICE_ATTRIBUTES: i32 = 9;
+    pub const OPT_COLOR_FOREGROUND: i32 = 12;
+    pub const OPT_COLOR_BACKGROUND: i32 = 13;
+    pub const OPT_COLOR_CURSOR: i32 = 14;
+    pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 28;
+    pub const OPT_CONTINUATION_MAX_BYTES: i32 = 32;
+    pub const OPT_MODE_DEFAULT: i32 = 34;
+    pub const KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT: i32 = 7;
+    pub const OPTION_AS_ALT_TRUE: i32 = 1;
+    pub const KEY_ACTION_PRESS: i32 = 1;
+    pub const MOUSE_ENCODER_OPT_SIZE: i32 = 3;
+    pub const MOUSE_ACTION_PRESS: i32 = 0;
+    pub const MOUSE_BUTTON_FOUR: i32 = 4;
+    pub const MOUSE_BUTTON_FIVE: i32 = 5;
+    pub const BOUNDARY_GROUND: u32 = 1;
+    pub const FORMATTER_OPT_EMIT: i32 = 1;
+    pub const FORMATTER_OPT_UNWRAP: i32 = 2;
+    pub const FORMATTER_OPT_TRIM: i32 = 3;
+    pub const FORMATTER_OPT_SELECTION: i32 = 4;
+    pub const FORMATTER_OPT_EXTRAS: i32 = 5;
+    pub const FORMATTER_EXTRA_PALETTE: u32 = 1 << 0;
+    pub const FORMATTER_EXTRAS_ALL: u32 = 0xFFF;
     pub const DATA_COLS: i32 = 1;
     pub const DATA_ROWS: i32 = 2;
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
@@ -64,43 +79,19 @@ mod ffi {
 
     #[repr(C)]
     #[derive(Default)]
-    pub struct ScreenExtra {
+    pub struct WriteStop {
         pub size: usize,
-        pub cursor: bool,
-        pub style: bool,
-        pub hyperlink: bool,
-        pub protection: bool,
-        pub kitty_keyboard: bool,
-        pub charsets: bool,
-    }
-
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct TerminalExtra {
-        pub size: usize,
-        pub palette: bool,
-        pub modes: bool,
-        pub scrolling_region: bool,
-        pub tabstops: bool,
-        pub pwd: bool,
-        pub keyboard: bool,
-        pub screen: ScreenExtra,
-    }
-
-    #[repr(C)]
-    pub struct FormatterOptions {
-        pub size: usize,
-        pub emit: i32,
-        pub unwrap: bool,
-        pub trim: bool,
-        pub extra: TerminalExtra,
-        pub selection: *const Selection,
+        pub consumed: usize,
+        pub reached: u32,
+        pub kind: i32,
+        pub introducer: i32,
+        pub end: i32,
+        pub byte: u8,
     }
 
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct GridRef {
-        pub size: usize,
         pub node: *mut c_void,
         pub x: u16,
         pub y: u16,
@@ -127,7 +118,6 @@ mod ffi {
 
     #[repr(C)]
     pub struct Selection {
-        pub size: usize,
         pub start: GridRef,
         pub end: GridRef,
         pub rectangle: bool,
@@ -168,7 +158,6 @@ mod ffi {
 
     #[repr(C)]
     pub struct ProgramStatus {
-        pub size: usize,
         pub state: i32,
         pub kind: i32,
         pub progress: i8,
@@ -190,11 +179,12 @@ mod ffi {
         pub fn ghostty_terminal_set(t: Terminal, opt: i32, value: *const c_void) -> i32;
         pub fn ghostty_terminal_get(t: Terminal, data: i32, out: *mut c_void) -> i32;
         pub fn ghostty_terminal_vt_write(t: Terminal, data: *const u8, len: usize);
-        pub fn ghostty_terminal_vt_write_until_ground(
+        pub fn ghostty_terminal_vt_write_until(
             t: Terminal,
             data: *const u8,
             len: usize,
-            consumed: *mut usize,
+            boundaries: u32,
+            out: *mut WriteStop,
         ) -> i32;
         pub fn ghostty_terminal_continuation_alloc(
             t: Terminal,
@@ -205,12 +195,8 @@ mod ffi {
         pub fn ghostty_color_scheme_report_encode(scheme: i32, buf: *mut u8, cap: usize, len: *mut usize) -> i32;
         pub fn ghostty_terminal_resize(t: Terminal, cols: u16, rows: u16, cw: u32, ch: u32) -> i32;
         pub fn ghostty_terminal_grid_ref(t: Terminal, point: Point, out: *mut GridRef) -> i32;
-        pub fn ghostty_formatter_terminal_new(
-            alloc: *const c_void,
-            out: *mut Formatter,
-            t: Terminal,
-            opts: FormatterOptions,
-        ) -> i32;
+        pub fn ghostty_formatter_terminal_new(alloc: *const c_void, out: *mut Formatter, t: Terminal) -> i32;
+        pub fn ghostty_formatter_set(f: Formatter, opt: i32, value: *const c_void) -> i32;
         pub fn ghostty_formatter_format_alloc(
             f: Formatter,
             alloc: *const c_void,
@@ -235,8 +221,8 @@ mod ffi {
         pub fn ghostty_snapshot_decoder_free(d: Decoder);
         pub fn ghostty_key_encoder_new(alloc: *const c_void, out: *mut KeyEncoder) -> i32;
         pub fn ghostty_key_encoder_free(e: KeyEncoder);
-        pub fn ghostty_key_encoder_setopt_from_terminal(e: KeyEncoder, t: Terminal);
-        pub fn ghostty_key_encoder_setopt(e: KeyEncoder, opt: i32, value: *const c_void);
+        pub fn ghostty_key_encoder_set_from_terminal(e: KeyEncoder, t: Terminal) -> i32;
+        pub fn ghostty_key_encoder_set(e: KeyEncoder, opt: i32, value: *const c_void) -> i32;
         pub fn ghostty_key_encoder_encode(
             e: KeyEncoder,
             ev: KeyEvent,
@@ -246,15 +232,15 @@ mod ffi {
         ) -> i32;
         pub fn ghostty_key_event_new(alloc: *const c_void, out: *mut KeyEvent) -> i32;
         pub fn ghostty_key_event_free(ev: KeyEvent);
-        pub fn ghostty_key_event_set_action(ev: KeyEvent, action: i32);
-        pub fn ghostty_key_event_set_key(ev: KeyEvent, key: i32);
-        pub fn ghostty_key_event_set_mods(ev: KeyEvent, mods: u16);
-        pub fn ghostty_key_event_set_utf8(ev: KeyEvent, utf8: *const u8, len: usize);
-        pub fn ghostty_key_event_set_unshifted_codepoint(ev: KeyEvent, cp: u32);
+        pub fn ghostty_key_event_set_action(ev: KeyEvent, action: i32) -> i32;
+        pub fn ghostty_key_event_set_key(ev: KeyEvent, key: i32) -> i32;
+        pub fn ghostty_key_event_set_mods(ev: KeyEvent, mods: u16) -> i32;
+        pub fn ghostty_key_event_set_utf8(ev: KeyEvent, utf8: Str) -> i32;
+        pub fn ghostty_key_event_set_unshifted_codepoint(ev: KeyEvent, cp: u32) -> i32;
         pub fn ghostty_mouse_encoder_new(alloc: *const c_void, out: *mut MouseEncoder) -> i32;
         pub fn ghostty_mouse_encoder_free(e: MouseEncoder);
-        pub fn ghostty_mouse_encoder_setopt(e: MouseEncoder, opt: i32, value: *const c_void);
-        pub fn ghostty_mouse_encoder_setopt_from_terminal(e: MouseEncoder, t: Terminal);
+        pub fn ghostty_mouse_encoder_set(e: MouseEncoder, opt: i32, value: *const c_void) -> i32;
+        pub fn ghostty_mouse_encoder_set_from_terminal(e: MouseEncoder, t: Terminal) -> i32;
         pub fn ghostty_mouse_encoder_encode(
             e: MouseEncoder,
             ev: MouseEvent,
@@ -264,9 +250,9 @@ mod ffi {
         ) -> i32;
         pub fn ghostty_mouse_event_new(alloc: *const c_void, out: *mut MouseEvent) -> i32;
         pub fn ghostty_mouse_event_free(ev: MouseEvent);
-        pub fn ghostty_mouse_event_set_action(ev: MouseEvent, action: i32);
-        pub fn ghostty_mouse_event_set_button(ev: MouseEvent, button: i32);
-        pub fn ghostty_mouse_event_set_position(ev: MouseEvent, pos: MousePosition);
+        pub fn ghostty_mouse_event_set_action(ev: MouseEvent, action: i32) -> i32;
+        pub fn ghostty_mouse_event_set_button(ev: MouseEvent, button: i32) -> i32;
+        pub fn ghostty_mouse_event_set_position(ev: MouseEvent, pos: MousePosition) -> i32;
     }
 }
 
@@ -438,11 +424,11 @@ impl Terminal {
 
     /// Consumes through the first clean parser boundary, or the entire slice if none is reached.
     pub fn write_until_ground(&mut self, bytes: &[u8]) -> Option<usize> {
-        let mut consumed = 0;
+        let mut stop = ffi::WriteStop { size: size_of::<ffi::WriteStop>(), ..Default::default() };
         let rc = unsafe {
-            ffi::ghostty_terminal_vt_write_until_ground(self.raw, bytes.as_ptr(), bytes.len(), &mut consumed)
+            ffi::ghostty_terminal_vt_write_until(self.raw, bytes.as_ptr(), bytes.len(), ffi::BOUNDARY_GROUND, &mut stop)
         };
-        (rc == ffi::SUCCESS).then_some(consumed)
+        (rc == ffi::SUCCESS).then_some(stop.consumed)
     }
 
     /// Query replies and subscribed notifications since the last call, for the program's PTY.
@@ -478,14 +464,18 @@ impl Terminal {
                 ffi::ghostty_key_encoder_free(enc);
                 return Vec::new();
             }
-            ffi::ghostty_key_encoder_setopt_from_terminal(enc, self.raw);
+            ffi::ghostty_key_encoder_set_from_terminal(enc, self.raw);
             // These are named keys, not a Mac keyboard: alt always means alt.
-            let option_as_alt: i32 = 1;
-            ffi::ghostty_key_encoder_setopt(enc, 6, (&raw const option_as_alt).cast());
-            ffi::ghostty_key_event_set_action(ev, 1);
+            let option_as_alt = ffi::OPTION_AS_ALT_TRUE;
+            ffi::ghostty_key_encoder_set(
+                enc,
+                ffi::KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,
+                (&raw const option_as_alt).cast(),
+            );
+            ffi::ghostty_key_event_set_action(ev, ffi::KEY_ACTION_PRESS);
             ffi::ghostty_key_event_set_key(ev, key);
             ffi::ghostty_key_event_set_mods(ev, mods);
-            ffi::ghostty_key_event_set_utf8(ev, text.as_ptr(), text.len());
+            ffi::ghostty_key_event_set_utf8(ev, ffi::Str { ptr: text.as_ptr(), len: text.len() });
             ffi::ghostty_key_event_set_unshifted_codepoint(ev, unshifted);
             let mut buf = [0u8; 128];
             let mut len = 0usize;
@@ -510,7 +500,7 @@ impl Terminal {
                 ffi::ghostty_mouse_encoder_free(enc);
                 return Vec::new();
             }
-            ffi::ghostty_mouse_encoder_setopt_from_terminal(enc, self.raw);
+            ffi::ghostty_mouse_encoder_set_from_terminal(enc, self.raw);
             let size = ffi::MouseSize {
                 size: size_of::<ffi::MouseSize>(),
                 screen_width: cols as u32 * cw,
@@ -522,9 +512,9 @@ impl Terminal {
                 padding_right: 0,
                 padding_left: 0,
             };
-            ffi::ghostty_mouse_encoder_setopt(enc, 2, (&raw const size).cast());
-            ffi::ghostty_mouse_event_set_action(ev, 0);
-            ffi::ghostty_mouse_event_set_button(ev, if up { 4 } else { 5 });
+            ffi::ghostty_mouse_encoder_set(enc, ffi::MOUSE_ENCODER_OPT_SIZE, (&raw const size).cast());
+            ffi::ghostty_mouse_event_set_action(ev, ffi::MOUSE_ACTION_PRESS);
+            ffi::ghostty_mouse_event_set_button(ev, if up { ffi::MOUSE_BUTTON_FOUR } else { ffi::MOUSE_BUTTON_FIVE });
             let at =
                 ffi::MousePosition { x: (cols / 2) as f32 * cw as f32 + 1.0, y: (rows / 2) as f32 * ch as f32 + 1.0 };
             ffi::ghostty_mouse_event_set_position(ev, at);
@@ -637,7 +627,7 @@ impl Terminal {
 
     fn grid_ref(&self, tag: i32, x: u16, y: u32) -> Option<ffi::GridRef> {
         let point = ffi::Point { tag, value: ffi::PointValue { coord: ffi::Coord { x, y } } };
-        let mut out = ffi::GridRef { size: size_of::<ffi::GridRef>(), node: ptr::null_mut(), x: 0, y: 0 };
+        let mut out = ffi::GridRef { node: ptr::null_mut(), x: 0, y: 0 };
         (unsafe { ffi::ghostty_terminal_grid_ref(self.raw, point, &mut out) } == ffi::SUCCESS).then_some(out)
     }
 
@@ -653,49 +643,27 @@ impl Terminal {
 
     /// `joined`: soft-wrapped lines joined and trailing space trimmed.
     fn format_with(&self, emit: i32, selection: Option<&ffi::Selection>, extras: bool, joined: bool) -> Vec<u8> {
-        let screen = ffi::ScreenExtra {
-            size: size_of::<ffi::ScreenExtra>(),
-            cursor: extras,
-            style: extras,
-            hyperlink: extras,
-            protection: extras,
-            kitty_keyboard: extras,
-            charsets: extras,
-        };
-        let opts = ffi::FormatterOptions {
-            size: size_of::<ffi::FormatterOptions>(),
-            emit,
-            unwrap: joined,
-            trim: joined,
-            extra: ffi::TerminalExtra {
-                size: size_of::<ffi::TerminalExtra>(),
-                // The full palette would paint over the viewer's own theme.
-                palette: false,
-                modes: extras,
-                scrolling_region: extras,
-                tabstops: extras,
-                pwd: extras,
-                keyboard: extras,
-                screen,
-            },
-            selection: selection.map_or(ptr::null(), |s| s as *const _),
-        };
+        // The full palette would paint over the viewer's own theme.
+        let extras = if extras { ffi::FORMATTER_EXTRAS_ALL & !ffi::FORMATTER_EXTRA_PALETTE } else { 0 };
         let mut f = ptr::null_mut();
-        if unsafe { ffi::ghostty_formatter_terminal_new(ptr::null(), &mut f, self.raw, opts) } != ffi::SUCCESS {
+        if unsafe { ffi::ghostty_formatter_terminal_new(ptr::null(), &mut f, self.raw) } != ffi::SUCCESS {
             return Vec::new();
         }
-        let bytes = alloc_call(|out, len| unsafe { ffi::ghostty_formatter_format_alloc(f, ptr::null(), out, len) });
+        let set = |opt, value: *const c_void| unsafe { ffi::ghostty_formatter_set(f, opt, value) } == ffi::SUCCESS;
+        let ready = set(ffi::FORMATTER_OPT_EMIT, (&raw const emit).cast())
+            && set(ffi::FORMATTER_OPT_UNWRAP, (&raw const joined).cast())
+            && set(ffi::FORMATTER_OPT_TRIM, (&raw const joined).cast())
+            && set(ffi::FORMATTER_OPT_EXTRAS, (&raw const extras).cast())
+            && selection.is_none_or(|sel| set(ffi::FORMATTER_OPT_SELECTION, (sel as *const ffi::Selection).cast()));
+        let bytes = ready
+            .then(|| alloc_call(|out, len| unsafe { ffi::ghostty_formatter_format_alloc(f, ptr::null(), out, len) }))
+            .flatten();
         unsafe { ffi::ghostty_formatter_free(f) };
         bytes.unwrap_or_default()
     }
 
     fn select(&self, tag: i32, (x0, y0): (u16, u32), (x1, y1): (u16, u32)) -> Option<ffi::Selection> {
-        Some(ffi::Selection {
-            size: size_of::<ffi::Selection>(),
-            start: self.grid_ref(tag, x0, y0)?,
-            end: self.grid_ref(tag, x1, y1)?,
-            rectangle: false,
-        })
+        Some(ffi::Selection { start: self.grid_ref(tag, x0, y0)?, end: self.grid_ref(tag, x1, y1)?, rectangle: false })
     }
 
     /// Bytes that repaint this terminal on a fresh viewer: up to `history`
