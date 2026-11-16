@@ -22,6 +22,8 @@ $ProgressPreference = "SilentlyContinue"
 
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "hc: $why" }
+# hc machine (-File) reports only the last line of stderr: one line, not an error record.
+trap { if (-not $zip) { break }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 
 $releases = if ($env:HERDR_RELEASES_URL) { $env:HERDR_RELEASES_URL.TrimEnd("/") } else { "https://releases.herdr.dev" }
 $dir = if ($env:HC_INSTALL_DIR) { $env:HC_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\herdr-core" }
@@ -72,8 +74,13 @@ try {
     $exe = Join-Path $dir "herdr-core.exe"
     if (Test-Path $exe) {
         # Swapped the planned way, so its terminals keep running.
-        & $exe update --from $new | Out-Null
-        if ($LASTEXITCODE) { Fail "updating $exe failed (see above)" }
+        $said = & { $ErrorActionPreference = "Continue"; & $exe update --from $new 2>&1 } | ForEach-Object { "$_" }
+        if ($LASTEXITCODE) {
+            $why = $said | Where-Object { $_.Trim() } | Select-Object -Last 1
+            $err = try { ($why | ConvertFrom-Json).error } catch { $null }
+            if ($err) { $why = "$($err.message); $($err.hint)" }
+            Fail "updating $exe failed: $why"
+        }
         Write-Host "hc updated to $version."
     } else {
         Copy-Item -Recurse -Force "$tmp\hc\herdr-core.exe", "$tmp\hc\conpty" $dir

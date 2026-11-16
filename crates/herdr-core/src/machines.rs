@@ -441,7 +441,7 @@ fn run_there(paths: &crate::paths::Paths, to: Reach, command: &str, input: &[u8]
         false => Err(RpcError::new(
             "install_failed",
             format!("on {}: {}", to.target, last_line(&out.stderr)),
-            "nothing was changed there",
+            "fix that, then run hc machine update again",
         )),
     }
 }
