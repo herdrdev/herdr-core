@@ -67,7 +67,8 @@ impl Config {
     }
 
     pub fn machine_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs_f64(self.machine_timeout.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(30.0))
+        Duration::try_from_secs_f64(self.machine_timeout.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(30.0))
+            .unwrap_or(Duration::from_secs(30))
     }
 
     pub fn history_bytes(&self) -> usize {
@@ -138,6 +139,27 @@ mod tests {
             for value in ["nan", "inf", "-inf", "1e100"] {
                 assert!(toml::from_str::<Config>(&format!("{setting} = {value}")).is_err());
             }
+        }
+    }
+
+    #[test]
+    fn machine_timeout_falls_back_only_for_invalid_or_unrepresentable_seconds() {
+        for (value, expected) in [
+            (Some("1e100"), Duration::from_secs(30)),
+            (None, Duration::from_secs(30)),
+            (Some("0.0"), Duration::from_secs(30)),
+            (Some("-0.0"), Duration::from_secs(30)),
+            (Some("-1.0"), Duration::from_secs(30)),
+            (Some("nan"), Duration::from_secs(30)),
+            (Some("inf"), Duration::from_secs(30)),
+            (Some("-inf"), Duration::from_secs(30)),
+            (Some("5.0"), Duration::from_secs(5)),
+            (Some("0.125"), Duration::from_millis(125)),
+            (Some("1e12"), Duration::from_secs(1_000_000_000_000)),
+        ] {
+            let text = value.map(|v| format!("machine_timeout = {v}")).unwrap_or_default();
+            let config: Config = toml::from_str(&text).unwrap();
+            assert_eq!(config.machine_timeout(), expected, "{text}");
         }
     }
 
