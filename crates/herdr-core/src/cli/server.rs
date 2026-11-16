@@ -49,7 +49,8 @@ pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
     Ok(())
 }
 
-/// Stops the core and returns once it has exited (its connection closes).
+/// Stops the core and returns once it has exited: its connection closes when
+/// its runtime ends, and its lock is released only after that.
 pub(super) fn stop(paths: &Paths) -> Result<Out, RpcError> {
     let Some(stream) = client::connect_existing(paths) else {
         crate::restart::discard_if_stopped(paths);
@@ -57,7 +58,20 @@ pub(super) fn stop(paths: &Paths) -> Result<Out, RpcError> {
     };
     let r = client::call(&stream, "server.stop", json!({}))?;
     wait_closed(&stream);
+    wait_unlocked(paths);
     Ok(Out { json: r, human: "core stopped".into() })
+}
+
+/// Until the stopped core lets go of its lock, or another core already answers.
+fn wait_unlocked(paths: &Paths) {
+    let Ok(lock) = std::fs::OpenOptions::new().write(true).open(paths.state.join("core.lock")) else { return };
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(10)
+        && client::connect_existing(paths).is_none()
+        && !crate::platform::try_lock(&lock)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// The core closes every connection when its process exits.
