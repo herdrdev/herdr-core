@@ -74,6 +74,9 @@ current folder in `foreground.cwd`.
 full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,
 marked incomplete with `why` set to that status; no scroll input is sent.
+`read --ansi` keeps colors and styles as SGR escapes, each line starting from
+a reset: faint text (`ESC[2m`), such as a placeholder in an input box, can be
+told from text someone typed.
 
 Keep doing useful work while children work. When you need their results:
 

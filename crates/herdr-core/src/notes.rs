@@ -103,7 +103,7 @@ impl Core {
         // Any end the parent hasn't seen is news, a success too: a background
         // build that worked is what it waits to hear. A plain program's shows its last lines.
         let last = match !t.is_live() && !t.reported {
-            true => last_lines(&self.screen_text(st, id).unwrap_or_default()),
+            true => last_lines(&self.screen_text(st, id, false).unwrap_or_default()),
             false => Vec::new(),
         };
         note(t, address, &last)
