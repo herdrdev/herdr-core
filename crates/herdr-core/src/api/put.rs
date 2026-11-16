@@ -63,13 +63,11 @@ fn handle(transfer: &str) -> Result<(), RpcError> {
 }
 
 fn transfer<'a>(st: &'a mut State, conn: usize, handle: &str) -> Result<&'a mut Transfer, RpcError> {
-    st.puts.get_mut(handle).filter(|t| t.conn == conn).ok_or_else(|| {
-        RpcError::new(
-            "not_found",
-            format!("no put {handle} here"),
-            "it was aborted, or its terminal or connection went",
-        )
-    })
+    st.puts.get_mut(handle).filter(|t| t.conn == conn).ok_or_else(|| gone(handle))
+}
+
+fn gone(handle: &str) -> RpcError {
+    RpcError::new("not_found", format!("no put {handle} here"), "it was aborted, or its terminal or connection went")
 }
 
 /// A begin read on `conn`, noted before its call runs (in frame order), so an
@@ -184,14 +182,14 @@ pub(super) async fn terminal_put_chunk(core: Ctx<'_>, p: PutPieceParams) -> Resu
     let at = part.clone();
     let wrote = blocking(move || put::write_at(&at, p.offset, &bytes).map_err(cannot_write)).await;
     let mut st = core.lock();
-    let t = match transfer(&mut st, conn, &p.transfer) {
-        Ok(t) => t,
-        Err(e) => {
-            // Dropped while this piece was written (aborted, or its connection
-            // or terminal went): the part was left for this write to remove.
-            let _ = std::fs::remove_file(&part);
-            return Err(e);
-        }
+    // Its transfer may have been dropped while this piece was written (aborted,
+    // or its connection or terminal went), and the handle begun again for
+    // another terminal. The part tells them apart: the same terminal can't
+    // begin the handle again while this part exists (it is made create_new).
+    let Some(t) = transfer(&mut st, conn, &p.transfer).ok().filter(|t| t.part == part) else {
+        // The part was left for this write to remove.
+        let _ = std::fs::remove_file(&part);
+        return Err(gone(&p.transfer));
     };
     t.writing = false;
     match wrote {

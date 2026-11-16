@@ -345,6 +345,35 @@ fn pieces_stop_once_their_terminal_has_finished() {
 }
 
 #[test]
+fn a_late_piece_leaves_alone_a_put_that_took_its_handle_again() {
+    let s = Session::new();
+    let (a, b) = (run(&s, &["sleep", "100"]), run(&s, &["sleep", "100"]));
+    let mut conn = framed_conn(&s);
+    let h = "eeeeeeeeeeeeeeee";
+    let begin = |t: &str| serde_json::json!({"terminal": t, "name": "x.png", "bytes": 3, "transfer": h});
+    let piece = |data: &[u8]| serde_json::json!({"transfer": h, "offset": 0, "data": herdr_core::put::encode(data)});
+    assert!(framed(&mut conn, 2, "terminal.put_begin", begin(&a))["result"].is_object());
+    // A's part becomes a fifo: writing a piece into it waits for a reader.
+    let part = s.root.join("state/herdr-core/test/files").join(&a).join(format!(".hc-put-{h}"));
+    std::fs::remove_file(&part).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(&part).status().unwrap().success());
+    send(&mut conn, Some(3), "terminal.put_chunk", piece(b"old"));
+    let mut n = 3;
+    wait_until("A's piece is being written", || {
+        n += 1;
+        let r = framed(&mut conn, n, "terminal.put_chunk", piece(b"four"));
+        r["error"]["message"].as_str().unwrap_or_default().contains("next piece starts")
+    });
+    assert!(framed(&mut conn, 100, "terminal.put_abort", serde_json::json!({"transfer": h}))["result"].is_object());
+    assert!(framed(&mut conn, 101, "terminal.put_begin", begin(&b))["result"].is_object());
+    drop(std::fs::File::open(&part).unwrap());
+    wait_until("A's part removed by its late piece", || !part.exists());
+    assert_eq!(framed(&mut conn, 102, "terminal.put_chunk", piece(b"new"))["result"]["bytes"], 3, "B untouched");
+    let done = framed(&mut conn, 103, "terminal.put_finish", serde_json::json!({"transfer": h}));
+    assert_eq!(std::fs::read(done["result"]["path"].as_str().unwrap()).unwrap(), b"new", "{done}");
+}
+
+#[test]
 fn a_piece_past_its_deadline_keeps_the_line_until_it_is_answered() {
     let rohan = Session::new();
     let mut s = Session::new();
