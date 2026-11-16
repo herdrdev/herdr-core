@@ -216,6 +216,35 @@ async fn handover_carries_held_replies_and_answers_including_final_holder_output
     remove_root(&root);
 }
 
+#[tokio::test]
+async fn a_restored_title_is_announced_like_any_title_change() {
+    use crate::events::{Filter, Sink};
+    use std::sync::atomic::AtomicBool;
+    let (core, root) = test_core();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        core.subscribe(&mut st, Filter::default(), Sink::Plain { tx, behind: Arc::new(AtomicBool::new(false)) });
+        id
+    };
+    core.output(&mut core.lock(), id, b"\x1b]2;shell\x07\x1b[22;0t\x1b]2;editor\x07");
+    core.output(&mut core.lock(), id, b"\x1b[23;0t");
+    assert_eq!(core.lock().reg.terminals[&id].title, "shell");
+    let mut titles = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        if msg["params"]["type"] == "title" {
+            titles.push(msg["params"]["data"]["title"].as_str().unwrap().to_string());
+        }
+    }
+    assert_eq!(titles, ["editor", "shell"]);
+    drop(core);
+    remove_root(&root);
+}
+
 #[tokio::test(start_paused = true)]
 async fn keys_pressed_during_a_paste_follow_its_submit() {
     use crate::viewers::{AttachRequest, Display};

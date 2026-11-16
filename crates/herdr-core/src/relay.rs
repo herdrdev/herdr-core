@@ -6,6 +6,9 @@
 //! show them; a viewer that can answers. Programs read replies in order (DA1
 //! after kitty's query is how they learn images don't work), so the screen's
 //! DA1 after an image waits for the viewer's answer, briefly.
+//! A title the program restores from its title stack (XTWINOPS 23) follows
+//! the restore as an OSC 2, so the screen and every viewer take it, whether
+//! or not the viewer keeps a title stack of its own.
 
 use ghostty_vt::Terminal as Screen;
 use std::time::Duration;
@@ -144,6 +147,15 @@ impl Relay {
                     if screen.pending_responses() == before {
                         out.extend_from_slice(&seq); // not answered here: the viewer may
                     }
+                    match title_stack(&seq) {
+                        Some(TitleOp::Push { which, index }) => screen.push_title(which, index),
+                        Some(TitleOp::Pop { which, index }) => {
+                            if let Some(title) = screen.pop_title(which, index) {
+                                pass(screen, &mut out, format!("\x1b]2;{title}\x1b\\").as_bytes());
+                            }
+                        }
+                        None => {}
+                    }
                 } else {
                     if let Some(on) = win32_input(&seq) {
                         self.win32_input = Some(on);
@@ -269,6 +281,36 @@ fn win32_input(seq: &[u8]) -> Option<bool> {
     params.split(|b| *b == b';').any(|p| p == b"9001").then_some(on)
 }
 
+#[derive(Debug, PartialEq)]
+enum TitleOp {
+    Push { which: u16, index: u16 },
+    Pop { which: u16, index: u16 },
+}
+
+/// `CSI 22 ; which ; index t` saves a title, `CSI 23 ; …` restores one.
+/// A missing or empty parameter is 0, as in xterm.
+fn title_stack(seq: &[u8]) -> Option<TitleOp> {
+    let params = seq.strip_prefix(b"\x1b[")?.strip_suffix(b"t")?;
+    if !params.iter().all(|b| b.is_ascii_digit() || *b == b';') {
+        return None;
+    }
+    let mut values = params.split(|b| *b == b';').map(|p| match p {
+        b"" => Some(0),
+        digits => std::str::from_utf8(digits).ok()?.parse::<u16>().ok(),
+    });
+    let op = values.next()??;
+    let which = values.next().unwrap_or(Some(0))?;
+    let index = values.next().unwrap_or(Some(0))?;
+    if values.next().is_some() {
+        return None;
+    }
+    match op {
+        22 => Some(TitleOp::Push { which, index }),
+        23 => Some(TitleOp::Pop { which, index }),
+        _ => None,
+    }
+}
+
 fn pass(screen: &mut Screen, out: &mut Vec<u8>, bytes: &[u8]) {
     if !bytes.is_empty() {
         screen.write(bytes);
@@ -301,6 +343,63 @@ mod tests {
             let replies = String::from_utf8_lossy(&screen.take_responses()).into_owned();
             assert!(replies.starts_with("\x1b[?62;22c\x1b]11;rgb:") && replies.ends_with("R"), "{replies:?}");
             assert_eq!(screen.title(), "title");
+        }
+    }
+
+    #[test]
+    fn a_restored_title_reaches_the_screen_and_viewers_as_an_osc_title() {
+        // Neovim with `title` under xterm-256color: smcup saves too, then its own
+        // save, its title, and on exit both restores. A shell may have set no title.
+        let open = b"\x1b[?1049h\x1b[22;0;0t\x1b[22;0t\x1b]0;file.md - Nvim\x07text";
+        let exit = b"\x1b[23;0t\x1b[?1049l\x1b[23;0;0t$ ";
+        for (before, split) in [("shell", false), ("shell", true), ("", false)] {
+            let mut screen = Screen::new(80, 24, 1 << 20);
+            let mut relay = Relay::default();
+            let mut feed = |screen: &mut Screen, bytes: &[u8]| {
+                if split { feed_bytewise(&mut relay, screen, bytes) } else { relay.feed(screen, bytes) }
+            };
+            let set = format!("\x1b]0;{before}\x07");
+            feed(&mut screen, set.as_bytes());
+            assert_eq!(feed(&mut screen, open), open);
+            screen.take_title_changed();
+            let restore = format!("\x1b]2;{before}\x1b\\");
+            let want = [&b"\x1b[23;0t"[..], restore.as_bytes(), b"\x1b[?1049l\x1b[23;0;0t", restore.as_bytes(), b"$ "];
+            let out = feed(&mut screen, exit);
+            assert_eq!(String::from_utf8_lossy(&out), String::from_utf8_lossy(&want.concat()), "{before:?} {split}");
+            assert!(screen.take_title_changed(), "{before:?} {split}");
+            assert_eq!(screen.title(), before);
+            assert!(screen.title_stack().is_empty() && screen.take_responses().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_restore_with_nothing_saved_or_no_window_title_changes_nothing() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        let input = b"\x1b]2;kept\x07\x1b[23;0t\x1b[22;1t\x1b]2;other\x07\x1b[23;2t";
+        assert_eq!(relay.feed(&mut screen, input), input, "only what the program sent");
+        assert_eq!(screen.title(), "other");
+        assert!(screen.title_stack().is_empty());
+    }
+
+    #[test]
+    fn title_stack_sequences_follow_xterms_parameters() {
+        use TitleOp::*;
+        for (seq, op) in [
+            (&b"\x1b[22;0t"[..], Some(Push { which: 0, index: 0 })),
+            (b"\x1b[22t", Some(Push { which: 0, index: 0 })),
+            (b"\x1b[22;t", Some(Push { which: 0, index: 0 })),
+            (b"\x1b[22;2;3t", Some(Push { which: 2, index: 3 })),
+            (b"\x1b[23;1t", Some(Pop { which: 1, index: 0 })),
+            (b"\x1b[23;2t", Some(Pop { which: 2, index: 0 })),
+            (b"\x1b[22;0;0;0t", None),
+            (b"\x1b[21t", None),
+            (b"\x1b[?22;0t", None),
+            (b"\x1b[22:0t", None),
+            (b"\x1b[22;99999t", None),
+            (b"\x1b[22;0u", None),
+        ] {
+            assert_eq!(title_stack(seq), op, "{:?}", String::from_utf8_lossy(seq));
         }
     }
 

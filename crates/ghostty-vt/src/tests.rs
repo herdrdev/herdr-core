@@ -300,3 +300,66 @@ fn a_replay_of_a_full_screen_program_keeps_what_it_hid_then_its_last_frame() {
         "{text:?}"
     );
 }
+
+#[test]
+fn the_title_stack_pops_in_order_and_an_empty_pop_restores_nothing() {
+    let mut t = Terminal::new(80, 24, 0);
+    t.write(b"\x1b]2;A\x07");
+    t.push_title(0, 0);
+    t.write(b"\x1b]2;B\x07");
+    t.push_title(2, 0);
+    t.write(b"\x1b]2;C\x07");
+    assert_eq!(t.pop_title(0, 0).as_deref(), Some("B"));
+    assert_eq!(t.pop_title(2, 0).as_deref(), Some("A"));
+    assert_eq!(t.pop_title(0, 0), None, "empty");
+    assert_eq!(t.title(), "C", "popping only returns the title: the caller sets it");
+}
+
+#[test]
+fn an_icon_title_entry_takes_a_slot_but_restores_no_window_title() {
+    let mut t = Terminal::new(80, 24, 0);
+    t.write(b"\x1b]2;A\x07");
+    t.push_title(0, 0);
+    t.push_title(1, 0);
+    assert_eq!(t.pop_title(0, 0), None, "the icon-only entry");
+    assert_eq!(t.pop_title(1, 0), None, "an icon-only pop pops but sets no window title");
+    assert_eq!(t.pop_title(0, 0), None, "both entries were popped");
+}
+
+#[test]
+fn the_title_stack_keeps_the_newest_ten() {
+    let mut t = Terminal::new(80, 24, 0);
+    for n in 0..12 {
+        t.write(format!("\x1b]2;{n}\x07").as_bytes());
+        t.push_title(0, 0);
+    }
+    let popped: Vec<_> = std::iter::from_fn(|| t.pop_title(0, 0)).collect();
+    assert_eq!(popped, ["11", "10", "9", "8", "7", "6", "5", "4", "3", "2"]);
+}
+
+#[test]
+fn an_index_reads_or_replaces_a_saved_title_in_place() {
+    let mut t = Terminal::new(80, 24, 0);
+    for title in ["A", "B"] {
+        t.write(format!("\x1b]2;{title}\x07").as_bytes());
+        t.push_title(0, 0);
+    }
+    assert_eq!(t.pop_title(0, 1).as_deref(), Some("A"), "read, not popped");
+    t.write(b"\x1b]2;Z\x07");
+    t.push_title(0, 1);
+    t.push_title(0, 5); // past the stack: nothing
+    assert_eq!(t.pop_title(0, 3), None);
+    assert_eq!(t.title_stack(), [Some("Z".to_string()), Some("B".to_string())]);
+}
+
+#[test]
+fn a_restored_title_stack_keeps_the_newest_ten_and_no_control_characters() {
+    let mut t = Terminal::new(80, 24, 0);
+    let mut saved: Vec<_> = (0..12).map(|n| Some(n.to_string())).collect();
+    saved[11] = Some("\x1b]52;c;eA==\x07".into());
+    t.set_title_stack(saved);
+    assert_eq!(t.title_stack().len(), TITLE_STACK_DEPTH);
+    assert_eq!(t.title_stack()[0].as_deref(), Some("2"));
+    assert_eq!(t.pop_title(0, 0), None, "its slot stays, restoring nothing");
+    assert_eq!(t.pop_title(0, 0).as_deref(), Some("10"));
+}
