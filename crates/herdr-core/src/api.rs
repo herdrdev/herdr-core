@@ -23,15 +23,19 @@ pub const FEATURES: &[&str] = &[
     "resize_notifications",
     "automatic_input",
     "restart_environment",
+    "put_chunks",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;
+mod put;
 mod run;
 mod types;
 use doc::*;
+use put::*;
+pub use put::{begin_read, forget_puts};
 mod waiting;
 use run::*;
 pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
@@ -117,8 +121,20 @@ methods! { Ctx<'_>;
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.put" => terminal_put, PutParams => PutResult,
-        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). Types nothing: paste the path yourself.",
-        errors ["not_found", "machine_unknown", "finished", "invalid_params"];
+        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable"];
+    "terminal.put_begin" => terminal_put_begin, PutBeginParams => PutBeginResult,
+        "Between cores: begin a put that comes in pieces, so a big file never holds up a line. The file appears only once finished.",
+        errors ["not_found", "finished", "invalid_params", "unavailable", "needs_framed"];
+    "terminal.put_chunk" => terminal_put_chunk, PutPieceParams => PutPieceResult,
+        "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
+        errors ["not_found", "invalid_params", "needs_framed"];
+    "terminal.put_finish" => terminal_put_finish, PutTransferParams => PutResult,
+        "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
+        errors ["not_found", "finished", "invalid_params", "needs_framed"];
+    "terminal.put_abort" => terminal_put_abort, PutTransferParams => Empty,
+        "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
+        errors ["needs_framed"];
     "machine.exec" => machine_exec, ExecParams => ExecResult,
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
         errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
@@ -536,28 +552,6 @@ async fn file_edit(core: Ctx<'_>, p: FileEditParams) -> Result<FileResult, RpcEr
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, RpcError> + Send + 'static) -> Result<T, RpcError> {
     tokio::task::spawn_blocking(f).await.map_err(|e| RpcError::internal(e.to_string()))?
-}
-
-async fn terminal_put(core: Ctx<'_>, p: PutParams) -> Result<PutResult, RpcError> {
-    let too_big = || RpcError::invalid_params(format!("at most {} MB per put", crate::put::MAX_BYTES >> 20));
-    if p.data.len() / 4 * 3 > crate::put::MAX_BYTES + 3 {
-        return Err(too_big());
-    }
-    let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
-    if bytes.len() > crate::put::MAX_BYTES {
-        return Err(too_big());
-    }
-    let id = resolve(core, &p.terminal)?;
-    if !record(core, id)?.is_live() {
-        return Err(RpcError::new(
-            "finished",
-            format!("{} has finished", crate::terminals::address(id)),
-            "nothing there to read it",
-        ));
-    }
-    let path = crate::put::stage(&core.paths.state, id, &p.name, &bytes)
-        .map_err(|e| RpcError::internal(format!("cannot write the file: {e}")))?;
-    Ok(PutResult { path: path.display().to_string(), bytes: bytes.len() })
 }
 
 async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcError> {

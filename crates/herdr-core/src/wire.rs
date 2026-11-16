@@ -121,6 +121,13 @@ pub struct Conn {
     /// It fell too far behind (`MAX_CONTROL`): the connection must end.
     pub overflowed: tokio::sync::Notify,
     next_channel: std::sync::atomic::AtomicU32,
+    /// Its reader ended: calls still running for it must not leave state behind.
+    pub gone: std::sync::atomic::AtomicBool,
+    /// Puts whose begin was read here and hasn't finished: how many such
+    /// begins, and whether an abort for it came meanwhile (calls run side by side).
+    pub puts_pending: std::sync::Mutex<std::collections::HashMap<String, (usize, bool)>>,
+    /// The core ends it: it misbehaved.
+    pub end: tokio::sync::Notify,
 }
 
 impl Conn {

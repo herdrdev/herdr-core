@@ -23,6 +23,7 @@ type Sink = (Arc<Conn>, u32);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
+mod put;
 mod run;
 mod viewers;
 use run::forward_once;
@@ -52,6 +53,10 @@ pub struct Line {
     /// What the core there said it can do (its `hello`).
     features: Vec<String>,
     closed: AtomicBool,
+    /// Puts in pieces take turns on it.
+    bulk: put::Lane,
+    /// Given up though it still hears from there (`remote/put.rs`): dialed again.
+    pub(super) retired: tokio::sync::Notify,
 }
 
 impl Line {
@@ -65,6 +70,8 @@ impl Line {
             streams: Mutex::default(),
             next: AtomicU64::new(2),
             mirror: Mutex::default(),
+            bulk: Default::default(),
+            retired: Default::default(),
         })
     }
 
@@ -384,6 +391,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 Ok(Some(frame)) => frame,
                 _ => break,
             },
+            () = line.retired.notified() => break,
             () = heard.silent_for(silence) => {
                 let _ = writeln!(io::stderr(), "core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
                 break;
@@ -1007,6 +1015,9 @@ async fn forward_waiting(core: &Core, m: &Machine, method: &str, mut params: Val
 }
 
 pub async fn forward(core: &Core, m: &Machine, method: &str, params: Value) -> Result<Value, RpcError> {
+    if method == "terminal.put" {
+        return put::forward(core, m, params).await;
+    }
     match waits(method, &params) {
         true => forward_waiting(core, m, method, params).await,
         false => forward_once(core, m, method, params).await,

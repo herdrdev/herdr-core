@@ -105,6 +105,8 @@ pub struct State {
     /// Each connected machine's terminals as seen from here, kept current by
     /// its events: machine id -> address (`rohan/t7`) -> record.
     pub mirrors: HashMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Puts arriving in pieces from other cores, by transfer handle.
+    pub puts: HashMap<String, crate::put::Transfer>,
 }
 
 pub struct Link {
@@ -353,6 +355,7 @@ impl Core {
             .filter(|t| matches!(t.reason.as_deref(), Some("holder_lost" | "stopped_by_restart")));
         self.sweep_in_background(leftovers.filter_map(|t| t.scope.clone()).collect());
         crate::exec::sweep_leftovers(&self.paths.state);
+        crate::put::sweep(&self.paths.state);
         self.prune(&mut st);
         self.save(&st);
         Ok(())
@@ -833,6 +836,7 @@ impl Core {
         let Some(was) = st.reg.terminals.remove(&id) else { return };
         self.emit_from(st, "removed", id, serde_json::json!({}), Some(&was));
         let _ = std::fs::remove_file(self.snapshot_path(id));
+        crate::api::forget_puts(st, |t| t.terminal == id);
         let _ = std::fs::remove_dir_all(crate::put::dir(&self.paths.state, id));
         self.save(st);
     }

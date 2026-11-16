@@ -139,6 +139,9 @@
         ],
         "type": "object"
       },
+      "Empty": {
+        "type": "object"
+      },
       "ExecResult": {
         "properties": {
           "code": {
@@ -681,6 +684,32 @@
           "host",
           "version",
           "state"
+        ],
+        "type": "object"
+      },
+      "PutBeginResult": {
+        "properties": {
+          "transfer": {
+            "description": "The transfer, as begun.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transfer"
+        ],
+        "type": "object"
+      },
+      "PutPieceResult": {
+        "properties": {
+          "bytes": {
+            "description": "Bytes received so far.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes"
         ],
         "type": "object"
       },
@@ -2929,7 +2958,7 @@
       }
     },
     {
-      "description": "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). Types nothing: paste the path yourself.",
+      "description": "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
       "errors": [
         {
           "code": -32000,
@@ -2958,6 +2987,13 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.put",
@@ -2995,6 +3031,236 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PutResult"
+        }
+      }
+    },
+    {
+      "description": "Between cores: begin a put that comes in pieces, so a big file never holds up a line. The file appears only once finished.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_framed"
+          },
+          "message": "needs_framed"
+        }
+      ],
+      "name": "terminal.put_begin",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Its whole size in raw bytes; at most 8 MB.",
+          "name": "bytes",
+          "required": true,
+          "schema": {
+            "description": "Its whole size in raw bytes; at most 8 MB.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "The file's name, as for terminal.put.",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "description": "The file's name, as for terminal.put.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The terminal: `t7` or a name, on this core.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "The terminal: `t7` or a name, on this core.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Names this transfer in its pieces: 16 to 64 hex digits the sender picks.",
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "description": "Names this transfer in its pieces: 16 to 64 hex digits the sender picks.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PutBeginResult"
+        }
+      }
+    },
+    {
+      "description": "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_framed"
+          },
+          "message": "needs_framed"
+        }
+      ],
+      "name": "terminal.put_chunk",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The bytes, base64; at most 1 MB raw.",
+          "name": "data",
+          "required": true,
+          "schema": {
+            "description": "The bytes, base64; at most 1 MB raw.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Where these bytes start: exactly the bytes received so far.",
+          "name": "offset",
+          "required": true,
+          "schema": {
+            "description": "Where these bytes start: exactly the bytes received so far.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PutPieceResult"
+        }
+      }
+    },
+    {
+      "description": "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_framed"
+          },
+          "message": "needs_framed"
+        }
+      ],
+      "name": "terminal.put_finish",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PutResult"
+        }
+      }
+    },
+    {
+      "description": "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_framed"
+          },
+          "message": "needs_framed"
+        }
+      ],
+      "name": "terminal.put_abort",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
         }
       }
     },

@@ -606,6 +606,44 @@ pub struct PutResult {
     pub bytes: usize,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBeginParams {
+    /// The terminal: `t7` or a name, on this core.
+    pub terminal: String,
+    /// The file's name, as for terminal.put.
+    pub name: String,
+    /// Its whole size in raw bytes; at most 8 MB.
+    pub bytes: usize,
+    /// Names this transfer in its pieces: 16 to 64 hex digits the sender picks.
+    pub transfer: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBeginResult {
+    /// The transfer, as begun.
+    pub transfer: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutPieceParams {
+    pub transfer: String,
+    /// Where these bytes start: exactly the bytes received so far.
+    pub offset: usize,
+    /// The bytes, base64; at most 1 MB raw.
+    pub data: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct PutPieceResult {
+    /// Bytes received so far.
+    pub bytes: usize,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutTransferParams {
+    pub transfer: String,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct ExecParams {
     /// Program and arguments, run as given (no shell).
