@@ -63,6 +63,9 @@ jobs:
       - run: cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
         env:
           ZIG: ${{ github.workspace }}/scripts/zig-stub.sh
+          # ring's C needs Windows headers; type-checking links nothing.
+          CC_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
+          AR_x86_64_pc_windows_msvc: ${{ github.workspace }}/scripts/cc-stub.sh
 
   test:
     strategy:
@@ -97,6 +100,12 @@ jobs:
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHES }}
+      # ring's C needs a musl C compiler, which runners don't have.
+      - name: musl C compiler
+        if: endsWith(matrix.target, '-linux-musl')
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends musl-tools
+          echo "CC_$(echo '${{ matrix.target }}' | tr - _)=musl-gcc" >> "$GITHUB_ENV"
       - run: cargo clippy --locked --target ${{ matrix.target }} --all-targets -- -D warnings
       # Windows' own ConPTY swallows answers to programs: hc ships Microsoft's.
       - if: matrix.os == 'windows'

@@ -30,13 +30,14 @@ test:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-conpty.ps1 -Dest target/debug
     cargo test --locked
 
-# Format and clippy only (seconds once built). Windows is type-checked with zig stubbed.
+# Format and clippy only (seconds once built). Windows is type-checked with zig and
+# C (ring's) stubbed, and no compiler wrapper (it rejects the stub).
 [unix]
 lint:
     cargo fmt --all -- --check
     cargo deny check
     cargo clippy --locked --all-targets -- -D warnings
-    ZIG="$PWD/scripts/zig-stub.sh" CARGO_TARGET_DIR=target/lint-windows cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+    RUSTC_WRAPPER= ZIG="$PWD/scripts/zig-stub.sh" CC_x86_64_pc_windows_msvc="$PWD/scripts/cc-stub.sh" AR_x86_64_pc_windows_msvc="$PWD/scripts/cc-stub.sh" CARGO_TARGET_DIR=target/lint-windows cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 
 [windows]
 lint:

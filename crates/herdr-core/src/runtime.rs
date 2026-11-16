@@ -43,6 +43,7 @@ pub struct Core {
     save_due: Notify,
     pub(crate) image_due: Notify,
     registry_writer: RegistryWriter,
+    pub push: crate::push::send::Push,
 }
 
 #[derive(Default)]
@@ -145,7 +146,7 @@ impl Link {
     }
 }
 
-const SAVE_SOON: Duration = Duration::from_secs(2);
+pub(crate) const SAVE_SOON: Duration = Duration::from_secs(2);
 /// At most one reconnect per holder in this long: a failure that comes back is not retried.
 const RELINK_GAP: Duration = Duration::from_secs(5);
 /// How long a reconnect waits for the holder's welcome.
@@ -182,6 +183,8 @@ impl Core {
         let machines = read_state(&paths.state.join("machines.json"))?;
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let settings = crate::config::load(&paths.config).unwrap_or_default();
+        let push = crate::push::send::Push::load(&paths.state, crate::push::send::keep(&settings));
         let core = Arc::new(Core {
             info,
             login_session: platform::login_session(),
@@ -199,6 +202,7 @@ impl Core {
             dirty: Default::default(),
             save_due: Notify::new(),
             image_due: Notify::new(),
+            push,
         });
         core.attach_all()?;
         Ok(core)
