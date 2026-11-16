@@ -155,7 +155,7 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     if crate::platform::is_shell_line(&argv) {
         cmd.args(&argv[1..4]).raw_arg(format!("\"{}\"", argv[4]));
     } else {
-        cmd.args(&argv[1..]);
+        crate::platform::exec_args(&mut cmd, &argv);
     }
     #[cfg(unix)]
     cmd.args(&argv[1..]);
