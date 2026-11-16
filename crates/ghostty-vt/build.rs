@@ -23,7 +23,7 @@ fn main() {
     // needs Windows itself and its own folder.
     let mut clean_path = None;
     if cfg!(windows) {
-        zig = which(&zig).unwrap_or_else(|| panic!("{zig:?} not found on PATH (Zig 0.16 required; or set ZIG)"));
+        zig = which(&zig).unwrap_or_else(|| panic!("{zig:?} not found on PATH (Zig 0.17.1 required; or set ZIG)"));
         let root = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()));
         clean_path =
             Some(std::env::join_paths([zig.parent().unwrap().to_path_buf(), root.join("System32"), root]).unwrap());
@@ -52,7 +52,7 @@ fn main() {
         .arg("--cache-dir")
         .arg(out.join("zig-cache"))
         .status()
-        .unwrap_or_else(|e| panic!("cannot run {zig:?} (Zig 0.16 required): {e}"));
+        .unwrap_or_else(|e| panic!("cannot run {zig:?} (Zig 0.17.1 required): {e}"));
     assert!(status.success(), "zig build of libghostty-vt failed: {status}");
 
     // Keep only the static archive in the search path so the linker can't pick
