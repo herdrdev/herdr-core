@@ -168,7 +168,7 @@ For agents, use `hc --skill`.
 
 ## Build from source
 
-You need Rust, Zig 0.16, and just. CI pins the Rust version in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+You need Rust, Zig 0.17.1, and just. CI pins the Rust version in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ```sh
 git submodule update --init --depth 1
