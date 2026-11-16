@@ -727,7 +727,8 @@ impl Terminal {
             if let Some(sel) = self.select(ffi::POINT_HISTORY, (0, from), (last.0, available - 1)) {
                 out.extend(self.format(ffi::FORMAT_VT, Some(&sel), false));
                 // Push those lines up into the viewer's scrollback before painting the screen.
-                out.extend(b"\x1b[0m\r\n".iter().chain(&b"\n".repeat(rows as usize)));
+                // `rows` line feeds move the last one just off the top, wherever the cursor is.
+                out.extend(b"\x1b[0m\r".iter().chain(&b"\n".repeat(rows as usize)));
                 out.extend(b"\x1b[H\x1b[2J");
             }
         }
