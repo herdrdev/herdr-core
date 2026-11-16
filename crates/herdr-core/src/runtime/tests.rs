@@ -784,7 +784,7 @@ async fn every_1000th_event_sweeps_the_push_log() {
         let nothing = crate::events::Filter { terminal: Some("t999".into()), ..Default::default() };
         core.subscribe(&mut st, nothing, crate::events::Sink::Push { name: "x".into(), tx });
         while st.events.seq < 2500 {
-            core.doc_event(&mut st, json!({}), None);
+            core.doc_event(&mut st, "test", json!({}), None);
         }
     }
     let mut sweeps = 0;

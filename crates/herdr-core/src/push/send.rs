@@ -237,6 +237,7 @@ pub fn filter(spec: &PushAddParams) -> Filter {
         children_of: spec.children_of.clone(),
         labels: crate::api::labels(&spec.labels),
         here_only: false,
+        ..Default::default()
     }
 }
 

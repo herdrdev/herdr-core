@@ -248,6 +248,10 @@ impl Core {
                 },
                 Sink::Waiter(tx) => tx.send(params.clone()).is_ok(),
                 Sink::Push { name, tx } => {
+                    let record = match &target {
+                        Target::Terminal { record, .. } => *record,
+                        Target::Doc { .. } => return true,
+                    };
                     let mut event = params.clone();
                     (event["ms"], event["record"]) = (ms.into(), record.clone());
                     tx.send(crate::push::send::Msg::Event { hook: name.clone(), event }).is_ok()
