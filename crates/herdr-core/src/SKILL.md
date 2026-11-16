@@ -58,6 +58,8 @@ failed send: it may still have arrived; read first.
 
 ```sh
 hc ls                              # all live terminals, not just yours
+hc ls t3 review                    # only these (address or name)
+hc ls --where shop --status idle   # filter by where label and status
 hc get review                      # one terminal's observed state/status
 hc send review "Focus on the first bug"
 hc send --wait review "Recheck the fix"

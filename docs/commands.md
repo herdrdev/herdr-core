@@ -307,15 +307,20 @@ Options:
 ## hc ls
 
 ```text
-List live terminals
+List live terminals; name some, or filter with --where and --status
 
-Usage: hc ls [OPTIONS]
+Usage: hc ls [OPTIONS] [TERMINALS]...
+
+Arguments:
+  [TERMINALS]...  Only these terminals, by address or name
 
 Options:
-      --all          Include finished terminals
-      --json         JSON output even in a terminal
-      --label <K=V>  Only terminals carrying all of these labels (repeatable)
-  -h, --help         Print help
+      --all              Include finished terminals
+      --json             JSON output even in a terminal
+      --label <K=V>      Only terminals carrying all of these labels (repeatable)
+      --where <TEXT>     Only terminals whose `where` label (else folder) contains TEXT, ignoring case
+      --status <STATUS>  Only terminals in this status (idle, working, done, ...)
+  -h, --help             Print help
 ```
 
 ## hc machine

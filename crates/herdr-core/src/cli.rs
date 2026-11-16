@@ -35,12 +35,40 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
+/// `hc ls`: the list call's options, plus filters applied to what it returns.
+#[derive(clap::Args)]
+struct LsArgs {
+    #[command(flatten)]
+    list: ListParams,
+    /// Only these terminals, by address or name.
+    terminals: Vec<String>,
+    /// Only terminals whose `where` label (else folder) contains TEXT, ignoring case.
+    #[arg(long = "where", value_name = "TEXT")]
+    place: Option<String>,
+    /// Only terminals in this status (idle, working, done, ...).
+    #[arg(long)]
+    status: Option<String>,
+}
+
+impl LsArgs {
+    fn keeps(&self, t: &Value) -> bool {
+        let named = |word: &str| t["address"] == word || t["name"] == word;
+        let in_place = |text: &str| {
+            let place = place(t).unwrap_or_else(|| folder(t));
+            place.to_lowercase().contains(&text.to_lowercase())
+        };
+        (self.terminals.is_empty() || self.terminals.iter().any(|w| named(w)))
+            && self.place.as_deref().is_none_or(in_place)
+            && self.status.as_deref().is_none_or(|s| t["status"]["state"] == s)
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Start a program, or a template by name with its task: hc run reviewer "review src/x.rs".
     Run(RunParams),
-    /// List live terminals.
-    Ls(ListParams),
+    /// List live terminals; name some, or filter with --where and --status.
+    Ls(LsArgs),
     /// Show one terminal.
     Get(TerminalParams),
     /// End a terminal's program (hangup, then escalate).
@@ -410,7 +438,10 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             Out { json, human }
         }
         Cmd::Ls(p) => {
-            let r = call("terminal.list", to(&p))?;
+            let mut r = call("terminal.list", to(&p.list))?;
+            if let Some(rows) = r["terminals"].as_array_mut() {
+                rows.retain(|t| p.keeps(t));
+            }
             let human = table(&r);
             let rows: Vec<Value> = r["terminals"].as_array().into_iter().flatten().map(short).collect();
             let mut json = json!({"terminals": rows, "hidden_finished": r["hidden_finished"]});

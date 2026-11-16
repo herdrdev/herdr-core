@@ -164,3 +164,26 @@ fn connect_counts_the_plain_lines_the_core_answers() {
         assert_eq!(plain_line(format!("{line}\n").as_bytes()), (answered, last), "{line}");
     }
 }
+
+#[test]
+fn ls_filters_keep_the_terminals_that_match_every_one_given() {
+    let t = |address: &str, name: &str, place: &str, status: &str| {
+        serde_json::json!({"address": address, "name": name, "cwd": "/home/me/app",
+            "labels": {"where": place}, "status": {"state": status}})
+    };
+    let all = [
+        t("t1", "web", "Shop / dev", "idle"),
+        t("m/t2", "api", "Shop / review", "working"),
+        t("t3", "docs", "Blog / dev", "idle"),
+    ];
+    let kept = |args: &[&str]| -> Vec<String> {
+        let Cmd::Ls(p) = parsed(&[&["ls"], args].concat()) else { panic!("not ls") };
+        all.iter().filter(|t| p.keeps(t)).map(|t| t["address"].as_str().unwrap().into()).collect()
+    };
+    assert_eq!(kept(&[]), ["t1", "m/t2", "t3"], "no filter lists everything");
+    assert_eq!(kept(&["m/t2", "docs"]), ["m/t2", "t3"], "addresses or names");
+    assert_eq!(kept(&["--where", "shop"]), ["t1", "m/t2"], "a part of where, any case");
+    assert_eq!(kept(&["--status", "idle"]), ["t1", "t3"]);
+    assert_eq!(kept(&["--where", "dev", "--status", "idle", "t3"]), ["t3"], "all together");
+    assert_eq!(kept(&["--where", "app"]).len(), 0, "the folder only stands in when there is no where label");
+}
