@@ -1,4 +1,4 @@
-//! Keep implicit SSH startup from reserving a desktop user's core at high integrity.
+//! Keep implicit startup from reserving a desktop user's core at high integrity.
 
 use crate::rpc::RpcError;
 use std::io;
@@ -11,13 +11,10 @@ use windows_sys::Win32::System::RemoteDesktop::*;
 use windows_sys::Win32::System::Threading::*;
 
 pub fn check_autostart() -> Result<(), RpcError> {
-    if !super::SSH_LOGIN.iter().any(|key| std::env::var_os(key).is_some()) {
-        return Ok(());
-    }
     let message = match unsafe { elevated_desktop_user() } {
         Ok(false) => return Ok(()),
-        Ok(true) => "refusing to start an elevated Windows core over SSH while this user has a desktop session: the desktop app could not access it".into(),
-        Err(e) => format!("cannot check whether an elevated SSH core would block the Windows desktop: {e}"),
+        Ok(true) => "refusing to start an elevated Windows core while this user has a desktop session: the desktop app could not access it".into(),
+        Err(e) => format!("cannot check whether an elevated core would block the Windows desktop: {e}"),
     };
     Err(RpcError::new(
         "unavailable",
