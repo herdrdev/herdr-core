@@ -550,6 +550,65 @@ fn an_exit_never_overtakes_its_output_while_the_core_is_behind() {
     assert!(printed.ends_with(b"END"), "exit after {} bytes of output", printed.len());
 }
 
+/// Thousands of tiny writes reach the core in far fewer frames, every byte in
+/// order and all of it before the exit.
+#[test]
+fn a_burst_of_tiny_writes_arrives_gathered_and_whole() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "gather");
+    let (mut core, _) = raw_hello(&socket);
+    let writes = 20000;
+    let program = format!("import os\nfor i in range({writes}): os.write(1, b'%05d' % i)");
+    raw_spawn(&mut core, 1, &["python3", "-c", &program]);
+    let (mut printed, mut frames) = (Vec::new(), 0);
+    loop {
+        let (kind, id, payload) = proto::read(&mut core).expect("output, then its exit").unwrap();
+        match (kind, id) {
+            (proto::OUTPUT, 1) => {
+                frames += 1;
+                printed.extend(payload);
+            }
+            (proto::EXITED, 1) => break,
+            _ => {}
+        }
+    }
+    let sent: Vec<u8> = (0..writes).flat_map(|i| format!("{i:05}").into_bytes()).collect();
+    assert!(printed == sent, "{} bytes of {}, in order", printed.len(), sent.len());
+    assert!(frames * 10 < writes, "{frames} frames for {writes} writes");
+}
+
+/// Releasing a terminal while it gathers a burst of tiny writes leaves the
+/// holder serving others, and nothing of the released one follows the next
+/// spawn's reply.
+#[test]
+fn releasing_a_terminal_mid_burst_stops_it_cleanly() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "release");
+    let (mut core, _) = raw_hello(&socket);
+    raw_spawn(&mut core, 1, &["python3", "-c", "import os\nwhile True: os.write(1, b'y')"]);
+    let mut outputs = 0;
+    while outputs < 20 {
+        if proto::read(&mut core).unwrap().unwrap().0 == proto::OUTPUT {
+            outputs += 1;
+        }
+    }
+    raw_send(&mut core, proto::frame(proto::RELEASE, 1, &[]));
+    raw_spawn(&mut core, 2, &["printf", "after"]);
+    let (mut printed, mut spawned) = (Vec::new(), false);
+    loop {
+        let (kind, id, payload) = proto::read(&mut core).expect("the next terminal's output").unwrap();
+        match (kind, id) {
+            (proto::SPAWNED, 2) => spawned = true,
+            (proto::OUTPUT, 1) => assert!(!spawned, "output of a released terminal after the release"),
+            (proto::OUTPUT, 2) => printed.extend(payload),
+            (proto::EXITED, 2) => break,
+            (proto::EXITED, 1) => panic!("a released terminal reports nothing"),
+            _ => {}
+        }
+    }
+    assert_eq!(printed, b"after");
+}
+
 /// A late goodbye from a core that was replaced leaves the new one connected.
 #[test]
 fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {
