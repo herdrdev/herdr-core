@@ -9,3 +9,14 @@ links = "ghostty-vt"
 
 [lints]
 workspace = true
+
+[dependencies]
+# zlib-rs for what it writes. See `png_file`.
+png = { version = "0.18", features = ["zlib-rs"] }
+
+[dev-dependencies]
+flate2 = "1"
+
+[features]
+# What other crates' tests need to look inside.
+test-hooks = []

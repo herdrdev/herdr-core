@@ -62,10 +62,11 @@ Channel 0 carries JSON-RPC both ways. Calls on it run side by side.
 ### Attach streams
 
 `terminal.attach` returns a `channel`. On it the core sends the first paint
-(the current screen, optional history, the latest status report and title,
+(the current screen with its Kitty images, optional history, the latest status report and title,
 and `CSI ?9001h` or `l`: whether the program asked for win32-input-mode,
 as Windows' ConPTY does when it starts), then the program's raw output,
-minus terminal queries the core already answered. The core never encodes
+minus terminal queries the core already answered. The first paint carries up
+to 5 MiB of images, newest first; one that doesn't fit is left out. The core never encodes
 keys: a viewer that honors 9001 sends key events in that format itself.
 The viewer sends keys as DATA on the same channel, and RESIZE,
 FOCUS and FACTS as it changes. The last active viewer sets the size
@@ -102,7 +103,8 @@ behavior: no additional resize paints or RESIZE frames.
 
 Flow control: a stream starts with 256 KiB of credit. The viewer sends
 CREDIT for the bytes it has written out. A viewer that falls more than
-4 MiB behind gets a fresh repaint instead of the backlog. A stalled stream
+4 MiB behind gets a fresh repaint, without images, instead of the backlog.
+The first paint never counts as falling behind, whatever its size. A stalled stream
 never blocks channel 0 or other streams.
 
 A viewer detaches by sending CLOSE; the core answers with an empty CLOSE.

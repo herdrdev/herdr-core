@@ -300,3 +300,5 @@ fn a_replay_of_a_full_screen_program_keeps_what_it_hid_then_its_last_frame() {
         "{text:?}"
     );
 }
+
+mod images;
