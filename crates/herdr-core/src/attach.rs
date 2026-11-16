@@ -272,11 +272,12 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
                 input.extend(chunk);
                 carry = input.split_off(incomplete_tail(&input));
             }
-            None if tty => {
-                detached = true; // the window closed
+            // A closed window, or the end of a piped observer's input: at EOF
+            // stdin stays readable, so waiting on it again would spin.
+            None => {
+                detached = true;
                 break;
             }
-            None => {}
         }
         if terminated() {
             detached = true;

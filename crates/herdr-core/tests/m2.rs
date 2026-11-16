@@ -549,3 +549,34 @@ fn hc_attach_relays_both_ways_and_detaches_on_ctrl_backslash() {
     assert_eq!(rec["state"], "live");
     wait_until("headless after detach", || size(&s, &inner) == (200, 120));
 }
+
+#[test]
+fn a_piped_observer_ends_when_its_input_does() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo observed; sleep 60"]);
+    let mut observer = s
+        .cmd()
+        .args(["--json", "attach", "--observe", &t])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = observer.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(5) {
+            let _ = observer.kill();
+            let _ = observer.wait();
+            panic!("the observer kept running after its input ended");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut observer.stderr.take().unwrap(), &mut err).unwrap();
+    assert!(status.success(), "observer failed: {status}\n{err}");
+    assert!(err.contains(&format!("detached from {t}")), "{err}");
+    assert_eq!(get(&s, &t)["state"], "live", "observing must not end the terminal");
+}
