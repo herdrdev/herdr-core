@@ -143,8 +143,11 @@ Use file for remote reads and exact edits:
 hc file read --on box /srv/app/src/main.rs --offset 1 --limit 100
 hc file edit --on box /srv/app/config.txt --old 'port=3000' --new 'port=4000'
 hc file write --on box /srv/app/note.txt < note.txt
+hc file read --on box /srv/app/logo.png --bytes > logo.png
 ```
 
+Read gives text; `--bytes` gives any file whole, such as an image, up to 8 MB.
+The machine needs this hc version or newer for `--bytes`.
 Write replaces the whole file and creates parent folders.
 Edit requires the old text exactly once. Add context if it is missing or repeated.
 Repeat old/new pairs for several edits; all succeed or none do.

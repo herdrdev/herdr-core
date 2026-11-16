@@ -190,36 +190,60 @@
         "type": "object"
       },
       "FileReadResult": {
-        "properties": {
-          "first": {
-            "description": "The first and last line given (last < first: none).",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
+        "anyOf": [
+          {
+            "properties": {
+              "first": {
+                "description": "The first and last line given (last < first: none).",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lines": {
+                "description": "Lines in the file.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "description": "The lines as they are in the file, line ends kept.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "first",
+              "last",
+              "lines"
+            ],
+            "type": "object"
           },
-          "last": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "lines": {
-            "description": "Lines in the file.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "text": {
-            "description": "The lines as they are in the file, line ends kept.",
-            "type": "string"
+          {
+            "description": "With `bytes`.",
+            "properties": {
+              "bytes": {
+                "description": "How many bytes it has.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "data": {
+                "description": "The file's bytes, base64.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "bytes"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "text",
-          "first",
-          "last",
-          "lines"
-        ],
-        "type": "object"
+        ]
       },
       "FileResult": {
         "properties": {
@@ -3135,7 +3159,7 @@
       }
     },
     {
-      "description": "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has.",
+      "description": "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has. With `bytes`, any file whole as base64 `data` (an image), at most 8 MB.",
       "errors": [
         {
           "code": -32602,
@@ -3190,6 +3214,15 @@
       "name": "file.read",
       "paramStructure": "by-name",
       "params": [
+        {
+          "description": "The whole file as it is, any bytes (an image), at most 8 MB: `data`\ninstead of lines. Not with offset or limit.",
+          "name": "bytes",
+          "required": false,
+          "schema": {
+            "description": "The whole file as it is, any bytes (an image), at most 8 MB: `data`\ninstead of lines. Not with offset or limit.",
+            "type": "boolean"
+          }
+        },
         {
           "description": "Where a relative path starts (default: where hc runs; through the API,\nthe core's; with --on, that machine's home).",
           "name": "cwd",

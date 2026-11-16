@@ -4,6 +4,7 @@
 
 ### New
 - **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer has every document change from every terminal delivered to it, and no longer has to filter them out itself. A subscriber that names none behaves exactly as before and still hears them all; a subscriber that selects a terminal and also names documents hears both.
+- **Images and other binary files can be read from a machine.** `hc file read --bytes` (`file.read` with `bytes: true`) gives any file whole as base64, up to 8 MB, so an app can preview an image on a remote machine. Before, every file that wasn't UTF-8 text failed with `not_text`. The machine needs this version too.
 
 ## [0.1.21] - 2026-11-12
 

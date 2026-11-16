@@ -5,7 +5,7 @@ use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileWriteParams};
 
 #[derive(Subcommand)]
 pub(super) enum FileCmd {
-    /// Print a text file, or lines of it (--offset, --limit).
+    /// Print a text file, or lines of it (--offset, --limit); --bytes for any file.
     Read(FileReadParams),
     /// Write what is piped in as the file, making missing folders.
     Write(FileWriteParams),
@@ -46,8 +46,13 @@ pub(super) fn file(
             if asked {
                 return Ok(Some(Out { json: r, human: String::new() }));
             }
-            // Text, even when piped, as `hc read` does.
+            // Text (or the bytes asked for), even when piped, as `hc read` does.
             use std::io::Write;
+            if let Some(data) = r["data"].as_str() {
+                let bytes = crate::put::decode(data).ok_or_else(|| RpcError::internal("data is not base64"))?;
+                let _ = std::io::stdout().write_all(&bytes);
+                return Ok(None);
+            }
             let _ = std::io::stdout().write_all(r["text"].as_str().unwrap_or_default().as_bytes());
             let (first, last, lines) = (r["first"].as_u64(), r["last"].as_u64(), r["lines"].as_u64());
             if first > Some(1) || last < lines {

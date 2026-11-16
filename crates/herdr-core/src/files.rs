@@ -12,6 +12,13 @@ const MAX_FILE: u64 = 64 << 20;
 
 pub fn read(p: FileReadParams, from_afar: bool) -> Result<FileReadResult, RpcError> {
     let path = resolve(&p.at, from_afar);
+    if p.bytes {
+        if p.offset.is_some() || p.limit.is_some() {
+            return Err(RpcError::invalid_params("bytes reads the whole file: no offset or limit"));
+        }
+        let bytes = bytes_of(&path, MAX_BYTES as u64)?;
+        return Ok(FileReadResult::Bytes { data: crate::put::encode(&bytes), bytes: bytes.len() });
+    }
     let text = text_of(&path)?;
     lines(&text, p.offset.unwrap_or(1), p.limit.unwrap_or(usize::MAX), MAX_BYTES)
 }
@@ -45,8 +52,19 @@ fn io(path: &Path, e: std::io::Error) -> RpcError {
     }
 }
 
-/// A regular file's text: a pipe or device could block or never end.
+/// A regular file's text.
 fn text_of(path: &Path) -> Result<String, RpcError> {
+    String::from_utf8(bytes_of(path, MAX_FILE)?).map_err(|_| {
+        RpcError::new(
+            "not_text",
+            format!("{} is not UTF-8 text", path.display()),
+            "for its bytes: hc file read --bytes",
+        )
+    })
+}
+
+/// A regular file's bytes, at most `max`: a pipe or device could block or never end.
+fn bytes_of(path: &Path, max: u64) -> Result<Vec<u8>, RpcError> {
     use std::io::Read;
     // Checked before opening: opening a pipe already waits for a writer.
     if !std::fs::metadata(path).map_err(|e| io(path, e))?.is_file() {
@@ -55,15 +73,13 @@ fn text_of(path: &Path) -> Result<String, RpcError> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .map_err(|e| io(path, e))?
-        .take(MAX_FILE + 1)
+        .take(max + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| io(path, e))?;
-    if bytes.len() as u64 > MAX_FILE {
-        return Err(RpcError::invalid_params(format!("{} is over {} MB", path.display(), MAX_FILE >> 20)));
+    if bytes.len() as u64 > max {
+        return Err(RpcError::invalid_params(format!("{} is over {} MB", path.display(), max >> 20)));
     }
-    String::from_utf8(bytes).map_err(|_| {
-        RpcError::new("not_text", format!("{} is not UTF-8 text", path.display()), "for bytes: hc exec cat")
-    })
+    Ok(bytes)
 }
 
 /// Lines `first..` of `text`, at most `limit` of them and `max` bytes as
@@ -88,7 +104,7 @@ fn lines(text: &str, first: usize, limit: usize, max: usize) -> Result<FileReadR
     if given == 0 && limit > 0 && first <= total {
         return Err(RpcError::invalid_params(format!("line {first} is over {} MB", max >> 20)));
     }
-    Ok(FileReadResult { text: out, first, last: first + given - 1, lines: total })
+    Ok(FileReadResult::Text { text: out, first, last: first + given - 1, lines: total })
 }
 
 /// All edits, each found exactly once in `text` as it is, or none.
@@ -183,6 +199,13 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
 mod tests {
     use super::*;
 
+    struct Lines {
+        text: String,
+        first: usize,
+        last: usize,
+        lines: usize,
+    }
+
     fn edits(pairs: &[(&str, &str)]) -> Vec<Edit> {
         pairs.iter().map(|(old, new)| Edit { old: old.to_string(), new: new.to_string() }).collect()
     }
@@ -205,6 +228,11 @@ mod tests {
 
     #[test]
     fn reads_give_whole_lines_from_an_offset_within_a_byte_cap() {
+        let lines = |text, first, limit, max| match lines(text, first, limit, max) {
+            Ok(FileReadResult::Text { text, first, last, lines }) => Ok(Lines { text, first, last, lines }),
+            Ok(FileReadResult::Bytes { .. }) => unreachable!("lines are text"),
+            Err(e) => Err(e),
+        };
         let r = lines("1\n2\n3\n4", 2, 2, 100).unwrap();
         assert_eq!((r.text.as_str(), r.first, r.last, r.lines), ("2\n3\n", 2, 3, 4));
         let r = lines("1\n2\n3\n4", 1, usize::MAX, 15).unwrap();

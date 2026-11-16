@@ -145,7 +145,7 @@ Read, write or edit a file here or on a machine: an agent's hands there
 Usage: hc file [OPTIONS] <COMMAND>
 
 Commands:
-  read   Print a text file, or lines of it (--offset, --limit)
+  read   Print a text file, or lines of it (--offset, --limit); --bytes for any file
   write  Write what is piped in as the file, making missing folders
   edit   Replace exact text found once (--old X --new Y, repeatable); all or none
   help   Print this message or the help of the given subcommand(s)
@@ -177,7 +177,7 @@ Options:
 ## hc file read
 
 ```text
-Print a text file, or lines of it (--offset, --limit)
+Print a text file, or lines of it (--offset, --limit); --bytes for any file
 
 Usage: hc file read [OPTIONS] <PATH>
 
@@ -190,6 +190,7 @@ Options:
       --cwd <CWD>        Where a relative path starts (default: where hc runs; through the API, the core's; with --on, that machine's home)
       --offset <OFFSET>  The first line to give, from 1
       --limit <LIMIT>    At most this many lines (default: all, up to 8 MB)
+      --bytes            The whole file as it is, any bytes (an image), at most 8 MB: `data` instead of lines. Not with offset or limit
   -h, --help             Print help
 ```
 

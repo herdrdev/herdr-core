@@ -90,6 +90,14 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
             format!("hc machine update {}", m.name),
         ));
     }
+    // An older core would ignore `bytes` and answer with text, or not_text.
+    if method == "file.read" && params["bytes"] == true && !line.features.iter().any(|f| f == "file_bytes") {
+        return Err(RpcError::new(
+            "needs_update",
+            format!("{}'s hc is older and reads only text files", m.name),
+            format!("hc machine update {}", m.name),
+        ));
+    }
     let grant = RunGrant::start(core, m, method, &params);
     let result = line.call(&m.name, method, params, deadline).await;
     if let Some(grant) = grant {

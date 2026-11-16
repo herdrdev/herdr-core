@@ -23,6 +23,7 @@ pub const FEATURES: &[&str] = &[
     "resize_notifications",
     "automatic_input",
     "restart_environment",
+    "file_bytes",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -123,7 +124,7 @@ methods! { Ctx<'_>;
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
         errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
     "file.read" => file_read, FileReadParams => FileReadResult,
-        "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has.",
+        "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has. With `bytes`, any file whole as base64 `data` (an image), at most 8 MB.",
         errors ["invalid_params", "not_found", "not_text", "io", "machine_unknown", "unavailable", "needs_update"];
     "file.write" => file_write, FileWriteParams => FileResult,
         "Write a file here or on a machine (`on`), making missing folders. Swapped in whole: a reader sees old or new, never half. An existing file keeps its mode; a symlink is followed.",

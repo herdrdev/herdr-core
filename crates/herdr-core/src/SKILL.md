@@ -10,7 +10,7 @@ It does not arrange windows; use `herdr-app --skill` for that.
 `$HC_TERMINAL_ID` is your address. Terminals you start are your children.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
-Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
+Piped output is JSON except `run`, `exec`, `read`, and `file read` (text, or the file's bytes with `--bytes`).
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 ## Delegate a task
@@ -214,6 +214,7 @@ hc exec --on vps --cwd /srv/app git diff    # short command, exact output, no te
 hc file read --on vps /srv/app/src/x.rs --offset 200 --limit 100
 hc file edit --on vps /srv/app/src/x.rs --old 'exact text' --new 'replacement'
 hc file write --on vps /srv/app/src/y.rs < content.txt
+hc file read --on vps /srv/app/logo.png --bytes > logo.png   # any file, at most 8 MB
 ```
 
 `exec` ends the command and everything it started after 60 s by default

@@ -694,17 +694,32 @@ pub struct FileReadParams {
     #[arg(long)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// The whole file as it is, any bytes (an image), at most 8 MB: `data`
+    /// instead of lines. Not with offset or limit.
+    #[arg(long, conflicts_with_all = ["offset", "limit"])]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bytes: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
-pub struct FileReadResult {
-    /// The lines as they are in the file, line ends kept.
-    pub text: String,
-    /// The first and last line given (last < first: none).
-    pub first: usize,
-    pub last: usize,
-    /// Lines in the file.
-    pub lines: usize,
+#[serde(untagged)]
+pub enum FileReadResult {
+    Text {
+        /// The lines as they are in the file, line ends kept.
+        text: String,
+        /// The first and last line given (last < first: none).
+        first: usize,
+        last: usize,
+        /// Lines in the file.
+        lines: usize,
+    },
+    /// With `bytes`.
+    Bytes {
+        /// The file's bytes, base64.
+        data: String,
+        /// How many bytes it has.
+        bytes: usize,
+    },
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]

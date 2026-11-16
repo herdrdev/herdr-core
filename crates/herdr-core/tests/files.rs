@@ -55,6 +55,19 @@ fn files_are_written_read_and_edited_here_and_on_a_machine() {
         assert_eq!((code, e["error"]["kind"].as_str()), (1, Some("edit_failed")), "{e}");
         assert!(e["error"]["message"].as_str().unwrap().contains("6001 times"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited, "untouched");
+
+        // Any file whole, as it is: an image to preview.
+        let png: Vec<u8> = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".iter().copied().chain(0..=255).collect();
+        assert!(s.hc_input(&file(&["write", "img.png"]), &png).status.success());
+        let (code, e) = s.err(&file(&["read", "img.png"]));
+        assert_eq!((code, e["error"]["kind"].as_str()), (1, Some("not_text")), "{e}");
+        assert_eq!(e["error"]["hint"], "for its bytes: hc file read --bytes");
+        let raw = s.hc(&file(&["read", "img.png", "--bytes"]));
+        assert!(raw.stdout == png && raw.stderr.is_empty(), "{on:?}: its bytes, as they are");
+        let r = s.json(&file(&["read", "img.png", "--bytes"]));
+        assert_eq!(r["bytes"].as_u64(), Some(png.len() as u64), "{r}");
+        assert!(r["data"].as_str().unwrap().starts_with("iVBORw0KGgo"), "base64: {r}");
+        assert!(r.get("text").is_none(), "{r}");
     }
 }
 
@@ -95,4 +108,11 @@ fn a_write_swaps_the_file_in_whole_and_keeps_what_it_was() {
     }
     let big = s.hc_input(&["--json", "file", "write", "--cwd", &cwd, "big"], &vec![b'x'; (8 << 20) + 1]);
     assert!(String::from_utf8_lossy(&big.stderr).contains("invalid_params"), "8 MB at most");
+    assert_eq!(
+        s.err(&["--json", "file", "read", "--bytes", "--cwd", &cwd, "fifo"]).1["error"]["kind"],
+        "invalid_params"
+    );
+    std::fs::File::create(dir.join("9mb")).unwrap().set_len(9 << 20).unwrap();
+    let e = s.err(&["--json", "file", "read", "--bytes", "--cwd", &cwd, "9mb"]).1;
+    assert!(e["error"]["message"].as_str().unwrap().ends_with("is over 8 MB"), "bytes fit one message: {e}");
 }
