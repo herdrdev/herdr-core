@@ -34,6 +34,7 @@ pub mod templates;
 pub mod terminals;
 pub mod viewers;
 pub mod wait;
+pub mod watch;
 pub mod wire;
 
 /// The folder tests put their scratch data in: `HC_TEST_TMPDIR` if set, else

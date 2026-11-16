@@ -28,8 +28,8 @@ pub struct WaitResult {
     /// or not_started (after a send: it did not start working; a plain wait
     /// still follows that send's turn); with
     /// `children`: children; message (someone messaged the waiter, any
-    /// wait); for each child in `children`: status, exit, or running (still
-    /// working).
+    /// wait); for each child in `children`: status, exit, running (still
+    /// working), or output (with `any`: it printed lines it watches for).
     pub reason: String,
     /// The exact word the program reported (current word on timeout or output).
     pub status: Option<String>,
@@ -56,7 +56,7 @@ fn stuck(word: Option<&str>) -> bool {
 
 /// The text of a chunk of output after what the last one `held`: a character
 /// cut at the chunk's end waits there for the rest instead of becoming U+FFFD.
-fn text_of(held: &mut Vec<u8>, bytes: &[u8]) -> String {
+pub(crate) fn text_of(held: &mut Vec<u8>, bytes: &[u8]) -> String {
     held.extend_from_slice(bytes);
     // Only a start that more bytes could still make valid; anything else is U+FFFD now.
     let open =

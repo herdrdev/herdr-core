@@ -17,6 +17,7 @@ pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams
         parent: q.parent.or(p.parent),
         no_parent: p.no_parent || q.no_parent,
         no_notify: p.no_notify || q.no_notify,
+        watch: [p.watch, q.watch].concat(),
         outlive_parent: p.outlive_parent || q.outlive_parent,
         rm: p.rm || q.rm,
         keep: p.keep || q.keep,

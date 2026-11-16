@@ -61,6 +61,8 @@ pub struct State {
     pub foreground: HashMap<u32, Vec<oneshot::Sender<i32>>>,
     /// Waits matching output: they get every byte viewers get.
     pub output_watch: HashMap<u32, Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
+    /// `run --watch` terminals' unfinished last lines.
+    pub watched: HashMap<u32, crate::watch::Lines>,
     /// The turn of each caller's last send to a terminal, until a bare wait reports it.
     pub last_send: HashMap<(String, u32), u64>,
     /// Waits in progress by (caller, terminal): a parent waiting needs no note.
@@ -793,6 +795,7 @@ impl Core {
             v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }
         st.relays.remove(&id);
+        st.watched.remove(&id);
         if let Some(snapshot) = st.screens.remove(&id).and_then(|s| s.snapshot())
             && let Err(e) = write_atomic(&self.snapshot_path(id), &snapshot)
         {

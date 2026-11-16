@@ -18,6 +18,9 @@ pub enum Job {
     NotesAfar(String),
 }
 
+/// Watched lines kept for a parent that hasn't looked yet.
+const MATCHED_MAX: usize = 20;
+
 fn parent_id(t: &Terminal) -> Option<u32> {
     t.parent.as_deref().and_then(parse_id)
 }
@@ -66,8 +69,9 @@ pub fn who(t: &Terminal) -> String {
     }
 }
 
-/// What a child can't say itself: it is blocked, it hit an error, or it is
-/// gone. Everything else it reports with hc send. `address`: the child as
+/// What a child can't say itself: it is blocked, it hit an error, it is
+/// gone, or it printed lines it was started to watch for (`--watch`).
+/// Everything else it reports with hc send. `address`: the child as
 /// its parent calls it (`rohan/t7` from another machine). `last`: the last
 /// lines of a plain program that ended, shown before where to read more.
 fn note(t: &Terminal, address: &str, last: &[String]) -> String {
@@ -89,6 +93,9 @@ fn note(t: &Terminal, address: &str, last: &[String]) -> String {
         (format!("exited ({how})"), "Read")
     };
     let name = t.name.as_ref().or(t.template.as_ref()).map(|n| format!(" {n}")).unwrap_or_default();
+    if t.is_live() && !stuck(t) {
+        return format!("<hc>{address}{name} printed:\n{}\nRead: hc read {address}</hc>", t.matched.join("\n"));
+    }
     let gap = match last.is_empty() {
         true => ". ".to_string(),
         false => format!(". Last lines:\n{}\n", last.join("\n")),
@@ -116,6 +123,27 @@ impl Core {
         if std::mem::take(&mut t.told_parent) && !stuck(t) && t.is_live() {
             t.seen = t.news; // a turn that ended after reporting to the parent
         }
+        self.tell_parent(st, id);
+    }
+
+    /// It printed lines its `--watch` asked for: news for its parent, and an
+    /// event for each line.
+    pub fn matched(&self, st: &mut State, id: u32, lines: Vec<String>) {
+        for line in &lines {
+            self.emit(st, "matched", id, serde_json::json!({"line": line}));
+        }
+        let Some(t) = st.reg.terminals.get_mut(&id) else { return };
+        t.matched.extend(lines);
+        let over = t.matched.len().saturating_sub(MATCHED_MAX);
+        t.matched.drain(..over);
+        t.news += 1;
+        self.tell_parent(st, id);
+        self.save_soon();
+    }
+
+    /// Queue a note for its parent, if it has one that wants them.
+    fn tell_parent(&self, st: &State, id: u32) {
+        let Some(t) = st.reg.terminals.get(&id) else { return };
         match (parent_id(t), &t.parent) {
             (Some(p), _) if t.notify => drop(self.jobs.send(Job::Notes(p))),
             (None, Some(afar)) if t.notify => drop(self.jobs.send(Job::NotesAfar(afar.clone()))),
@@ -133,6 +161,7 @@ impl Core {
         {
             t.seen = t.news;
             t.seen_ms = Some(now_ms());
+            t.matched.clear();
             self.save(&st);
         }
     }
@@ -163,15 +192,15 @@ impl Core {
         }
     }
 
-    /// Children of `parent` that are stuck or gone with news it hasn't seen,
-    /// been told, or isn't already waiting for.
+    /// Children of `parent` that are stuck, gone or printed watched lines, with
+    /// news it hasn't seen, been told, or isn't already waiting for.
     fn unseen(&self, st: &State, address: &str) -> Vec<u32> {
         let address = address.to_string();
         st.reg
             .terminals
             .values()
             .filter(|t| t.parent.as_deref() == Some(address.as_str()) && t.notify)
-            .filter(|t| t.news > t.seen.max(t.noted) && (stuck(t) || !t.is_live()))
+            .filter(|t| t.news > t.seen.max(t.noted) && (stuck(t) || !t.is_live() || !t.matched.is_empty()))
             .filter(|t| !st.waiting.contains_key(&(address.clone(), t.id())))
             .map(Terminal::id)
             .collect()
@@ -201,6 +230,7 @@ impl Core {
                     for id in &kids {
                         let t = st.reg.terminals.get_mut(id).expect("listed");
                         t.noted = t.noted.max(t.news);
+                        t.matched.clear();
                     }
                     self.save(&st);
                     crate::remote::tell_peer(&self, &mut st, &parent, &notes);
@@ -274,7 +304,10 @@ impl Core {
                     kids.iter().map(|id| self.note_for(st, *id, &st.reg.terminals[id].address)).collect();
                 text.extend(afar.iter().cloned());
                 let bracketed = st.screens.get(&parent).is_some_and(|s| s.dec_mode(2004));
-                let told = kids.iter().map(|id| (*id, st.reg.terminals[id].news)).collect();
+                let told = kids
+                    .iter()
+                    .map(|id| (*id, st.reg.terminals[id].news, st.reg.terminals[id].matched.len()))
+                    .collect();
                 let steps = vec![
                     Step::Write(paste(bracketed, &text.join("\n"))),
                     Step::Pause(crate::input::PASTE_GAP),
@@ -283,7 +316,7 @@ impl Core {
                 Ok((told, steps))
             })
             .await;
-        let told: Vec<(u32, u64)> = match typed {
+        let told: Vec<(u32, u64, usize)> = match typed {
             Ok(told) => told,
             Err(e) => {
                 if !afar.is_empty() {
@@ -294,9 +327,10 @@ impl Core {
         };
         let had_afar = !afar.is_empty();
         let mut st = self.lock();
-        for (id, news) in &told {
+        for (id, news, matched) in &told {
             if let Some(t) = st.reg.terminals.get_mut(id) {
                 t.noted = t.noted.max(*news);
+                t.matched.drain(..(*matched).min(t.matched.len()));
             }
         }
         self.save(&st);

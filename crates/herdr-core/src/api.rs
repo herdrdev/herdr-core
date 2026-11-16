@@ -23,6 +23,7 @@ pub const FEATURES: &[&str] = &[
     "resize_notifications",
     "automatic_input",
     "restart_environment",
+    "watch",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.

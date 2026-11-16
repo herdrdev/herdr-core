@@ -975,6 +975,13 @@
               }
             ],
             "description": "With `wait`: how the wait ended (exit, a status, or timeout: still running)."
+          },
+          "watch": {
+            "description": "Text whose printed lines are news (`run --watch`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -1445,6 +1452,13 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "watch": {
+            "description": "Text whose printed lines are news (`run --watch`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -1488,7 +1502,7 @@
             ]
           },
           "reason": {
-            "description": "status, exit (including program loss in a kept terminal), output, timeout,\nor not_started (after a send: it did not start working; a plain wait\nstill follows that send's turn); with\n`children`: children; message (someone messaged the waiter, any\nwait); for each child in `children`: status, exit, or running (still\nworking).",
+            "description": "status, exit (including program loss in a kept terminal), output, timeout,\nor not_started (after a send: it did not start working; a plain wait\nstill follows that send's turn); with\n`children`: children; message (someone messaged the waiter, any\nwait); for each child in `children`: status, exit, running (still\nworking), or output (with `any`: it printed lines it watches for).",
             "type": "string"
           },
           "signal": {
@@ -1971,6 +1985,18 @@
             "default": false,
             "description": "Then wait until it is not working, like `terminal.wait`, and return its\noutput (the CLI waits unless --bg).",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "A line it prints containing this text is news: a note to its parent and a\n`matched` event (plain text, escape sequences stripped; repeatable).",
+          "name": "watch",
+          "required": false,
+          "schema": {
+            "description": "A line it prints containing this text is news: a note to its parent and a\n`matched` event (plain text, escape sequences stripped; repeatable).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         }
       ],

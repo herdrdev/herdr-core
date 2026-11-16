@@ -211,6 +211,58 @@ fn a_plain_programs_end_is_a_note_with_its_last_lines_unless_the_parent_saw_it()
 }
 
 #[test]
+fn a_watched_line_is_a_note_each_time_it_is_printed() {
+    let s = session();
+    let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");
+    let kid = run(
+        &s,
+        &["--parent", &p, "--name", "web", "--watch", "READY", "--watch", "ERR"],
+        "echo booting; printf '\\033[32mREA\\033[0mDY on 3000\\n'; w a; echo ERR boom; sleep 100",
+    );
+    wait_until("ready note", || {
+        let t = text(&s, &p);
+        t.contains(&format!("parent-got:<hc>{kid} web printed:"))
+            && t.contains("parent-got:READY on 3000")
+            && t.contains(&format!("parent-got:Read: hc read {kid}</hc>"))
+    });
+    touch(&s, "a");
+    wait_until("error note", || text(&s, &p).contains("parent-got:ERR boom"));
+    let t = text(&s, &p);
+    assert!(!t.contains("parent-got:booting"), "only watched lines: {t}");
+    assert_eq!(t.matches("parent-got:READY on 3000").count(), 1, "each line once: {t}");
+    assert_eq!(get(&s, &kid)["watch"], json!(["READY", "ERR"]));
+}
+
+#[test]
+fn a_watched_line_wakes_a_wait_for_any_child_and_is_an_event() {
+    use std::io::BufRead;
+    let s = session();
+    let p = run(&s, &[], "r state=working; sleep 100");
+    let kid = run(&s, &["--parent", &p, "--watch", "READY"], "w a; echo noise; echo READY now; sleep 100");
+    wait_until("parent reported", || get(&s, &p)["reported"] == true);
+    let mut events = s.cmd().args(["events"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut lines = std::io::BufReader::new(events.stdout.take().unwrap()).lines();
+    lines.next(); // the snapshot
+    let any = wait_children(&s, &p, "any");
+    std::thread::sleep(Duration::from_millis(300));
+    touch(&s, "a");
+    let r = any.join().unwrap();
+    assert_eq!(r["reason"], "children", "{r}");
+    assert_eq!(
+        (r["children"][0]["terminal"].as_str(), r["children"][0]["reason"].as_str()),
+        (Some(kid.as_str()), Some("output"))
+    );
+    let matched = lines
+        .map(|l| serde_json::from_str::<Value>(&l.unwrap()).unwrap())
+        .find(|e| e["params"]["type"] == "matched")
+        .unwrap();
+    assert_eq!(matched["params"]["terminal"], kid.as_str());
+    assert_eq!(matched["params"]["data"]["line"], "READY now");
+    events.kill().unwrap();
+    events.wait().unwrap();
+}
+
+#[test]
 fn notes_reach_a_working_parent_but_never_a_blocked_one() {
     let s = session();
     // Echo stays on while it is blocked, so anything typed early shows at once.
