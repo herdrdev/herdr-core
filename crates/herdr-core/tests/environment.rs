@@ -418,3 +418,33 @@ fn a_display_on_another_machine_stays() {
     let out = s.hc(&["exec", "echo \"[${DISPLAY-unset}]\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "[otherhost:0]\n");
 }
+
+#[test]
+fn isolated_session_with_stripped_path_starts_cleanly_with_json_errors() {
+    let s = Session::new();
+    let start = s.cmd().env("PATH", "").args(["server", "start"]).output().unwrap();
+    assert!(start.status.success(), "stderr: {}", String::from_utf8_lossy(&start.stderr));
+    assert!(
+        start.stderr.is_empty(),
+        "isolated start must not warn on stderr: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let ls = s.cmd().env("PATH", "").arg("ls").output().unwrap();
+    assert!(ls.status.success(), "stderr: {}", String::from_utf8_lossy(&ls.stderr));
+    assert!(ls.stderr.is_empty(), "stderr: {}", String::from_utf8_lossy(&ls.stderr));
+
+    let err_out = s.cmd().env("PATH", "").args(["read", "no-such-terminal"]).output().unwrap();
+    assert!(!err_out.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&err_out.stderr).expect("stderr must remain pure JSON without manager noise");
+    assert!(parsed["error"]["kind"].as_str().is_some(), "{parsed}");
+
+    let restart = s.cmd().env("PATH", "").args(["server", "restart"]).output().unwrap();
+    assert!(restart.status.success(), "stderr: {}", String::from_utf8_lossy(&restart.stderr));
+    assert!(
+        restart.stderr.is_empty(),
+        "isolated restart must not warn on stderr: {}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+}
