@@ -819,12 +819,27 @@ fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<V
     Ok(wide(line.join(" ").as_ref()))
 }
 
+/// Resolve the Windows command processor independently of the working
+/// directory and environment overrides.
+fn system_cmd() -> io::Result<String> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; MAX_PATH as usize];
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if n >= buf.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows system directory exceeds the path buffer"));
+    }
+    Ok(format!(r"{}\cmd.exe", String::from_utf16_lossy(&buf[..n])))
+}
+
 /// A .cmd/.bat (how npm installs agents) runs through cmd, which reads
 /// `& | < > ^ %` itself: each argument is quoted, `"` doubled and `%`
 /// defused, so a prompt arrives as one literal argument (the scheme Rust's
 /// std uses since BatBadBut). cmd can't carry a line break in an argument.
 fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
-    let mut line = format!("cmd.exe /e:ON /v:OFF /d /c \"\"{}\"", script.display());
+    let mut line = format!("{} /e:ON /v:OFF /d /c \"\"{}\"", quote(&system_cmd()?), script.display());
     for arg in args {
         if arg.contains(['\r', '\n', '\0']) {
             return Err(io::Error::new(
