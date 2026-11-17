@@ -568,6 +568,35 @@ fn a_child_ends_with_its_parent_on_another_machine_too() {
 }
 
 #[test]
+fn two_machines_that_added_each_other_wait_on_and_end_children_there() {
+    let (mut rohan, mut s) = (Session::new(), Session::new()); // s stops first: it would dial rohan back up
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    rohan.env.push(fake_ssh(&rohan, &[("desk", &s)]));
+    run(&s, &["sleep", "100"]); // each core started with its own way to the other
+    run(&rohan, &["sleep", "100"]);
+    s.json(&["machine", "add", "rohan"]);
+    rohan.json(&["machine", "add", "desk"]);
+    wait_until("both connected", || {
+        [&s, &rohan].iter().all(|s| s.json(&["machine", "ls"])["machines"][0]["state"] == "connected")
+    });
+    // On rohan, s is both the machine `desk` and the core that dialed in: still the parent's core.
+    let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; sleep 100"));
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", &parent)
+        .args(["--json", "wait", "--children", "all", "--timeout", "0.5"])
+        .output()
+        .unwrap();
+    let all: Value =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(all["children"][0]["terminal"], json!(child), "{all}");
+    s.json(&["kill", &parent]);
+    let there = child.strip_prefix("rohan/").unwrap();
+    wait_until("the child there ended with its parent", || get(&rohan, there)["state"] == "finished");
+    rohan.json(&["machine", "rm", "desk"]); // else it dials a stopped desk back up
+}
+
+#[test]
 fn a_note_made_while_the_line_is_down_arrives_when_it_is_back() {
     let (rohan, s) = with_rohan_env(&[("HC_QUIET_MS", "0")]);
     let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; exit 4"));
