@@ -367,7 +367,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     lock(&line.mirror).0 = id;
     line.message(&json!({"jsonrpc": "2.0", "id": id, "method": "events.subscribe", "params": {}}));
     let mut stdin = d.stdin;
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(frame) = out.recv().await {
             if stdin.write_all(&frame).await.is_err() {
                 return;
@@ -392,6 +392,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 _ => break,
             },
             () = line.retired.notified() => break,
+            // Its input is gone though its output may stay open: nothing sent arrives.
+            _ = &mut writer => {
+                let _ = writeln!(io::stderr(), "core: can't write to {}: line given up", m.name);
+                break;
+            }
             () = heard.silent_for(silence) => {
                 let _ = writeln!(io::stderr(), "core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
                 break;
