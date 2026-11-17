@@ -778,13 +778,14 @@ pub async fn orphaned(core: &Arc<Core>, conn: Option<&Arc<Conn>>, params: &Value
 }
 
 /// An address on a core that dialed in, as parents from there are kept here
-/// (`<its name>/t3`); `None` for anything else.
+/// (`<its name>/t3`); `None` for anything else. A machine added here that also
+/// dialed in (two machines that added each other) counts as that core.
 pub fn peer_address(core: &Core, address: &str) -> Option<String> {
     let (prefix, rest) = address.split_once('/')?;
     let st = core.lock();
     if prefix == core.info.id
         || prefix == core.info.name
-        || st.machines.iter().any(|m| m.name == prefix || m.id == prefix)
+        || st.machines.iter().any(|m| (m.name == prefix || m.id == prefix) && !st.peers.contains_key(&m.id))
     {
         return None;
     }
