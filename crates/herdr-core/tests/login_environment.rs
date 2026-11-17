@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 mod common;
 use common::*;
@@ -29,9 +29,19 @@ fn failed_login_profile_cleans_up_its_background_child() {
     assert_eq!(value(&s), "");
     let pid = std::fs::read_to_string(s.root.join("profile-child")).unwrap();
     let pid: i32 = pid.trim().parse().unwrap();
+    let dead = || {
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+            stat.is_err() || stat.unwrap().split_whitespace().nth(2) == Some("Z")
+        }
+        #[cfg(not(target_os = "linux"))]
+        unsafe {
+            libc::kill(pid, 0) != 0
+        }
+    };
     for _ in 0..100 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-        if stat.is_err() || stat.unwrap().split_whitespace().nth(2) == Some("Z") {
+        if dead() {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -101,11 +111,59 @@ fn ssh_start_loads_login_exports_once_and_keeps_them_across_restart() {
 }
 
 #[test]
-fn local_linux_start_keeps_its_inherited_environment() {
+fn local_unix_start_keeps_its_inherited_environment() {
     let mut s = ssh_session("export LOGIN_TEST=profile\n");
     s.env.retain(|(key, _)| key != "SSH_CONNECTION");
     s.env.push(("LOGIN_TEST".into(), "desktop".into()));
     assert_eq!(value(&s), "desktop");
+}
+
+#[test]
+fn ssh_start_keeps_profile_prepends_ahead_of_incoming_path_and_retains_caller_extras() {
+    use std::os::unix::fs::PermissionsExt;
+    let guard =
+        "case \":$PATH:\" in *\":$HOME/profile_bin:\"*) ;; *) export PATH=\"$HOME/profile_bin:$PATH\" ;; esac\n";
+    let check_shell = |shell: &str, profile: &str, label: &str| {
+        let mut s = Session::new();
+        let profile_bin = s.root.join("profile_bin");
+        let shadow_bin = s.root.join("shadow_bin");
+        let caller_only_bin = s.root.join("caller_only_bin");
+        for dir in [&profile_bin, &shadow_bin, &caller_only_bin] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let write_tool = |path: std::path::PathBuf, out: &str| {
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '{out}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        write_tool(profile_bin.join("tool"), "from-profile");
+        write_tool(shadow_bin.join("tool"), "from-shadow");
+        write_tool(caller_only_bin.join("caller-helper"), "from-caller");
+        std::fs::write(s.root.join(profile), guard).unwrap();
+        let incoming =
+            format!("{}:{}:{}:/usr/bin:/bin", shadow_bin.display(), profile_bin.display(), caller_only_bin.display());
+        s.env.extend([
+            ("SSH_CONNECTION".into(), "test".into()),
+            ("SHELL".into(), shell.into()),
+            ("PATH".into(), incoming),
+        ]);
+        let tool = s.hc(&["exec", "--", "tool"]);
+        assert!(tool.status.success(), "{label}: {tool:?}");
+        assert_eq!(String::from_utf8_lossy(&tool.stdout), "from-profile", "{label}");
+        let caller = s.hc(&["exec", "--", "caller-helper"]);
+        assert!(caller.status.success(), "{label}: {caller:?}");
+        assert_eq!(String::from_utf8_lossy(&caller.stdout), "from-caller", "{label}");
+        let path_out = s.hc(&["exec", "printf '%s' \"$PATH\""]);
+        assert!(path_out.status.success(), "{label}: {path_out:?}");
+        let path = String::from_utf8_lossy(&path_out.stdout);
+        let pos = |needle: &str| path.split(':').position(|entry| entry == needle);
+        let profile_pos = pos(profile_bin.to_str().unwrap());
+        assert!(profile_pos.is_some(), "{label}: missing profile_bin in {path}");
+        assert!(profile_pos < pos("/usr/bin"), "{label}: {path}");
+        assert!(profile_pos < pos(shadow_bin.to_str().unwrap()), "{label}: {path}");
+    };
+    check_shell("/bin/bash", ".bash_profile", "bash");
+    #[cfg(target_os = "macos")]
+    check_shell("/bin/zsh", ".zprofile", "zsh");
 }
 
 #[test]
