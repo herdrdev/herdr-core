@@ -670,10 +670,11 @@ pub fn peer_joined(core: &Arc<Core>, conn: &Arc<Conn>, hello: &Value) {
         }
     });
     let mut st = core.lock();
-    // Its name must mean it alone here; else it goes by its id.
+    // Its name must mean it alone here; else it goes by its id. A machine here
+    // by that name that is this very core (they added each other) is no other.
     let name = crate::addr::clean_name(name);
     let taken = name == core.info.name
-        || st.machines.iter().any(|m| m.name == name)
+        || st.machines.iter().any(|m| m.name == name && m.id != id)
         || st.peers.iter().any(|(other, p)| other != id && p.name == name);
     let peer = st.peers.entry(id.into()).or_default();
     peer.name = if taken { id.into() } else { name };

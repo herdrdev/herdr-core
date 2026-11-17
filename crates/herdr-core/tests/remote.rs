@@ -315,6 +315,40 @@ fn two_machines_that_added_each_other_never_echo_events_back() {
 }
 
 #[test]
+fn two_machines_that_added_each_other_go_by_their_names_there() {
+    let (mut rohan, mut s) = (Session::new(), Session::new()); // s stops first: it would dial rohan back up
+    // Each core with a name of its own, as real machines have (here both would take this hostname).
+    for (session, id, name) in [(&s, "1".repeat(32), "desk"), (&rohan, "2".repeat(32), "rohan")] {
+        let state = session.root.join("state/herdr-core/test");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("core.json"), json!({"id": id, "name": name}).to_string()).unwrap();
+    }
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    rohan.env.push(fake_ssh(&rohan, &[("desk", &s)]));
+    run(&s, &["sleep", "100"]); // each core started with its own way to the other
+    run(&rohan, &["sleep", "100"]);
+    s.json(&["machine", "add", "rohan"]);
+    rohan.json(&["machine", "add", "desk"]);
+    wait_until("both connected", || {
+        [&s, &rohan].iter().all(|s| s.json(&["machine", "ls"])["machines"][0]["state"] == "connected")
+    });
+    // rohan dials in under the name desk's machine `rohan` has, and is that machine: still `rohan` there.
+    let parent = run(&rohan, &["sh", "-c", &script(&rohan, "r state=idle; cat")]);
+    wait_until("the parent reports", || get(&rohan, &parent)["reported"] == true);
+    let out = rohan
+        .cmd()
+        .env("HC_TERMINAL_ID", &parent)
+        .args(["--json", "run", "--bg", "--on", "desk", "sleep", "100"])
+        .output()
+        .unwrap();
+    let started: Value =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    let here = started["address"].as_str().and_then(|a| a.strip_prefix("desk/")).expect("an address on desk");
+    assert_eq!(get(&s, here)["parent"], json!(format!("rohan/{parent}")));
+    rohan.json(&["machine", "rm", "desk"]); // else it dials a stopped desk back up
+}
+
+#[test]
 fn terminals_on_another_machine_work_like_local_ones() {
     let (rohan, s) = with_rohan_env(&[("HC_TEST_SSH_DELAY", "0.4")]); // a login as slow as a real one
     let local = run(&s, &["sh", "-c", "sleep 100"]);
