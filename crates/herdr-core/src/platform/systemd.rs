@@ -596,7 +596,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stalled_policy_query_does_not_block_and_is_reaped() {
-        let directory = Path::new("/var/tmp").join(format!("hc-policy-{}", super::super::random_hex()));
+        let directory = crate::test_tmp().join(format!("hc-policy-{}", super::super::random_hex()));
         std::fs::create_dir(&directory).unwrap();
         let pid_file = directory.join("pid");
         use std::os::unix::fs::PermissionsExt;
