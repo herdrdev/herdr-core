@@ -115,16 +115,22 @@ mod tests {
         libc::EPERM
     }
 
+    /// std resets SIGPIPE to SIG_DFL before exec, and a failed exec leaves it so in this
+    /// process: put back the ignore hc runs with, or a later test's EPIPE kills the binary.
+    fn failed_exec(disclaim: Option<Disclaim>) -> io::Error {
+        let error = exec_or_inherit(Command::new("/nonexistent/hc-disclaim-test"), disclaim).unwrap_err();
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+        error
+    }
+
     #[test]
     fn disclaimer_failure_falls_back_to_plain_exec() {
-        let error = exec_or_inherit(Command::new("/nonexistent/hc-disclaim-test"), Some(refuse)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(failed_exec(Some(refuse)).kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
     fn missing_spi_uses_the_previous_exec_path() {
-        let error = exec_or_inherit(Command::new("/nonexistent/hc-disclaim-test"), None).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(failed_exec(None).kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

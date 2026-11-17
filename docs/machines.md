@@ -166,4 +166,6 @@ Once a machine is added, core retries a lost connection. If SSH authentication f
 it shows `needs_login` and retries after 2 minutes, then 5 minutes, then every 10 minutes.
 Run `hc machine login box` in a terminal to log in and reconnect immediately.
 A successful connection resets these delays. Reattach after it returns.
+If core can no longer write to a connection, it counts as lost even while its output stays open:
+calls waiting on it fail with "lost the line" at once and core reconnects.
 To forget the connection here, use `hc machine rm box`. That does not stop its remote terminals.
