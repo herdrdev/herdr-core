@@ -889,15 +889,14 @@ fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     assert_eq!(std::fs::canonicalize(s.json(&["get", &shell])["cwd"].as_str().unwrap()).unwrap(), expected);
 }
 
-#[test]
-fn programs_get_the_cores_answers_to_their_questions() {
+/// What a program run through `exe` gets back when it asks `OSC 7501 ; ?`.
+fn answer_to_a_status_query(s: &Session, exe: &Path) -> String {
     let conpty = Path::new(BIN).parent().unwrap().join(r"conpty\conpty.dll");
     assert!(
         conpty.is_file(),
         "Windows' own ConPTY swallows answers: run scripts\\fetch-conpty.ps1 -Dest {}",
         Path::new(BIN).parent().unwrap().display()
     );
-    let s = Session::new();
     let query = s.file(
         "query.ps1",
         r#"$e = [char]27
@@ -908,7 +907,23 @@ while ([Console]::KeyAvailable) { $got += [Console]::ReadKey($true).KeyChar }
 [Console]::Out.WriteLine("GOT:" + ($got -replace "$e", "ESC"))
 "#,
     );
-    let (_, out) = s.out(&["run", "--timeout", "20", "powershell", "-NoProfile", "-File", &query]);
+    let out = hc_at(s, exe, &["run", "--timeout", "20", "powershell", "-NoProfile", "-File", &query]);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn programs_get_the_cores_answers_to_their_questions() {
+    let out = answer_to_a_status_query(&Session::new(), Path::new(BIN));
+    assert!(out.contains("GOT:ESC]7501;?:states="), "{out}");
+}
+
+#[test]
+fn a_core_started_through_a_link_in_another_folder_still_answers() {
+    // WinGet puts hc.exe on the PATH as a symlink in its own folder, away from conpty\.
+    let s = Session::new();
+    let link = s.root.join("hc.exe");
+    std::os::windows::fs::symlink_file(BIN, &link).unwrap();
+    let out = answer_to_a_status_query(&s, &link);
     assert!(out.contains("GOT:ESC]7501;?:states="), "{out}");
 }
 
