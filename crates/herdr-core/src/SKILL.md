@@ -54,6 +54,19 @@ inspection, even after the core restarts. To recover: `hc read <t>`; resolve rea
 `hc keys <t> down enter`), then send the task. Do not blindly resend after a
 failed send: it may still have arrived; read first.
 
+## Observe sends
+
+`hc events --json` includes `message_sent` after an explicit `terminal.send`
+input sequence returns, before start detection (up to five seconds) or a
+completion wait. The event's `terminal` is the recipient; `data.from` is the
+terminal caller's address, or null for a non-terminal caller. No text is included.
+This observes an input attempt, not delivery, reading, start or completion:
+if the holder link disappears, part of the input may be skipped. Caller metadata
+is not authentication. Refused sends, keys, launch tasks and automatic parent
+notes produce no such event. Filters match the recipient. Removed recipients
+are not reported. Missed snapshots and reconnections do not replay sends;
+older emitting cores produce none. Absence does not prove no send occurred.
+
 ## Talk, wait, and collect results
 
 ```sh
