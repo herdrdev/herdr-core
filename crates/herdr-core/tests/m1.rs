@@ -327,6 +327,31 @@ fn planned_restart_restores_the_exact_screen() {
 }
 
 #[test]
+fn a_crash_after_a_planned_restart_still_recovers_the_screen() {
+    let s = Session::new();
+    let go = s.root.join("go");
+    let script = format!("echo before; while [ ! -e {} ]; do sleep 0.02; done; echo after; sleep 100", go.display());
+    let t = run(&s, &["sh", "-c", &script]);
+    wait_text(&s, &t, "before");
+    let old = status(&s)["pid"].as_i64().unwrap();
+
+    let new = s.json(&["server", "restart"])["pid"].as_i64().unwrap();
+    wait_until("old core exit", || !pid_alive(old));
+    wait_until("planned restart restored the screen", || {
+        let text = text(&s, &t);
+        get(&s, &t)["screen"] == "exact" && text.matches("before").count() == 1
+    });
+
+    kill9(new);
+    std::fs::write(&go, "").unwrap();
+    wait_text(&s, &t, "after");
+
+    let text = text(&s, &t);
+    assert_eq!(text.matches("before").count(), 1, "snapshot prefix lost or replayed twice: {text:?}");
+    assert_eq!(text.matches("after").count(), 1, "tail suffix lost or replayed twice: {text:?}");
+}
+
+#[test]
 fn restarting_waits_for_the_old_cores_lock_after_its_connection_closes() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
