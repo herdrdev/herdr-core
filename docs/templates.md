@@ -36,6 +36,7 @@ When the first word after the template's name is any other flag (it starts with 
 the whole line is a program and its arguments, run as if no template had that name:
 `hc run -- pi --model m` runs `pi --model m`, even with a `pi` template.
 Quote a task that starts with `-`: `hc run reviewer "- check the error path"`.
+A one-word task such as `"-x"` has no spaces, so it is still a flag and runs as a program; add words (`"fix -x"`).
 
 Use background mode for agents so their screen does not stream into your caller's output.
 You can still attach and take over with `hc attach review`.

@@ -3,8 +3,8 @@
 use super::*;
 
 /// A template's task is plain text, so `--name x` after it is hc's, not part
-/// of the task. A program's arguments stay its own, and any other `-` word
-/// makes the line a program (see `templates::is_task`).
+/// of the task. A program's arguments stay its own, and any other flag right
+/// after the template's name makes the line a program (see `templates::is_task`).
 /// Flags given before the program stay; flags after the task are added.
 /// Also says whether those flags asked for --json.
 pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), RpcError> {
