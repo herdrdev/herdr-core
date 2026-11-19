@@ -80,7 +80,7 @@ methods! { Ctx<'_>;
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
         errors ["invalid_params"];
     "terminal.run" => terminal_run, RunParams => RunResult,
-        "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
+        "Start a program in a new terminal; or, when argv[0] names a template and no later word starts with `-`, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
         errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
     "templates.list" => templates_list, Empty => TemplatesResult,
         "Templates by name and description, so you can pick a role without knowing its command.",

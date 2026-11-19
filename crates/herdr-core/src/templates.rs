@@ -73,6 +73,12 @@ fn parse(name: &str, text: &str) -> Result<Template, String> {
     Ok(t)
 }
 
+/// Words after a template's name are its task only when none starts with `-`:
+/// `pi --model m` is the program `pi` and its flag, never a `pi` template's task.
+pub fn is_task(words: &[String]) -> bool {
+    !words.iter().any(|w| w.starts_with('-'))
+}
+
 /// The template called `name`, if there is one.
 pub fn load(paths: &Paths, name: &str) -> Result<Option<Template>, RpcError> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {

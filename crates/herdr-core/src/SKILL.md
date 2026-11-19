@@ -31,6 +31,8 @@ hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Re
 - Do not let children start more agents unless you explicitly assign that.
 - Put the first task in `run`: a send to a booting agent can be dropped.
   Templates combine their instructions and your task into the first message.
+  A word starting with `-` after a template's name (other than hc's own run
+  flags) makes it a plain program launch: `hc run -- pi --model m` runs `pi`.
 - Without a fitting template, start an interactive agent directly:
 
 ```sh

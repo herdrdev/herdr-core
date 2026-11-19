@@ -356,6 +356,21 @@ fn hc_flags_after_a_template_task_are_still_hcs() {
 }
 
 #[test]
+fn a_flag_after_a_template_name_makes_it_the_program() {
+    let s = session();
+    // A template named after the program it wraps, as `pi` or `claude` templates are.
+    template(&s, "sh", &format!("---\ncommand: {ECHO_AGENT}\n---\n"));
+    let argv = ["run", "--bg", "--", "sh", "-c", "echo args:$*; sleep 100", "sh", "--model", "x", "--name", "y"];
+    let r = s.json(&argv);
+    assert!(r.get("first_message").is_none() && r.get("name").is_none(), "the program, not the template: {r}");
+    let t = r["address"].as_str().unwrap().to_string();
+    wait_until("program args", || text(&s, &t).contains("args:--model x --name y"));
+    // Plain words are still the template's task.
+    let r = s.json(&["run", "--bg", "sh", "review x"]);
+    assert_eq!(r["first_message"]["sent"], true, "{r}");
+}
+
+#[test]
 fn templates_are_read_fresh_and_programs_still_run_by_name() {
     let s = session();
     // Commands are shell lines: leading VAR=value assignments work.
