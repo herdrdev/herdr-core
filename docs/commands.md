@@ -603,7 +603,7 @@ Options:
 ## hc templates
 
 ```text
-Templates you can run by name (~/.config/herdr-core/templates)
+Templates you can run by name (~/.config/herdr-core/templates). On Windows, templates live under %APPDATA%\herdr-core\templates by default
 
 Usage: hc templates [OPTIONS]
 

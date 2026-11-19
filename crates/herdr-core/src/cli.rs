@@ -85,6 +85,7 @@ enum Cmd {
     /// Follow fact changes as they happen (one JSON line each when piped).
     Events(SubscribeParams),
     /// Templates you can run by name (~/.config/herdr-core/templates).
+    /// On Windows, templates live under %APPDATA%\herdr-core\templates by default.
     Templates,
     /// Swap this hc for another build and restart (terminals keep running).
     Update {
