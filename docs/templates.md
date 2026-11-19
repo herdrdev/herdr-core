@@ -32,8 +32,10 @@ hc send review "Recheck the error path."
 ```
 
 hc's own run flags may also follow the task (`... "Review src/x.rs only." --name review`).
-Any other word after the template's name that starts with `-` makes the whole line a program and its arguments,
-run as if no template had that name: `hc run -- pi --model m` runs `pi --model m`, even with a `pi` template.
+When the first word after the template's name is any other flag (it starts with `-` and has no spaces),
+the whole line is a program and its arguments, run as if no template had that name:
+`hc run -- pi --model m` runs `pi --model m`, even with a `pi` template.
+Quote a task that starts with `-`: `hc run reviewer "- check the error path"`.
 
 Use background mode for agents so their screen does not stream into your caller's output.
 You can still attach and take over with `hc attach review`.

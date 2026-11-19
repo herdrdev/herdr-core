@@ -218,9 +218,9 @@ pub struct InitialSize {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct RunParams {
-    /// Program and arguments, or a template name and its task. A word after a
-    /// template's name that starts with `-` makes it a program and its
-    /// arguments. With neither argv nor line: that machine's own shell.
+    /// Program and arguments, or a template name and its task. A flag (a `-`
+    /// word without spaces) right after a template's name makes it a program
+    /// and its arguments. With neither argv nor line: that machine's own shell.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     #[serde(default)]
     pub argv: Vec<String>,

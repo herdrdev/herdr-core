@@ -365,9 +365,13 @@ fn a_flag_after_a_template_name_makes_it_the_program() {
     assert!(r.get("first_message").is_none() && r.get("name").is_none(), "the program, not the template: {r}");
     let t = r["address"].as_str().unwrap().to_string();
     wait_until("program args", || text(&s, &t).contains("args:--model x --name y"));
-    // Plain words are still the template's task.
-    let r = s.json(&["run", "--bg", "sh", "review x"]);
-    assert_eq!(r["first_message"]["sent"], true, "{r}");
+    // A task that starts with a quoted dash, or has a flag later on, is still the template's task.
+    for task in [&["review x"][..], &["-x is broken"], &["- check A"], &["fix", "the", "--verbose", "handling"]] {
+        let r = s.json(&[&["run", "--bg", "sh"][..], task].concat());
+        assert_eq!(r["first_message"]["sent"], true, "{task:?}: {r}");
+        let t = r["address"].as_str().unwrap().to_string();
+        wait_until("task", || text(&s, &t).contains(&format!("got:{}", task.join(" "))));
+    }
 }
 
 #[test]
