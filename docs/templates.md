@@ -62,7 +62,7 @@ The command runs through `sh`, which must be on PATH on Windows too.
 ## Readiness and input
 
 By default, core waits for the agent's first status report before sending the opening message.
-If that does not arrive within 30 seconds by default, it leaves the screen alone.
+If that does not arrive within 60 seconds by default, it leaves the screen alone.
 A trust dialog might be waiting for you. Read the screen before sending again.
 The run result reports whether the first message was sent.
 
