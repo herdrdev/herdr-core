@@ -298,6 +298,60 @@ async fn failed_reattach_drains_pending_data_before_close() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn a_viewer_that_leaves_while_the_line_is_down_is_not_attached_again() {
+    let root =
+        crate::test_tmp().join(format!("hc-relay-leave-{}-{}", std::process::id(), crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let machine = Machine {
+        name: "away".into(),
+        target: "away".into(),
+        via: false,
+        temporary: false,
+        session: None,
+        id: "remote".into(),
+        host: "away".into(),
+        version: "test".into(),
+        keeps_running_after_logout: None,
+        logout_linger_user: None,
+    };
+    let conn = Arc::new(Conn::default());
+    conn.with(|out| out.open(7));
+    // The line is down: its streams were handed the notice and dropped.
+    let (old_frames, mut old_rx) = mpsc::unbounded_channel();
+    core.lock().relayed.insert(
+        (conn_key(&conn), 7),
+        Relayed {
+            active_at: std::time::Instant::now(),
+            automatic_input: false,
+            line: Line::new(old_frames, &json!({})),
+            there: 9,
+            conn: conn.clone(),
+            machine: machine.id.clone(),
+            params: json!({"terminal": "t1"}),
+        },
+    );
+    assert!(relay_in(&core, &conn, 7, wire::CLOSE, b""));
+    assert_eq!(old_rx.recv().await.unwrap(), wire::encode(9, wire::CLOSE, b""));
+    let close = conn.outbox().next_frame().expect("the viewer's CLOSE is answered here");
+    assert_eq!(wire::decode_header(close[..wire::HEADER].try_into().unwrap()).unwrap().1, wire::CLOSE);
+    // The line comes back: nothing is attached for the viewer that left.
+    let (frames, mut rx) = mpsc::unbounded_channel();
+    let line = Line::new(frames, &json!({}));
+    reattach(core.clone(), machine, line).await;
+    assert!(rx.try_recv().is_err(), "a viewer that left was attached again");
+    assert!(core.lock().relayed.is_empty());
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     let root =
