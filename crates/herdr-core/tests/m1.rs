@@ -221,6 +221,38 @@ fn names_are_unique_among_live_terminals() {
 }
 
 #[test]
+fn existing_terminals_can_be_named_and_renamed() {
+    let s = Session::new();
+    let a = run(&s, &["sh", "-c", "while read line; do echo got-$line; done"]);
+    let b = run(&s, &["--name", "busy", "sleep", "100"]);
+    let pid = get(&s, &a)["pid"].clone();
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", serde_json::json!({"terminal": a}));
+
+    assert_eq!(s.json(&["rename", &a, "worker"])["name"], "worker");
+    assert_eq!(get(&s, "worker")["address"], a.as_str());
+    assert_eq!(s.json(&["rename", "worker", "worker"])["address"], a.as_str());
+    assert_eq!(s.err(&["rename", "worker", "busy"]).1["error"]["kind"], "name_taken");
+    assert_eq!(s.err(&["rename", "worker", "t9"]).1["error"]["kind"], "invalid_params");
+    assert_eq!(get(&s, "busy")["address"], b.as_str());
+
+    let renamed = s.json(&["rename", "worker", "reviewer"]);
+    assert_eq!(renamed["address"], a.as_str());
+    assert_eq!(renamed["name"], "reviewer");
+    assert_eq!(renamed["pid"], pid);
+    assert_eq!(s.err(&["send", "worker", "hello"]).1["error"]["kind"], "not_found");
+    assert_eq!(get(&s, &a)["name"], "reviewer");
+    s.json(&["send", "reviewer", "hello"]);
+    wait_until("the renamed terminal received the message", || text(&s, "reviewer").contains("got-hello"));
+    let event = next_event(&mut events, |m| m["params"]["type"] == "name" && m["params"]["data"]["name"] == "reviewer");
+    assert_eq!(event["params"]["terminal"], a.as_str());
+
+    s.json(&["kill", &a]);
+    assert_eq!(s.json(&["rename", &a, "archived"])["state"], "finished");
+    assert_eq!(get(&s, "archived")["address"], a.as_str());
+}
+
+#[test]
 fn labels_are_stored_filtered_and_removed() {
     let s = Session::new();
     let a = run(&s, &["--label", "rex.role=reviewer", "--label", "empty=", "sleep", "100"]);

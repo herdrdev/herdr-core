@@ -327,13 +327,23 @@ fn terminals_on_another_machine_work_like_local_ones() {
     s.json(&["send", "rohan/echo", "hello"]);
     wait_until("the reply", || text(&s, "rohan/echo").contains("got-hello"));
     assert_eq!(get(&s, &t)["name"], "echo");
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", json!({"terminal": t}));
+    assert_eq!(s.json(&["rename", "rohan/echo", "worker"])["address"], t);
+    let event = next_event(&mut events, |m| m["params"]["type"] == "name");
+    assert_eq!(event["params"]["terminal"], t);
+    assert_eq!(event["params"]["data"]["name"], "worker");
+    let snapshot = s.connect().call(1, "events.subscribe", json!({"terminal": t}));
+    assert_eq!(snapshot["result"]["terminals"][0]["name"], "worker");
+    s.json(&["send", "rohan/worker", "renamed"]);
+    wait_until("the renamed remote terminal received the message", || text(&s, "rohan/worker").contains("got-renamed"));
 
     let done = run(&s, &["--on", "rohan", "sh", "-c", "sleep 0.3; exit 3"]);
     let w = s.json(&["wait", &done]);
     assert_eq!((w["terminal"].as_str(), w["exit_code"].as_i64()), (Some(done.as_str()), Some(3)), "{w}");
     // A restart there closes the line; a call right then waits for the redial.
     rohan.hc(&["server", "restart"]);
-    assert!(text(&s, &t).contains("got-hello"), "no 'unreachable' in between");
+    assert!(text(&s, "rohan/worker").contains("got-renamed"), "the name survives the restart and redial");
     assert_eq!(s.json(&["kill", &t])["state"], "finished");
     s.json(&["rm", &t]);
     assert_eq!(s.err(&["--json", "read", "nope/t1"]).1["error"]["kind"], "machine_unknown");

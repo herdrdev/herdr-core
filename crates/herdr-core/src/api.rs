@@ -91,6 +91,9 @@ methods! { Ctx<'_>;
     "terminal.get" => terminal_get, TerminalParams => Public,
         "One terminal's facts, live or finished.",
         errors ["not_found", "machine_unknown"];
+    "terminal.rename" => terminal_rename, RenameParams => Public,
+        "Set or change a live or finished terminal's name. Its address stays the same.",
+        errors ["not_found", "machine_unknown", "invalid_params", "name_taken"];
     "terminal.kill" => terminal_kill, TerminalParams => Public,
         "End the program: hangup, then terminate, then kill. Returns the observed result.",
         errors ["not_found", "machine_unknown"];
@@ -154,7 +157,7 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, name, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
         errors ["not_found", "machine_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
@@ -374,6 +377,25 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
     let result = record(core, id).map(Public);
     core.flush_saved().await?;
     result
+}
+
+async fn terminal_rename(core: Ctx<'_>, p: RenameParams) -> Result<Public, RpcError> {
+    let local = crate::addr::local(&p.terminal, &core.info.id, &core.info.name)?;
+    let result = {
+        let mut st = core.lock();
+        let id = st.reg.resolve(local)?;
+        let changed = st.reg.rename(id, p.name)?;
+        let renamed = &st.reg.terminals[&id];
+        let result = Public(renamed.clone());
+        if changed {
+            let data = json!({"name": renamed.name});
+            core.emit(&mut st, "name", id, data);
+        }
+        core.save(&st);
+        result
+    };
+    core.flush_saved().await?;
+    Ok(result)
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {

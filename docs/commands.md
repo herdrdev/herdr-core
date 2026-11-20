@@ -17,6 +17,7 @@ Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
   ls                          list live terminals (--all: finished too)
   get <t>                     show one terminal
+  rename <t> <name>           set or change a terminal's name
   attach [t]                  put this terminal on it (ctrl+\ detaches)
   read <t>                    print its screen and history
   kill <t>                    end its program
@@ -462,6 +463,22 @@ Options:
       --json           JSON output even in a terminal
       --lines <LINES>  Lines of history above the screen [default: 0]
   -h, --help           Print help
+```
+
+## hc rename
+
+```text
+Set or change a terminal's name
+
+Usage: hc rename [OPTIONS] <TERMINAL> <NAME>
+
+Arguments:
+  <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`
+  <NAME>      New name, using the same rules as run --name
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
 ```
 
 ## hc rm

@@ -342,6 +342,14 @@ pub struct ListResult {
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+pub struct RenameParams {
+    /// The terminal: `t7`, a name, or `machine/t7`.
+    pub terminal: String,
+    /// New name, using the same rules as run --name.
+    pub name: String,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct LabelParams {
     /// The terminal: `t7`, a name, or `machine/t7`.
     pub terminal: String,

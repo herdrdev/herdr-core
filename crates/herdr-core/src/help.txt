@@ -7,6 +7,7 @@ Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
   ls                          list live terminals (--all: finished too)
   get <t>                     show one terminal
+  rename <t> <name>           set or change a terminal's name
   attach [t]                  put this terminal on it (ctrl+\ detaches)
   read <t>                    print its screen and history
   kill <t>                    end its program

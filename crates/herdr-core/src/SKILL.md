@@ -173,6 +173,9 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Use the returned address to wait/read it; don't launch a duplicate.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
 `hc put <t> <file>` sends a file beside a terminal and prints its destination.
+`hc rename <t> <name>` sets or changes a live or finished terminal's name.
+Use the same naming rules as `run --name`. Its address stays the same.
+Use the new name with `hc send`, `hc read`, or any command that takes a terminal.
 `hc label <t> key=value` adds labels.
 
 ## Other machines and files

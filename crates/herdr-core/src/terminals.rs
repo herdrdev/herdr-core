@@ -239,14 +239,7 @@ impl Registry {
     /// Validates and records a new live terminal (pid set once the holder spawned it).
     pub fn create(&mut self, new: NewTerminal, now_ms: u64) -> Result<u32, RpcError> {
         if let Some(name) = &new.name {
-            crate::addr::check_name(name)?;
-            if self.live_named(name).is_some() {
-                return Err(RpcError::new(
-                    "name_taken",
-                    format!("a live terminal is already named {name:?}"),
-                    "pick another name, or kill the one holding it",
-                ));
-            }
+            self.check_available_name(name)?;
         }
         for key in new.labels.keys() {
             check_label_key(key)?;
@@ -318,6 +311,28 @@ impl Registry {
 
     fn live_named(&self, name: &str) -> Option<&Terminal> {
         self.terminals.values().find(|t| t.is_live() && t.name.as_deref() == Some(name))
+    }
+
+    fn check_available_name(&self, name: &str) -> Result<(), RpcError> {
+        crate::addr::check_name(name)?;
+        if self.live_named(name).is_some() {
+            return Err(RpcError::new(
+                "name_taken",
+                format!("a live terminal is already named {name:?}"),
+                "pick another name, or kill the one holding it",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns whether the name changed. The terminal keeps its address.
+    pub fn rename(&mut self, id: u32, name: String) -> Result<bool, RpcError> {
+        if self.terminals[&id].name.as_deref() == Some(&name) {
+            return Ok(false);
+        }
+        self.check_available_name(&name)?;
+        self.terminals.get_mut(&id).expect("resolved id").name = Some(name);
+        Ok(true)
     }
 
     /// An id means that terminal forever; a name means whoever holds it now,

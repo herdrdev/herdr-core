@@ -589,6 +589,7 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         "status" => set(record, &["status", "records", "reported"]),
         "turn" => set(record, &["turn"]),
         "title" => set(record, &["title"]),
+        "name" => set(record, &["name"]),
         "labels" => set(record, &["labels"]),
         "keep" => set(record, &["keep"]),
         "size" => set(record, &["cols", "rows"]),
@@ -805,6 +806,7 @@ pub fn conn_key(conn: &Arc<Conn>) -> usize {
 const ON_A_TERMINAL: &[&str] = &[
     "terminal.attach",
     "terminal.get",
+    "terminal.rename",
     "terminal.kill",
     "terminal.rm",
     "terminal.label",

@@ -2111,6 +2111,67 @@
       }
     },
     {
+      "description": "Set or change a live or finished terminal's name. Its address stays the same.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "not_found"
+          },
+          "message": "not_found"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "name_taken"
+          },
+          "message": "name_taken"
+        }
+      ],
+      "name": "terminal.rename",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "New name, using the same rules as run --name.",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "description": "New name, using the same rules as run --name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The terminal: `t7`, a name, or `machine/t7`.",
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "description": "The terminal: `t7`, a name, or `machine/t7`.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Terminal"
+        }
+      }
+    },
+    {
       "description": "End the program: hangup, then terminate, then kill. Returns the observed result.",
       "errors": [
         {
@@ -3891,7 +3952,7 @@
       }
     },
     {
-      "description": "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+      "description": "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, name, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
       "errors": [
         {
           "code": -32000,
