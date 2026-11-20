@@ -126,6 +126,15 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
 
 /// A viewer's frame for a relayed stream goes there. False: not relayed.
 pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u8]) -> bool {
+    // The viewer left: it ends here now, as a local stream does. Waiting for the answer from
+    // there would keep it while the line is down, and the reattach would bring it back.
+    if kind == wire::CLOSE {
+        let Some(r) = core.lock().relayed.remove(&(conn_key(conn), here)) else { return false };
+        lock(&r.line.streams).remove(&r.there);
+        let _ = r.line.frames.send(wire::encode(r.there, kind, payload));
+        conn.with(|out| out.close(here, b""));
+        return true;
+    }
     let r = {
         let mut st = core.lock();
         let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
