@@ -18,6 +18,11 @@ const STARTUP_MS: u64 = 10_000;
 /// The longest a send waits for a starting agent to settle.
 const SETTLE_MAX: Duration = Duration::from_secs(5);
 
+fn starts_reply_string(after_esc: u8) -> bool {
+    let (dcs, sos, osc, pm, apc) = (b'P', b'X', b']', b'^', b'_');
+    [dcs, sos, osc, pm, apc].contains(&after_esc)
+}
+
 /// A person's typing, as it affects agent input to one terminal.
 #[derive(Default)]
 pub struct Gate {
@@ -170,6 +175,18 @@ impl Gate {
 
     fn track(&mut self, bytes: &[u8]) {
         for (index, &b) in bytes.iter().enumerate() {
+            if matches!(self.sequence.as_slice(), [0x1b, intro, ..] if starts_reply_string(*intro)) {
+                let st_started = self.sequence.len() > 2;
+                match (st_started, b) {
+                    (false, 0x07) | (true, b'\\') => self.sequence.clear(),
+                    (false, 0x1b) => self.sequence.push(b),
+                    (false, _) => {}
+                    (true, _) => self.sequence = vec![0x1b],
+                }
+                if self.sequence != b"\x1b" {
+                    continue;
+                }
+            }
             if self.pasting {
                 if b == 0x1b || !self.sequence.is_empty() {
                     self.sequence.push(b);
@@ -201,8 +218,10 @@ impl Gate {
             } else if b == 0x1b || !self.sequence.is_empty() {
                 self.sequence.push(b);
                 let seq = &self.sequence;
+                let alt_key_ends_the_read = index + 1 == bytes.len();
                 let complete = match seq.as_slice() {
                     [0x1b] | [0x1b, b'[' | b'O'] => false,
+                    [0x1b, intro] if starts_reply_string(*intro) => alt_key_ends_the_read,
                     [0x1b, b'[', b'M', ..] => seq.len() >= 6, // X10 mouse coordinates
                     [0x1b, b'[', ..] => (0x40..=0x7e).contains(&b),
                     _ => true,
