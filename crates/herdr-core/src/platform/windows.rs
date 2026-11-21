@@ -823,8 +823,21 @@ fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<V
 /// `& | < > ^ %` itself: each argument is quoted, `"` doubled and `%`
 /// defused, so a prompt arrives as one literal argument (the scheme Rust's
 /// std uses since BatBadBut). cmd can't carry a line break in an argument.
+/// `%cd:~,%` expands to nothing, so a following name cannot close a `%VAR%`.
+fn defuse_cmd_percent(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c == '%' {
+            out.push_str("%%cd:~,");
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
-    let mut line = format!("cmd.exe /e:ON /v:OFF /d /c \"\"{}\"", script.display());
+    let shown = defuse_cmd_percent(&script.display().to_string());
+    let mut line = format!("cmd.exe /e:ON /v:OFF /d /c \"\"{shown}\"");
     for arg in args {
         if arg.contains(['\r', '\n', '\0']) {
             return Err(io::Error::new(
@@ -848,7 +861,6 @@ fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
                     line.push('"'); // doubled
                     slashes = 0;
                 }
-                // `%cd:~,%` expands to nothing, so `%VAR%` can't pair up.
                 '%' => {
                     line.push_str("%%cd:~,");
                     slashes = 0;
@@ -864,6 +876,10 @@ fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
     }
     line.push('"');
     Ok(line)
+}
+
+pub(crate) fn batch_cmd_tail(script: &Path, args: &[String]) -> io::Result<String> {
+    Ok(batch_line(script, args)?.trim_start_matches("cmd.exe ").to_string())
 }
 
 fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
@@ -1201,5 +1217,28 @@ pub mod console {
             }
             Some(buf[..got as usize].to_vec())
         }
+    }
+}
+
+#[cfg(test)]
+mod batch_percent_tests {
+    use super::batch_line;
+    use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn a_percent_in_the_batch_path_is_not_expanded() {
+        let dir = std::env::temp_dir().join(format!("hcbat-{}-%OS%-dir", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("a.bat");
+        std::fs::write(&script, "@echo RAN\r\n").unwrap();
+        let line = batch_line(&script, &[]).unwrap();
+        let status = std::process::Command::new("cmd.exe")
+            .raw_arg(line.trim_start_matches("cmd.exe "))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .status();
+        let _ = std::fs::remove_dir_all(&dir);
+        let status = status.unwrap();
+        assert!(status.success(), "{line} exited {status}");
     }
 }

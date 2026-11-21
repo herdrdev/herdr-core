@@ -213,6 +213,8 @@ pub fn monitor_host_shutdown() -> impl Sized {
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub(crate) use windows::batch_cmd_tail;
+#[cfg(windows)]
 pub use windows::*;
 #[cfg(windows)]
 mod windows_exec;
