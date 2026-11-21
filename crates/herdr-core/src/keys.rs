@@ -146,7 +146,13 @@ mod tests {
         );
         assert_eq!(keys(&screen, &["V", "Z", "X"]), ["V", "Z", "X"]);
         assert_eq!(keys(&screen, &["ctrl+C", "ctrl+V", "ctrl+A"]), ["\x03", "\x16", "\x01"]);
-        assert_eq!(encode(&screen, "super+A").unwrap(), encode(&screen, "super+a").unwrap());
+        // macOS libghostty-vt returns no legacy bytes for super, so both are errors.
+        // Linux encodes them, and they must be the same bytes (super+A is not super+shift).
+        match (encode(&screen, "super+A"), encode(&screen, "super+a")) {
+            (Ok(upper), Ok(lower)) => assert_eq!(upper, lower),
+            (Err(_), Err(_)) => {}
+            (upper, lower) => panic!("super+A and super+a disagree: {upper:?} {lower:?}"),
+        }
         assert_eq!(encode(&screen, "ctrl+alt+A").unwrap(), encode(&screen, "ctrl+alt+a").unwrap());
         assert_eq!(keys(&screen, &["shift+1", "shift+2", "shift+0"]), ["!", "@", ")"]);
         assert_eq!(keys(&screen, &["!", "@"]), ["!", "@"]);
