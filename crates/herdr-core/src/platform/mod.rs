@@ -215,6 +215,8 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 #[cfg(windows)]
+pub(crate) use windows::batch_cmd_tail;
+#[cfg(windows)]
 mod windows_exec;
 #[cfg(windows)]
 pub use windows_exec::*;
