@@ -13,6 +13,7 @@ pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams
         name: q.name.or(p.name),
         cwd: q.cwd.or(p.cwd),
         on: q.on.or(p.on),
+        bind: p.bind || q.bind,
         labels: [p.labels, q.labels].concat(),
         parent: q.parent.or(p.parent),
         no_parent: p.no_parent || q.no_parent,
@@ -63,6 +64,25 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
         Ok(_) => Ok(None),
         Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
     }
+}
+
+pub(super) fn run_terminal(paths: &Paths, params: &RunParams) -> Result<Value, RpcError> {
+    if !params.bind {
+        return call(paths, "terminal.run", to(params));
+    }
+    if params.on.is_some() {
+        return Err(RpcError::new("usage", "--bind and --on together", "see `hc run --help`"));
+    }
+    let stream = client::connect_or_start(paths)?;
+    let hello = client::call(&stream, "hello", json!({}))?;
+    if !hello["features"].as_array().is_some_and(|features| features.iter().any(|feature| feature == "bound_caller")) {
+        return Err(RpcError::new(
+            "refused",
+            "this core cannot bind terminals; nothing was started",
+            "run hc update and restart the core, then retry",
+        ));
+    }
+    client::call(&stream, "terminal.run", to(params))
 }
 
 /// A run that waited: its output as text (like read), a last line when there

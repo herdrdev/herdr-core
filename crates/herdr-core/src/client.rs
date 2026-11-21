@@ -83,6 +83,9 @@ pub fn connect_or_start_explicit(paths: &Paths) -> Result<Stream, RpcError> {
 }
 
 fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
+    if crate::endpoints::in_cli() {
+        return require_existing(paths);
+    }
     match platform::connect(&paths.socket) {
         Ok(stream) => return Ok(stream),
         Err(e) => {

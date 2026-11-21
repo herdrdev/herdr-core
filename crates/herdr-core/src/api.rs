@@ -24,6 +24,7 @@ pub const FEATURES: &[&str] = &[
     "automatic_input",
     "restart_environment",
     "put_chunks",
+    "bound_caller",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -55,6 +56,8 @@ pub struct Call<'a> {
     pub conn: Option<&'a Arc<crate::wire::Conn>>,
     /// Where a plain connection receives its subscription.
     pub plain: Option<&'a std::sync::Mutex<Option<PlainSub>>>,
+    pub(crate) bound: Option<&'a crate::endpoints::Bound>,
+    pub(crate) remote: bool,
 }
 
 impl std::ops::Deref for Call<'_> {
@@ -81,7 +84,7 @@ methods! { Ctx<'_>;
         errors ["invalid_params"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
-        errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
+        errors ["invalid_params", "refused", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
     "templates.list" => templates_list, Empty => TemplatesResult,
         "Templates by name and description, so you can pick a role without knowing its command.",
         errors [];
@@ -207,6 +210,8 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
         framed: p.framed,
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
+        instance: core.instance.clone(),
+        you: core.bound.map(|bound| EndpointCaller { terminal: bound.terminal(), instance: core.instance.clone() }),
         login_session: core.login_session,
         keeps_running_after_logout,
         logout_linger_user,
@@ -234,6 +239,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         .collect();
     Ok(StatusResult {
         core: core.info.clone(),
+        instance: core.instance.clone(),
         version: version(),
         pid: std::process::id(),
         uptime_ms: core.started.elapsed().as_millis() as u64,
@@ -532,7 +538,7 @@ async fn machine_exec(core: Ctx<'_>, p: ExecParams) -> Result<ExecResult, RpcErr
 }
 
 fn from_afar(core: Ctx<'_>) -> bool {
-    core.conn.is_some_and(|conn| crate::remote::is_peer(core, conn))
+    core.remote
 }
 
 async fn file_read(core: Ctx<'_>, p: FileReadParams) -> Result<FileReadResult, RpcError> {

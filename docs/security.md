@@ -24,6 +24,9 @@ Keep custom socket paths in directories only your account can enter.
 There is no separate API password or per-client permission check.
 Other programs running as your account are part of the trust boundary.
 
+A bound endpoint fixes the caller's identity and exposes the whole account-wide API, just like the shared socket.
+Use a filtering proxy for sandboxed clients, since raw endpoints grant full access and `HC_ENDPOINT` only guides cooperating clients.
+
 On Windows, core uses named pipes. Their access rules allow the current account and SYSTEM.
 The integrity label prevents a lower-integrity process from controlling an elevated core.
 State files use the filesystem's directory permissions; core does not install a separate Windows state-directory ACL.

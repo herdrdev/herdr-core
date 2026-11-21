@@ -29,6 +29,14 @@
         ],
         "type": "object"
       },
+      "Binding": {
+        "description": "The endpoint's last observed state in full terminal records.",
+        "enum": [
+          "bound",
+          "lost"
+        ],
+        "type": "string"
+      },
       "Children": {
         "enum": [
           "any",
@@ -140,6 +148,23 @@
         "type": "object"
       },
       "Empty": {
+        "type": "object"
+      },
+      "EndpointCaller": {
+        "properties": {
+          "instance": {
+            "description": "Running core instance that accepted this connection.",
+            "type": "string"
+          },
+          "terminal": {
+            "description": "Terminal that owns this connection's endpoint.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "terminal",
+          "instance"
+        ],
         "type": "object"
       },
       "ExecResult": {
@@ -325,6 +350,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "instance": {
+            "description": "Random id of the running core process. Changes on restart.",
+            "type": "string"
+          },
           "keeps_running_after_logout": {
             "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown.",
             "type": [
@@ -358,6 +387,17 @@
           },
           "version": {
             "type": "string"
+          },
+          "you": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EndpointCaller"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when this connection is on a terminal's bound endpoint."
           }
         },
         "required": [
@@ -366,7 +406,8 @@
           "core",
           "framed",
           "methods",
-          "features"
+          "features",
+          "instance"
         ],
         "type": "object"
       },
@@ -782,6 +823,17 @@
             },
             "type": "array"
           },
+          "bound": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Binding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "State of the endpoint requested when the terminal was started."
+          },
           "cols": {
             "format": "uint16",
             "maximum": 65535,
@@ -1132,6 +1184,10 @@
               "null"
             ]
           },
+          "instance": {
+            "description": "Random id of the running core process. Changes on restart.",
+            "type": "string"
+          },
           "keeps_running_after_logout": {
             "description": "True: systemd lingering is enabled; false: programs stop at last logout.\nNull: unsupported, not applicable or unknown. Checked on every request.",
             "type": [
@@ -1167,6 +1223,7 @@
         },
         "required": [
           "core",
+          "instance",
           "version",
           "pid",
           "uptime_ms",
@@ -1269,6 +1326,17 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "bound": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Binding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "State of the endpoint requested when the terminal was started."
           },
           "cols": {
             "format": "uint16",
@@ -1726,6 +1794,13 @@
         {
           "code": -32000,
           "data": {
+            "kind": "refused"
+          },
+          "message": "refused"
+        },
+        {
+          "code": -32000,
+          "data": {
             "kind": "name_taken"
           },
           "message": "name_taken"
@@ -1787,6 +1862,15 @@
               "type": "string"
             },
             "type": "array"
+          }
+        },
+        {
+          "description": "Give this terminal an endpoint that identifies it as the caller. Local runs only.",
+          "name": "bind",
+          "required": false,
+          "schema": {
+            "description": "Give this terminal an endpoint that identifies it as the caller. Local runs only.",
+            "type": "boolean"
           }
         },
         {

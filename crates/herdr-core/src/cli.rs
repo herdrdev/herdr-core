@@ -132,6 +132,10 @@ pub fn command_names() -> Vec<String> {
 }
 
 pub fn main() -> i32 {
+    if crate::endpoints::in_cli() && crate::endpoints::refuses_entry(std::env::args_os().skip(1)) {
+        let json = !std::io::stdout().is_terminal() || std::env::args_os().any(|a| a == "--json");
+        return fail(&crate::endpoints::lifecycle_refusal(), json);
+    }
     let daemon = crate::platform::daemon_startup();
     client::remember_exe();
     let args: Vec<_> = if daemon { vec!["serve".into()] } else { std::env::args_os().skip(1).collect() };
@@ -316,8 +320,9 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
 /// `json`: print JSON (asked, or piped). `asked`: `--json` itself, not a
 /// program's argument that happens to read `--json`.
 fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcError> {
+    check_endpoint_command(cmd.as_ref())?;
     let paths = Paths::from_env()?;
-    if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
+    if !crate::endpoints::in_cli() && !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
         crate::platform::legacy_bundle_notice(&paths.state);
     }
     let Some(cmd) = cmd else {
@@ -388,7 +393,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             }
             p.wait = !p.bg;
             p.die_with_parent = !p.outlive_parent; // what an older core reads
-            let r = call("terminal.run", to(&p))?;
+            let r = run_terminal(&paths, &p)?;
             if p.wait && !asked {
                 return ran(&r);
             }
@@ -698,7 +703,11 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
 
 /// Copies bytes between stdin/stdout and the core: plain or framed, untouched.
 fn connect(paths: &Paths) -> Result<(), RpcError> {
-    let stream = crate::platform::connect_for_app(paths)?;
+    let stream = if crate::endpoints::in_cli() {
+        client::require_existing(paths)?
+    } else {
+        crate::platform::connect_for_app(paths)?
+    };
     let mut to_core = stream.try_clone().map_err(|e| RpcError::internal(e.to_string()))?;
     let owed = std::sync::Arc::new(std::sync::Mutex::new(Owed::default()));
     let input = owed.clone();

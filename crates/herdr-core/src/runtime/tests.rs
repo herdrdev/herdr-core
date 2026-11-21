@@ -310,7 +310,7 @@ async fn server_stop_succeeds_even_when_the_registry_flush_times_out() {
         Ok(())
     })
     .unwrap();
-    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let call = crate::api::Call { core: &core, conn: None, plain: None, bound: None, remote: false };
     let started = Instant::now();
     let stop = crate::api::dispatch(&call, "server.stop", json!({})).await;
     release.send(()).unwrap();
@@ -379,7 +379,7 @@ async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
             id
         };
         let reply = {
-            let call = crate::api::Call { core: &core, conn: None, plain: None };
+            let call = crate::api::Call { core: &core, conn: None, plain: None, bound: None, remote: false };
             let request =
                 crate::api::dispatch(&call, method, json!({"terminal": crate::terminals::address(id), "labels": {}}));
             tokio::pin!(request);
@@ -447,7 +447,7 @@ async fn a_prepared_restart_survives_sigterm_and_rejects_stop() {
     };
     paths.create_dirs().unwrap();
     let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
-    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let call = crate::api::Call { core: &core, conn: None, plain: None, bound: None, remote: false };
     crate::api::dispatch(&call, "server.restart", serde_json::json!({})).await.unwrap();
     crate::restart::on_sigterm(&core);
     assert!(core.paths.state.join("restart-env.json").exists(), "SIGTERM keeps the explicit restart's note");

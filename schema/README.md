@@ -44,6 +44,25 @@ after its reply. Use framed mode for `terminal.attach` and the four upload
 methods `terminal.put_begin`, `terminal.put_chunk`, `terminal.put_finish` and
 `terminal.put_abort`. Other methods work in both modes.
 
+### Bound terminal endpoints
+
+Send `hello` and check `features` for `bound_caller` before sending
+`terminal.run` with `bind: true` on the same connection. Binding is available
+for local runs. The child receives the endpoint in `HC_SOCKET` and
+`HC_TERMINAL_SOCKET`, with `HC_ENDPOINT=1` to keep cooperating CLI clients on it.
+
+`hello` and `server.status` report `instance`, an ID that changes each time the
+core starts. A hello on a bound endpoint also returns `you` with the owning
+`terminal` and current `instance`. Bound requests use object params (omitted or
+null params count as an empty object). The core overwrites `caller` on methods
+that accept it. Peer hello and `$/orphaned` are refused on these connections.
+
+Full terminal records report `bound: "bound"` after an endpoint is created
+or restored and `bound: "lost"` when recovery could not restore it. The socket or
+pipe name stays private. After an endpoint retires, every method returns
+`endpoint_retired` for new requests on existing connections. Calls already
+admitted can finish.
+
 ## Framed mode
 
 Every frame: `[channel u32 LE][kind u8][len u32 LE][payload]`, payload at

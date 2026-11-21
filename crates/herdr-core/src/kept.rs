@@ -1,7 +1,7 @@
 //! Lost kept records stay live without a holder until a replacement shell starts.
 use crate::holder_proto as proto;
 use crate::runtime::{Core, now_ms};
-use crate::terminals::{KEEP_RETRY_MS, Terminal};
+use crate::terminals::{Binding, KEEP_RETRY_MS, Terminal};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -29,6 +29,10 @@ impl Terminal {
 /// Under what the lost program left on screen, so it isn't taken for something still running.
 const RESTORED: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; this is a new shell --\x1b[0m\r\n";
 
+fn pending_shell(t: &Terminal) -> bool {
+    t.is_live() && t.keep && t.holder.is_none() && t.bound != Some(Binding::Lost)
+}
+
 impl Core {
     pub(crate) fn spawn_failed(&self, st: &mut crate::runtime::State, id: u32) {
         let t = st.reg.terminals.get_mut(&id).expect("failed spawn");
@@ -45,7 +49,7 @@ impl Core {
     }
 
     pub(crate) async fn recover_kept(self: Arc<Self>, startup: bool) {
-        let pending = self.lock().reg.terminals.values().any(|t| t.is_live() && t.keep && t.holder.is_none());
+        let pending = self.lock().reg.terminals.values().any(pending_shell);
         if !pending || crate::platform::host_shutdown_in_progress() {
             return;
         }
@@ -78,12 +82,13 @@ impl Core {
             .reg
             .terminals
             .values()
-            .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
+            .filter(|t| pending_shell(t) && (startup || t.restart_after_ms <= now_ms()))
             .map(|t| t.id())
             .collect();
         for id in ids {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
+            let endpoint = st.endpoints.get(&id).cloned();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
             let cwd = t
@@ -95,7 +100,7 @@ impl Core {
                 .unwrap_or_else(|| {
                     env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
                 });
-            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
+            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env, endpoint.as_ref().map(|e| e.path()));
             t.scope = Some(scope);
             t.holder = Some(instance);
             t.argv = shell.clone();

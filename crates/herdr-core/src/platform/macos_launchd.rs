@@ -490,6 +490,12 @@ fn xml(value: &OsStr) -> io::Result<String> {
 }
 
 #[cfg(test)]
+#[test]
+fn endpoint_guard_knows_the_launchd_sentinel() {
+    assert_eq!(crate::endpoints::LAUNCHD_SENTINEL, SENTINEL);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::ffi::OsStrExt;

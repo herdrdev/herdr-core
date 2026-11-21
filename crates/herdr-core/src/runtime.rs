@@ -2,6 +2,7 @@
 //! terminal, adoption after a restart, and what happens when a program ends.
 
 use crate::api::CoreInfo;
+use crate::endpoints::{self, EndpointState};
 use crate::holder_proto::{self as proto, Exit, Goodbye};
 use crate::paths::Paths;
 use crate::paths::{read_state, write_atomic};
@@ -22,6 +23,7 @@ use persistence::RegistryWriter;
 
 pub struct Core {
     pub info: CoreInfo,
+    pub instance: String,
     pub login_session: Option<platform::LoginSession>,
     pub started: Instant,
     pub stop: Notify,
@@ -48,6 +50,8 @@ pub struct Core {
 #[derive(Default)]
 pub struct State {
     pub reg: Registry,
+    pub(crate) endpoints: HashMap<u32, Arc<EndpointState>>,
+    pub(crate) recovering_endpoints: bool,
     pub docs: std::collections::BTreeMap<String, crate::api::DocGetResult>,
     pub screens: HashMap<u32, Screen>,
     pub relays: HashMap<u32, Relay>,
@@ -172,6 +176,8 @@ fn finish_reason(killed: bool, stopping: bool, host_shutdown: bool) -> &'static 
 impl Core {
     pub fn start(paths: Paths, info: CoreInfo) -> io::Result<Arc<Core>> {
         let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
+        let endpoints = endpoints::load(&reg);
+        let recovering_endpoints = !endpoints.is_empty();
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
             let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
@@ -186,13 +192,22 @@ impl Core {
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
         let core = Arc::new(Core {
             info,
+            instance: platform::random_hex(),
             login_session: platform::login_session(),
             started: Instant::now(),
             stop: Notify::new(),
             restart: Default::default(),
             registry_writer: RegistryWriter::new(paths.state.join("terminals.json"))?,
             paths,
-            state: Mutex::new(State { reg, docs, machines, peers, ..Default::default() }),
+            state: Mutex::new(State {
+                reg,
+                endpoints,
+                recovering_endpoints,
+                docs,
+                machines,
+                peers,
+                ..State::default()
+            }),
             changed: Notify::new(),
             jobs,
             jobs_rx: Mutex::new(Some(jobs_rx)),
@@ -237,6 +252,10 @@ impl Core {
     }
 
     pub fn save(&self, st: &State) {
+        // Keep the on-disk endpoint records until startup has reconciled them.
+        if st.recovering_endpoints {
+            return;
+        }
         self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
         self.registry_writer.save(bytes);
@@ -261,13 +280,18 @@ impl Core {
     }
 
     async fn wait_for_save(&self) -> Result<io::Result<()>, crate::rpc::RpcError> {
-        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush()).await.map_err(|_| {
+        tokio::time::timeout(Duration::from_secs(10), self.sync_saved()).await.map_err(|_| {
             crate::rpc::RpcError::new(
                 "unavailable",
                 "registry persistence timed out; the operation may already have completed",
                 "check the terminal and disk before retrying",
             )
         })
+    }
+
+    /// A startup or handover save point waits for the writer's atomic replacement.
+    pub(crate) async fn sync_saved(&self) -> io::Result<()> {
+        self.registry_writer.flush().await
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -796,6 +820,7 @@ impl Core {
             t.news += 1;
             t.told_parent = false;
         } else {
+            endpoints::retire(st, id);
             self.news(st, id);
             let _ = self.jobs.send(crate::notes::Job::Orphaned(id));
             crate::remote::orphaned_afar(self, st, id); // before `--rm` forgets where it reached
@@ -845,6 +870,7 @@ impl Core {
     pub fn remove(&self, st: &mut State, id: u32) {
         // Gone before it is announced: a fresh snapshot for a subscriber that
         // fell behind must not bring it back.
+        endpoints::retire(st, id);
         let Some(was) = st.reg.terminals.remove(&id) else { return };
         self.emit_from(st, "removed", id, serde_json::json!({}), Some(&was));
         let _ = std::fs::remove_file(self.snapshot_path(id));
@@ -1010,7 +1036,7 @@ impl Core {
             }
             self.save(&st);
         }
-        self.registry_writer.flush().await
+        self.sync_saved().await
     }
 
     /// Server stop: end every program, then let the holder exit.

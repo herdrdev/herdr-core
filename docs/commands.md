@@ -503,6 +503,7 @@ Options:
       --keep               Replace lost programs with a shell in place, never re-run the original command
       --bg                 Start it and come back at once (a server, several workers)
       --timeout <TIMEOUT>  Seconds before a wait checks in, leaving it running (default: config `wait_timeout`, else 180)
+      --bind               Give this terminal an endpoint that identifies it as the caller. Local runs only
   -h, --help               Print help
 ```
 

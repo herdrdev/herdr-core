@@ -116,6 +116,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for Watched<'_, R> {
 /// A framed connection as the rest of the core sees it: queue frames, wake the writer.
 #[derive(Default)]
 pub struct Conn {
+    pub(crate) bound: Option<crate::endpoints::Bound>,
     outbox: std::sync::Mutex<Outbox>,
     pub wake: tokio::sync::Notify,
     /// It fell too far behind (`MAX_CONTROL`): the connection must end.
@@ -131,6 +132,10 @@ pub struct Conn {
 }
 
 impl Conn {
+    pub(crate) fn new(bound: Option<crate::endpoints::Bound>) -> Self {
+        Self { bound, ..Default::default() }
+    }
+
     pub fn outbox(&self) -> std::sync::MutexGuard<'_, Outbox> {
         self.outbox.lock().unwrap_or_else(|p| p.into_inner())
     }
