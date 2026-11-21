@@ -67,7 +67,8 @@ pub fn encode(screen: &Screen, spec: &str) -> Result<Vec<u8>, RpcError> {
         c if mods & 1 != 0 => c.to_ascii_uppercase().to_string(),
         c => c.to_string(),
     };
-    let bytes = screen.encode_key(code, mods, if mods & 6 != 0 { "" } else { &text }, ch as u32);
+    // Ctrl alone is a C0 byte. Shift must still be visible, including Alt+Shift.
+    let bytes = screen.encode_key(code, mods, if mods & 2 != 0 && mods & 1 == 0 { "" } else { &text }, ch as u32);
     if bytes.is_empty() { Err(bad()) } else { Ok(bytes) }
 }
 
@@ -89,6 +90,8 @@ mod tests {
             ),
             ["\r", "\x1b", "\t", "\x7f", "a", "A", "7", "\x03", "\x1bx", "\x1b[A", "\x1bOP", " "]
         );
+        assert_eq!(keys(&screen, &["alt+a", "alt+shift+a"]), ["\x1ba", "\x1bA"]);
+        assert!(!encode(&screen, "ctrl+shift+c").unwrap().is_empty());
         // Application cursor keys (vim, less) change what arrows send.
         screen.write(b"\x1b[?1h");
         assert_eq!(keys(&screen, &["up", "left"]), ["\x1bOA", "\x1bOD"]);
