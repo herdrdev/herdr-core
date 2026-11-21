@@ -44,7 +44,7 @@ enum Cmd {
         #[command(flatten)]
         params: ListParams,
         /// Print a table even when output is piped.
-        #[arg(long, conflicts_with = "json")]
+        #[arg(long)]
         table: bool,
     },
     /// Show one terminal.
@@ -171,7 +171,14 @@ pub fn main() -> i32 {
         },
         cmd => (cmd, cli.json),
     };
-    let json = (asked || piped) && !matches!(&cmd, Some(Cmd::Ls { table: true, .. }));
+    let table = matches!(&cmd, Some(Cmd::Ls { table: true, .. }));
+    if table && asked {
+        return fail(
+            &RpcError::new("usage", "--table and --json cannot be used together", "choose one output format"),
+            true,
+        );
+    }
+    let json = (asked || piped) && !table;
     match run(cmd, json, asked) {
         Ok(Some(out)) => {
             print(&out, json);
