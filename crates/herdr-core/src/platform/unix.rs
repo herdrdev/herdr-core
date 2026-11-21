@@ -366,6 +366,22 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn atomic_state_writes_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = dir("state-mode");
+        let path = root.join("state.json");
+        for bytes in [b"[1]", b"[2]"] {
+            crate::paths::write_atomic(&path, bytes).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn assert_socket_gone(mut live: impl FnMut() -> bool) {
         // Concurrent tests may fork with this listener open; CLOEXEC closes it at exec, not fork.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
