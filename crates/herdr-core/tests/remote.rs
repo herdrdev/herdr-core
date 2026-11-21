@@ -728,6 +728,32 @@ fn a_viewer_there_keeps_up_past_one_window_of_output() {
 }
 
 #[test]
+fn reconnect_preserves_a_viewers_scrollback() {
+    let (rohan, s) = with_rohan();
+    let script = r"echo ready; read l; printf '\033[2J\033[Htop-row\nsecond-row\nthird-row\nfourth-row\nbottom-row'; exec sleep 100";
+    let t = run(&s, &["--on", "rohan", "sh", "-c", script]);
+    let mut viewer = Viewer::attach(&s, &t, 24, 5, json!({}));
+    viewer.shows("ready");
+    viewer.typed(b"start\r");
+    viewer.shows("bottom-row");
+    let before = viewer.text();
+    assert_eq!(before.matches("top-row").count(), 1, "{before:?}");
+
+    let down = s.root.join("down");
+    std::fs::write(&down, "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    viewer.shows("[line to rohan lost;");
+    let notice_end = viewer.raw.len();
+
+    std::fs::remove_file(down).unwrap();
+    viewer.until("the screen replays", |v| String::from_utf8_lossy(&v.raw[notice_end..]).contains("bottom-row"));
+    let after = viewer.text();
+    eprintln!("Before reconnect: {before:?}\nAfter reconnect: {after:?}");
+    assert_eq!(after, before, "the reconnect must not add the old screen or notice to history");
+}
+
+#[test]
 fn a_viewer_rides_out_a_dropped_line_without_reattaching() {
     let (rohan, s) = with_rohan();
     let t = run(&s, &["--on", "rohan", "sh", "-c", "echo ready; while read l; do echo got-$l; done"]);

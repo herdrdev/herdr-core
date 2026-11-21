@@ -390,8 +390,15 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
 
 #[test]
 fn the_line_lost_notice_shows_even_if_the_line_dropped_mid_sequence() {
-    let mut screen = ghostty_vt::Terminal::new(80, 24, 0);
-    screen.write(b"\x1b_Gm=1;AAAA");
-    screen.write(lost_notice("rohan").as_bytes());
-    assert!(screen.plain_text().contains("[line to rohan lost"));
+    let mut peer = ghostty_vt::Terminal::new(24, 3, 1 << 20);
+    peer.write(b"top-row\r\nsecond-row\r\nbottom-row");
+    let mut viewer = ghostty_vt::Terminal::new(24, 3, 1 << 20);
+    viewer.write(&peer.paint(0));
+    let before = viewer.plain_text();
+    viewer.write(b"\x1b_Gm=1;AAAA");
+    viewer.write(lost_notice("rohan").as_bytes());
+    assert!(viewer.plain_text().contains("[line to rohan lost"));
+    viewer.write(&peer.paint(0));
+    let after = viewer.plain_text();
+    assert_eq!(after, before, "the notice must not add lines to scrollback");
 }
