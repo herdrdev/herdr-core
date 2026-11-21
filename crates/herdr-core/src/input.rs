@@ -665,6 +665,32 @@ mod tests {
     }
 
     #[test]
+    fn terminal_reply_strings_sent_as_typing_leave_no_draft() {
+        let draft = |chunks: &[&[u8]]| {
+            let mut g = Gate::default();
+            for chunk in chunks {
+                g.viewer(chunk, true);
+            }
+            g.draft
+        };
+        let mut g = Gate::default();
+        g.viewer(b"\x1b_Gi=31;OK\x1b\\", true);
+        g.last_human = Some(Instant::now() - Duration::from_secs(3));
+        assert!(g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(), "a reply holds no send");
+        for reply in [
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07".as_slice(),
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\",
+            b"\x1bP1+r544e=78\x1b\\",
+        ] {
+            assert_eq!(draft(&[reply]), 0, "{reply:?}");
+        }
+        assert_eq!(draft(&[b"\x1b_Gi=3", b"1;OK\x1b", b"\\hi"]), 2, "a fragmented reply, then typing");
+        assert_eq!(draft(&[&[b"\x1b]52;c;".as_slice(), &[b'A'; 300], b"\x07"].concat()]), 0, "a long reply");
+        assert_eq!(draft(&[b"\x1b]0;x\x1b[97u"]), 1, "another escape ends the string");
+        assert_eq!(draft(&[b"\x1b]", b"hi"]), 2, "alone it is Alt+]: what follows is typing");
+    }
+
+    #[test]
     fn handover_restores_partial_input_and_elapsed_quiet() {
         let mut g = Gate::default();
         g.viewer(b"\x1b[200~draft\x1b[20", true);
