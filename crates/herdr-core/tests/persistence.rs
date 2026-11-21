@@ -13,11 +13,12 @@ fn failed_registry_and_stderr_writes_do_not_stop_persistence() {
     fs::create_dir_all(&state).unwrap();
     symlink("/dev/full", state.join("core.log")).unwrap();
     let before = run(&s, &["sleep", "600"]);
-    let tmp = state.join("terminals.tmp");
-    // Both the registry snapshot and its error diagnostic return ENOSPC, without root or a full disk.
-    symlink("/dev/full", &tmp).unwrap();
+    let snapshot = state.join("terminals.json");
+    fs::remove_file(&snapshot).unwrap();
+    // Atomic replacement cannot replace a directory. The error diagnostic also fails on /dev/full.
+    fs::create_dir(&snapshot).unwrap();
     let during = s.hc(&["run", "--bg", "sleep", "600"]);
-    fs::remove_file(&tmp).unwrap();
+    fs::remove_dir(&snapshot).unwrap();
     assert!(during.status.success(), "{}", String::from_utf8_lossy(&during.stderr));
     let during: serde_json::Value = serde_json::from_slice(&during.stdout).unwrap();
     let during = during["address"].as_str().unwrap();
@@ -33,28 +34,16 @@ fn failed_registry_and_stderr_writes_do_not_stop_persistence() {
 }
 
 #[test]
-fn server_stop_replies_when_its_registry_flush_times_out() {
+fn server_stop_replies_when_its_registry_snapshot_cannot_be_replaced() {
     let s = Session::new();
     let state = s.root.join("state/herdr-core/test");
     fs::create_dir_all(&state).unwrap();
     symlink("/dev/full", state.join("core.log")).unwrap();
-    s.json(&["server", "status"]);
-    while !state.join("terminals.json").exists() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let tmp = state.join("terminals.tmp");
-    // Opening a fifo for writing waits for a reader: a stalled disk.
-    assert!(std::process::Command::new("mkfifo").arg(&tmp).status().unwrap().success());
-    let mut stop = s.cmd();
-    stop.args(["server", "stop"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let stop = stop.spawn().unwrap();
-    // Past the stop's 10 s flush timeout, before the final flush's.
-    std::thread::sleep(std::time::Duration::from_secs(15));
-    let reader = fs::File::open(&tmp).unwrap();
-    let stop = stop.wait_with_output().unwrap();
-    drop(reader);
-    let _ = fs::remove_file(&tmp);
-    assert!(stop.status.success(), "{}", String::from_utf8_lossy(&stop.stderr));
-    let stop: serde_json::Value = serde_json::from_slice(&stop.stdout).unwrap();
+    run(&s, &["sleep", "600"]);
+    let snapshot = state.join("terminals.json");
+    fs::remove_file(&snapshot).unwrap();
+    fs::create_dir(&snapshot).unwrap();
+    // The runtime test injects a stalled writer to cover the distinct flush-timeout case.
+    let stop = s.json(&["server", "stop"]);
     assert_eq!(stop["stopped"], true);
 }
