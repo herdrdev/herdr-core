@@ -13,7 +13,7 @@ They end when you end, unless started with `--outlive-parent`.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
-## Delegate a task
+## Delegate a task with hc
 
 First check `hc templates`: ready-made roles may include `reviewer`,
 `simplifier`, or implementers. Use one that fits. Templates are Markdown
