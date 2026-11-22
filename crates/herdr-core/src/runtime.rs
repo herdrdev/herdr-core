@@ -255,7 +255,7 @@ impl Core {
         })
     }
 
-    /// A read remains available after a failed write so callers can check what happened.
+    /// Return the action's observed result even when a registry write failed.
     pub async fn flush_observed(&self) -> Result<(), crate::rpc::RpcError> {
         self.wait_for_save().await.map(drop)
     }

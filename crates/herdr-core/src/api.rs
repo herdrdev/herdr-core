@@ -523,7 +523,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
     } else {
         None
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(SendResult { status: sent.status, turn: sent.turn, started: sent.started, wait })
 }
 
@@ -558,7 +558,7 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
     let id = resolve(core, &p.terminal)?;
     let (status, turn) = core.keys(id, &p.keys).await?;
     core.saw(p.caller.as_deref(), id);
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(KeysResult { status, turn })
 }
 
@@ -573,7 +573,7 @@ async fn terminal_interrupt(core: Ctx<'_>, p: InterruptParams) -> Result<Interru
         Interrupted::StillWorking => "still_working",
         Interrupted::Unknown => "unknown",
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(InterruptResult { outcome: outcome.into(), key })
 }
 

@@ -147,6 +147,8 @@ hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
 
+If `hc run` reports a registry save failure, the terminal may already exist. Check `hc ls` before retrying.
+
 ### Slow commands: don't block yourself
 
 Your own shell tool holds you until its command ends: no messages, no
