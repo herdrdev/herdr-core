@@ -126,7 +126,8 @@ mod tests {
         writer.save(b"last".to_vec());
         writer.flush().await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"last");
-        assert!(!path.with_extension("tmp").exists());
+        let files: Vec<_> = std::fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(files, ["terminals.json"]);
         drop(writer);
         std::fs::remove_dir_all(root).unwrap();
     }

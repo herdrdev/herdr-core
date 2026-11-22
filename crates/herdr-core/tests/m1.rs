@@ -382,13 +382,14 @@ fn a_failed_registry_write_does_not_break_get_or_stop() {
     let terminal = run(&s, &["sleep", "100"]);
     let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
     let core = status(&s)["pid"].as_i64().unwrap();
-    // A directory in place of the temporary file fails even when tests run as root.
-    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
-    std::fs::create_dir(&tmp).unwrap();
+    // The final rename cannot replace a directory, even when tests run as root.
+    let snapshot = s.root.join("state/herdr-core/test/terminals.json");
+    std::fs::remove_file(&snapshot).unwrap();
+    std::fs::create_dir(&snapshot).unwrap();
     let label = s.hc(&["label", &terminal, "disk=failed"]);
     let get = s.hc(&["get", &terminal]);
     let stop = s.hc(&["server", "stop"]);
-    std::fs::remove_dir(tmp).unwrap();
+    std::fs::remove_dir(snapshot).unwrap();
     for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
         assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
     }
