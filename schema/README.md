@@ -40,7 +40,9 @@ Errors are JSON-RPC errors with a stable kind and a hint:
 ```
 
 `hello` with `{"framed": true}` switches the connection to **framed mode**
-after its reply. Attach needs it; everything else works in both modes.
+after its reply. Use framed mode for `terminal.attach` and the four upload
+methods `terminal.put_begin`, `terminal.put_chunk`, `terminal.put_finish` and
+`terminal.put_abort`. Other methods work in both modes.
 
 ## Framed mode
 

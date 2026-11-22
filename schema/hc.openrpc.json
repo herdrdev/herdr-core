@@ -3168,6 +3168,13 @@
           "message": "not_found"
         },
         {
+          "code": -32000,
+          "data": {
+            "kind": "finished"
+          },
+          "message": "finished"
+        },
+        {
           "code": -32602,
           "data": {
             "kind": "invalid_params"
@@ -3273,6 +3280,20 @@
     {
       "description": "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
       "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
+        },
         {
           "code": -32000,
           "data": {

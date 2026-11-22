@@ -128,13 +128,13 @@ methods! { Ctx<'_>;
         errors ["not_found", "finished", "invalid_params", "unavailable", "needs_framed"];
     "terminal.put_chunk" => terminal_put_chunk, PutPieceParams => PutPieceResult,
         "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
-        errors ["not_found", "invalid_params", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "needs_framed"];
     "terminal.put_finish" => terminal_put_finish, PutTransferParams => PutResult,
         "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
         errors ["not_found", "finished", "invalid_params", "needs_framed"];
     "terminal.put_abort" => terminal_put_abort, PutTransferParams => Empty,
         "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
-        errors ["needs_framed"];
+        errors ["invalid_params", "unavailable", "needs_framed"];
     "machine.exec" => machine_exec, ExecParams => ExecResult,
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
         errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
