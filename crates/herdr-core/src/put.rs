@@ -245,6 +245,8 @@ mod tests {
 
     #[cfg(windows)]
     fn link_dir(from: &Path, to: &Path) {
+        let from = std::path::absolute(from).unwrap();
+        let to = std::path::absolute(to).unwrap();
         let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(to).arg(from).output().unwrap();
         assert!(out.status.success(), "{out:?}");
     }
