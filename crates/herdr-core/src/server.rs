@@ -145,7 +145,10 @@ fn load_identity(state: &Path, machine_id: Option<String>) -> io::Result<CoreInf
     let saved: Option<Identity> = crate::paths::read_state(&path)?;
     let info = match saved {
         Some(saved) if saved.machine_id.is_some() && machine_id.is_some() && saved.machine_id != machine_id => {
-            eprintln!("core: this disk came from another machine: a new identity, its terminals forgotten");
+            let _ = writeln!(
+                io::stderr(),
+                "core: this disk came from another machine: a new identity, its terminals forgotten"
+            );
             // All gone before the new identity is written, or the next start tries again.
             for name in CLONE_FORGETS {
                 let p = state.join(name);

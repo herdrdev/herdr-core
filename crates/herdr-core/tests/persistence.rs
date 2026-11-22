@@ -34,6 +34,20 @@ fn failed_registry_and_stderr_writes_do_not_stop_persistence() {
 }
 
 #[test]
+fn failed_environment_and_stderr_writes_do_not_block_restart() {
+    let s = Session::new();
+    let state = s.root.join("state/herdr-core/test");
+    fs::create_dir_all(&state).unwrap();
+    symlink("/dev/full", state.join("core.log")).unwrap();
+    let t = run(&s, &["sleep", "600"]);
+    let pid = get(&s, &t)["pid"].clone();
+    fs::create_dir(state.join("restart-env.json")).unwrap();
+    let first = s.json(&["server", "status"])["pid"].clone();
+    assert_ne!(s.json(&["server", "restart"])["pid"], first);
+    assert_eq!(get(&s, &t)["pid"], pid);
+}
+
+#[test]
 fn server_stop_replies_when_its_registry_flush_times_out() {
     let s = Session::new();
     let state = s.root.join("state/herdr-core/test");

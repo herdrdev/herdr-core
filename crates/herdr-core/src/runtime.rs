@@ -174,9 +174,9 @@ impl Core {
         let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
-            eprintln!("core: cannot load documents, starting empty: {e}");
+            let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
             if let Err(e) = std::fs::rename(&docs_path, paths.state.join("docs.json.bad")) {
-                eprintln!("core: cannot quarantine documents: {e}");
+                let _ = writeln!(io::stderr(), "core: cannot quarantine documents: {e}");
             }
             Default::default()
         });
@@ -668,7 +668,7 @@ impl Core {
                 Ok(Ok(_))
             );
         if taken {
-            eprintln!("core: lost the link to holder {instance}, reconnected");
+            let _ = writeln!(io::stderr(), "core: lost the link to holder {instance}, reconnected");
             return;
         }
         let _ = writeln!(
