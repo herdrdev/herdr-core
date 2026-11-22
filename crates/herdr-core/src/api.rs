@@ -93,15 +93,15 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown"];
     "terminal.kill" => terminal_kill, TerminalParams => Public,
         "End the program: hangup, then terminate, then kill. Returns the observed result.",
-        errors ["not_found", "machine_unknown"];
+        errors ["not_found", "machine_unknown", "unavailable"];
     "terminal.rm" => terminal_rm, TerminalParams => RemoveResult,
         "Remove a finished terminal.",
-        errors ["not_found", "machine_unknown", "live"];
+        errors ["not_found", "machine_unknown", "live", "unavailable"];
     "terminal.keep" => terminal_keep, KeepParams => Public,
-        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params"];
+        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params", "unavailable"];
     "terminal.label" => terminal_label, LabelParams => Public,
         "Set or remove labels (free-form `key=value`, never interpreted).",
-        errors ["not_found", "machine_unknown", "invalid_params"];
+        errors ["not_found", "machine_unknown", "invalid_params", "unavailable"];
     "terminal.read" => terminal_read, ReadParams => ReadResult,
         "The screen plus `lines` of history as text, live or finished.",
         errors ["not_found", "machine_unknown"];
@@ -113,7 +113,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
-        errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
+        errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config", "unavailable"];
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
         "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
@@ -313,7 +313,7 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
         let st = core.lock();
         machines.iter().map(|m| crate::remote::view(&st, m)).collect()
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(ListResult { terminals, hidden_finished, machines })
 }
 
@@ -321,7 +321,7 @@ async fn terminal_get(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcErr
     let id = resolve(core, &p.terminal)?;
     core.saw(p.caller.as_deref(), id);
     let result = record(core, id).map(Public);
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     result
 }
 
@@ -413,7 +413,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
                 ReadResult { text, complete: false, how: "screen".into(), why }
             }
         };
-        core.flush_saved().await?;
+        core.flush_observed().await?;
         return Ok(result);
     }
     let result = {
@@ -442,7 +442,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
             why: None,
         }
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(result)
 }
 

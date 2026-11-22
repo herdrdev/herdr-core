@@ -385,13 +385,11 @@ fn a_failed_registry_write_does_not_break_get_or_stop() {
     // A directory in place of the temporary file fails even when tests run as root.
     let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
     std::fs::create_dir(&tmp).unwrap();
-    let label = s.hc(&["label", &terminal, "disk=failed"]);
-    let get = s.hc(&["get", &terminal]);
-    let stop = s.hc(&["server", "stop"]);
+    let (_, label) = s.err(&["--json", "label", &terminal, "disk=failed"]);
+    assert_eq!(label["error"]["kind"], "unavailable", "{label}");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "failed");
+    assert_eq!(s.json(&["server", "stop"])["stopped"], true);
     std::fs::remove_dir(tmp).unwrap();
-    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
-        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
-    }
     assert!(!pid_alive(pid), "stop left the program running");
     wait_until("core stops after a failed disk write", || !pid_alive(core));
 }

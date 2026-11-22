@@ -244,18 +244,30 @@ impl Core {
 
     /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
     /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
-    /// Completed write failures are logged, as before; a stuck disk still times out.
+    /// A failed write is reported here and retried in the background.
     pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
-        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
-            .await
-            .map_err(|_| {
-                crate::rpc::RpcError::new(
-                    "unavailable",
-                    "registry persistence timed out; the operation may already have completed",
-                    "check the terminal and disk before retrying",
-                )
-            })?
-            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
+        self.wait_for_save().await?.map_err(|e| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                format!("cannot save terminals: {e}; the operation may already have completed"),
+                "check the terminal and disk before retrying",
+            )
+        })
+    }
+
+    /// A read remains available after a failed write so callers can check what happened.
+    pub async fn flush_observed(&self) -> Result<(), crate::rpc::RpcError> {
+        self.wait_for_save().await.map(drop)
+    }
+
+    async fn wait_for_save(&self) -> Result<io::Result<()>, crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush()).await.map_err(|_| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                "registry persistence timed out; the operation may already have completed",
+                "check the terminal and disk before retrying",
+            )
+        })
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):

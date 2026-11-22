@@ -2126,6 +2126,13 @@
             "kind": "machine_unknown"
           },
           "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.kill",
@@ -2183,6 +2190,13 @@
             "kind": "live"
           },
           "message": "live"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.rm",
@@ -2233,6 +2247,13 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.keep",
@@ -2287,6 +2308,13 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.label",
@@ -2726,6 +2754,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.wait",
