@@ -394,6 +394,7 @@ fn bind_needs_the_feature() {
             stream.is_some()
         });
         let mut stream = stream.unwrap();
+        stream.set_nonblocking(false).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
