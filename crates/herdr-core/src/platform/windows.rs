@@ -416,6 +416,16 @@ pub fn is_link(metadata: &std::fs::Metadata) -> bool {
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    fn full_name(path: &Path) -> io::Result<Vec<u16>> {
+        let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Ok(wide(std::fs::canonicalize(parent)?.join(name).as_os_str()))
+    }
+    let (from, to) = (full_name(from)?, full_name(to)?);
+    check(unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) })
+}
+
 pub fn try_lock(file: &File) -> bool {
     unsafe {
         let mut ov: OVERLAPPED = zeroed();

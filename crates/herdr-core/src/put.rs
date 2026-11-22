@@ -138,23 +138,14 @@ fn publish_with_link(
     mut link: impl FnMut(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
     let dir = part.parent().unwrap_or(Path::new("."));
-    let path = land(dir, name, |path| match link(part, path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
-        Err(_) => {
-            // FAT and some network mounts cannot publish with a hard link.
-            let mut from = std::fs::File::open(part)?;
-            let mut to = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-            let copied = io::copy(&mut from, &mut to);
-            drop(to);
-            if copied.is_err() {
-                let _ = std::fs::remove_file(path);
-            }
-            copied.map(drop)
+    land(dir, name, |path| match link(part, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(part);
+            Ok(())
         }
-    })?;
-    let _ = std::fs::remove_file(part);
-    Ok(path)
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => crate::platform::rename_noreplace(part, path),
+    })
 }
 
 /// Part files a previous core left (it stopped mid-transfer).
@@ -262,9 +253,19 @@ mod tests {
     fn a_finished_part_can_land_where_hard_links_are_unavailable() {
         let state = crate::test_tmp().join(format!("hc-put-{}", crate::platform::random_hex()));
         let first = stage(&state, 3, "shot.png", b"first").unwrap();
-        let part = open_part(&state, 3, "abc").unwrap();
+        let abandoned = open_part(&state, 3, "0123456789abcdef").unwrap();
+        write_at(&abandoned, 0, b"interrupted").unwrap();
+        sweep(&state);
+        assert!(!abandoned.exists() && !first.with_file_name("shot-2.png").exists());
+        let part = open_part(&state, 3, "0123456789abcdef").unwrap();
         write_at(&part, 0, b"second").unwrap();
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(unix)]
+        let source = std::fs::File::open(&part).unwrap();
         let second = publish_with_link(&part, "shot.png", |_, _| Err(io::ErrorKind::Unsupported.into())).unwrap();
+        #[cfg(unix)]
+        assert_eq!(source.metadata().unwrap().ino(), std::fs::metadata(&second).unwrap().ino());
         assert_eq!(std::fs::read(first).unwrap(), b"first");
         assert_eq!(std::fs::read(&second).unwrap(), b"second");
         assert!(second.ends_with("shot-2.png") && !part.exists());
