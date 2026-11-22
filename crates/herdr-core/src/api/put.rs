@@ -103,7 +103,7 @@ pub(super) async fn terminal_put_begin(core: Ctx<'_>, p: PutBeginParams) -> Resu
         return Err(too_big());
     }
     let id = live(core, &p.terminal)?;
-    let busy = || RpcError::new("unavailable", "too many puts at once here", "try again when one is done");
+    let busy = || RpcError::new("unavailable", put::BUSY, "try again when one is done");
     let taken = || RpcError::invalid_params(format!("put {} is taken", p.transfer));
     {
         let st = core.lock();

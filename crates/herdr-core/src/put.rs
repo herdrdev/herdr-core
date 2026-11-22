@@ -87,6 +87,7 @@ pub const MAX_PIECE: usize = 1 << 20;
 pub const FIRST_PIECE: usize = 4 << 10;
 /// Pieces in progress on one core at once.
 pub const MAX_TRANSFERS: usize = 16;
+pub const BUSY: &str = "too many puts at once here";
 /// Aborts that overtook a begin still pending on one connection: a sender has
 /// only a few puts at once, so more is a bug and ends the connection.
 pub const MAX_EARLY_ABORTS: usize = 64;

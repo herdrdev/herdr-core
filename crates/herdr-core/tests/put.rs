@@ -392,6 +392,30 @@ fn a_late_piece_leaves_alone_a_put_that_took_its_handle_again() {
 }
 
 #[test]
+fn concurrent_puts_wait_when_the_recipient_is_full() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    slow_uplink(&mut s, &rohan);
+    let there = run(&s, &["--on", "rohan", "sleep", "100"]);
+    let mut conn = framed_conn(&s);
+    let count = 4 + herdr_core::put::MAX_TRANSFERS as u64;
+    let data = herdr_core::put::encode(&[3; 4096]);
+    for id in 1..=count {
+        send(
+            &mut conn,
+            Some(id),
+            "terminal.put",
+            serde_json::json!({"terminal": there, "name": format!("{id}.png"), "data": data}),
+        );
+    }
+    for _ in 0..count {
+        let done = next_reply(&mut conn);
+        let path = done["result"]["path"].as_str().unwrap_or_else(|| panic!("{done}"));
+        assert_eq!(std::fs::read(path).unwrap(), [3; 4096]);
+    }
+}
+
+#[test]
 fn a_piece_past_its_deadline_keeps_the_line_until_it_is_answered() {
     let rohan = Session::new();
     let mut s = Session::new();
