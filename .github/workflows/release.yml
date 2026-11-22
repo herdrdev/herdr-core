@@ -34,7 +34,7 @@ jobs:
           - { name: macos-aarch64, target: aarch64-apple-darwin, runner: macos-15 }
           # Cross-build on Apple Silicon; verify the Intel binary under Rosetta.
           - { name: macos-x86_64, target: x86_64-apple-darwin, runner: macos-15 }
-          - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2025 }
+          - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2022 }
     runs-on: ${{ matrix.runner }}
     # Only tag pushes can use the release environment's Apple certificate.
     environment: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || 'build' }}
@@ -139,7 +139,7 @@ jobs:
       github.triggering_actor == 'ogulcancelik' && vars.AZURE_SIGNING_PROFILE != ''
       && ((github.event_name == 'push' && github.ref_type == 'tag') || github.event_name == 'workflow_dispatch')
     environment: signing
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 15
     permissions:
       contents: read
