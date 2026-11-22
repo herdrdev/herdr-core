@@ -1,6 +1,6 @@
 # herdr-core changelog
 
-## Unreleased
+## [0.1.22] - 2026-11-22
 
 ### New
 - **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer has every document change from every terminal delivered to it, and no longer has to filter them out itself. An unfiltered subscriber still hears every document, and existing terminal filters keep their behavior; a subscriber that selects a terminal and also names documents hears both. (#273, thanks @felixzsh)
