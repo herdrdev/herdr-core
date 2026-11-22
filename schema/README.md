@@ -56,6 +56,7 @@ most 16 MiB.
 | 4 | FOCUS | viewer → core: 1 gained focus, 0 lost it |
 | 5 | FACTS | viewer → core: JSON display facts (`Display` in the schema) |
 | 6 | AUTOMATIC_INPUT | viewer → core: terminal-generated reply bytes, not human activity |
+| 7 | PAINT_END | core → observer: authoritative paint finished (empty payload) |
 
 Channel 0 carries JSON-RPC both ways. Calls on it run side by side.
 
@@ -99,6 +100,17 @@ serialized only when the observer has credit. The attach reply precedes stream
 frames, including on core-to-core relays and reconnects.
 Without this opt-in, existing event-driven observers keep their previous output
 behavior: no additional resize paints or RESIZE frames.
+
+Confirmed observers (`observe: true` and `resize_notifications: true`) may also opt
+in with `paint_boundaries: true` on `terminal.attach`. The reply confirms
+`paint_boundaries: true` only when every core on the path supports it and `hello`
+requests and replies advertise `paint_boundaries`. Confirmed streams bracket every
+authoritative paint — initial attach, resize repaint, >4 MiB lag/overflow repaint,
+recovery continuation repaint, and post-scroll stitch repaint — with RESIZE before
+and PAINT_END after. PAINT_END consumes no DATA credit and flushes ahead of CLOSE
+even at zero credit; any superseded unsent PAINT_END is dropped with its paint. If
+a previously capable path loses support on reconnect, its stream closes so the
+client can attach again.
 
 Flow control: a stream starts with 256 KiB of credit. The viewer sends
 CREDIT for the bytes it has written out. A viewer that falls more than

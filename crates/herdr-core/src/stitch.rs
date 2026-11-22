@@ -209,10 +209,21 @@ impl Core {
         if st.screens.contains_key(&id) {
             let paint = crate::viewers::first_paint(&st, id, 0);
             let recovering = st.screens[&id].continuation().is_none();
+            let size = st
+                .reg
+                .terminals
+                .get(&id)
+                .map_or_else(|| vec![0; 4], |t| [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat());
             for v in st.viewers.get_mut(&id).into_iter().flatten() {
                 v.recovering = recovering;
+                let paint_boundaries = v.paint_boundaries;
                 v.conn.with(|out| {
-                    out.data(v.channel, &paint);
+                    if paint_boundaries {
+                        out.resize(v.channel, &size);
+                    }
+                    if out.data(v.channel, &paint) && paint_boundaries {
+                        out.paint_end(v.channel);
+                    }
                 });
             }
         }

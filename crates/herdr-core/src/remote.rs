@@ -20,8 +20,16 @@ use tokio::sync::{mpsc, oneshot};
 
 /// A viewer here that a stream there goes to: its connection and channel.
 type Sink = (Arc<Conn>, u32);
-/// A pending reply, its stream sink and whether resize support is required.
-type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
+
+/// Capabilities an opted-in relayed stream requires on reconnect.
+#[derive(Clone, Copy, Default)]
+pub(super) struct StreamCaps {
+    pub(super) resize: bool,
+    pub(super) paint_boundaries: bool,
+}
+
+/// A pending reply, its stream sink and required stream capabilities.
+type Waiting = (oneshot::Sender<Value>, Option<(Sink, StreamCaps)>);
 
 mod put;
 mod run;
@@ -29,7 +37,7 @@ mod viewers;
 use run::forward_once;
 #[cfg(test)]
 use viewers::automatic_input;
-use viewers::{RESIZE_LOST, negotiate_resize, reattach};
+use viewers::{PAINT_BOUNDARIES_LOST, RESIZE_LOST, negotiate_paint_boundaries, negotiate_resize, reattach};
 pub use viewers::{Relayed, attach, conn_gone, relay_in};
 
 #[cfg(test)]
@@ -84,13 +92,18 @@ impl Line {
     /// A reply to one of our calls: to whoever waits for it.
     fn take_reply(&self, mut reply: Value) {
         let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else { return };
-        if let (Some((sink, require_resize)), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
-            if require_resize && reply["result"]["resize_notifications"] != true {
+        if let (Some((sink, caps)), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
+            let lost = if caps.resize && reply["result"]["resize_notifications"] != true {
+                Some(RESIZE_LOST)
+            } else if caps.paint_boundaries && reply["result"]["paint_boundaries"] != true {
+                Some(PAINT_BOUNDARIES_LOST)
+            } else {
+                None
+            };
+            if let Some(msg) = lost {
                 let _ = self.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
-                reply = crate::rpc::response(
-                    reply["id"].clone(),
-                    Err(RpcError::new("unavailable", RESIZE_LOST, "attach again")),
-                );
+                reply =
+                    crate::rpc::response(reply["id"].clone(), Err(RpcError::new("unavailable", msg, "attach again")));
             } else {
                 lock(&self.streams).insert(there as u32, sink);
             }
@@ -120,7 +133,7 @@ impl Line {
         machine: &str,
         method: &str,
         params: Value,
-        sink: Option<(Sink, bool)>,
+        sink: Option<(Sink, StreamCaps)>,
         deadline: Duration,
     ) -> Result<Value, RpcError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -438,6 +451,11 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                     conn.with(|out| out.ordered_resize(*here, &payload));
                 }
             }
+            (there, wire::PAINT_END) => {
+                if let Some((conn, here)) = lock(&line.streams).get(&there) {
+                    conn.with(|out| out.paint_end(*here));
+                }
+            }
             (there, wire::CLOSE) => {
                 if let Some((conn, here)) = lock(&line.streams).remove(&there) {
                     core.lock().relayed.remove(&(conn_key(&conn), here));
@@ -694,6 +712,7 @@ pub fn from_peer(core: &Core, conn: Option<&Arc<Conn>>, mut params: Value) -> Va
     let key = conn_key(conn);
     let Some((id, (_, line))) = st.peer_lines.iter().find(|(_, (k, _))| *k == key) else { return params };
     negotiate_resize(line, &mut params);
+    negotiate_paint_boundaries(line, &mut params);
     if let (Some(rest), Some(peer)) =
         (params["caller"].as_str().and_then(|c| c.strip_prefix(&format!("{id}/"))), st.peers.get(id))
     {

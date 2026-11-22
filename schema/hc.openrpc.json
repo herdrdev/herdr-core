@@ -13,6 +13,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "paint_boundaries": {
+            "description": "True only when the entire path sends RESIZE before replacement paints\nand marks the end of each authoritative paint with PAINT_END (kind 7).",
+            "type": "boolean"
+          },
           "resize_notifications": {
             "description": "True only when the entire path sends RESIZE before replacement paints.\nFalse or absent means the observer must track size changes separately.",
             "type": "boolean"
@@ -25,6 +29,7 @@
           "channel",
           "terminal",
           "resize_notifications",
+          "paint_boundaries",
           "automatic_input"
         ],
         "type": "object"
@@ -2482,6 +2487,16 @@
           "schema": {
             "default": false,
             "description": "Watch only: never type or resize.",
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Observer understands PAINT_END (kind 7) after each authoritative paint.",
+          "name": "paint_boundaries",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Observer understands PAINT_END (kind 7) after each authoritative paint.",
             "type": "boolean"
           }
         },

@@ -405,6 +405,10 @@ pub struct AttachParams {
     #[arg(skip)]
     #[serde(default)]
     pub resize_notifications: bool,
+    /// Observer understands PAINT_END (kind 7) after each authoritative paint.
+    #[arg(skip)]
+    #[serde(default)]
+    pub paint_boundaries: bool,
     /// Scrollback lines to show first (main screen only).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
@@ -437,6 +441,9 @@ pub struct AttachResult {
     /// True only when the entire path sends RESIZE before replacement paints.
     /// False or absent means the observer must track size changes separately.
     pub resize_notifications: bool,
+    /// True only when the entire path sends RESIZE before replacement paints
+    /// and marks the end of each authoritative paint with PAINT_END (kind 7).
+    pub paint_boundaries: bool,
     /// The entire attach path accepts AUTOMATIC_INPUT (kind 6). Absent means use DATA.
     pub automatic_input: bool,
 }

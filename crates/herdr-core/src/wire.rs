@@ -21,6 +21,8 @@ pub const FOCUS: u8 = 4;
 pub const FACTS: u8 = 5;
 /// Viewer → core: terminal-generated replies, not human activity.
 pub const AUTOMATIC_INPUT: u8 = 6;
+/// Core → observer: authoritative paint finished.
+pub const PAINT_END: u8 = 7;
 
 /// Credit a stream starts with before the viewer acknowledges anything.
 pub const WINDOW: usize = 256 * 1024;
@@ -153,7 +155,7 @@ impl Conn {
 
 struct Stream {
     pending: VecDeque<u8>,
-    resizes: VecDeque<(usize, Vec<u8>)>,
+    markers: VecDeque<(usize, u8, Vec<u8>)>,
     paused: bool,
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
@@ -189,7 +191,7 @@ impl Outbox {
     pub fn open(&mut self, channel: u32) {
         self.streams.insert(
             channel,
-            Stream { pending: VecDeque::new(), resizes: VecDeque::new(), paused: false, credit: WINDOW, ending: None },
+            Stream { pending: VecDeque::new(), markers: VecDeque::new(), paused: false, credit: WINDOW, ending: None },
         );
     }
 
@@ -214,15 +216,22 @@ impl Outbox {
     pub fn resize(&mut self, channel: u32, size: &[u8]) {
         if let Some(s) = self.streams.get_mut(&channel) {
             s.pending.clear();
-            s.resizes.clear();
-            s.resizes.push_back((0, size.to_vec()));
+            s.markers.clear();
+            s.markers.push_back((0, RESIZE, size.to_vec()));
         }
     }
 
     /// Relay boundaries keep bytes already charged to the upstream credit window.
     pub fn ordered_resize(&mut self, channel: u32, size: &[u8]) {
         if let Some(s) = self.streams.get_mut(&channel) {
-            s.resizes.push_back((s.pending.len(), size.to_vec()));
+            s.markers.push_back((s.pending.len(), RESIZE, size.to_vec()));
+        }
+    }
+
+    /// Marks where the current authoritative paint ends in `pending`.
+    pub fn paint_end(&mut self, channel: u32) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.markers.push_back((s.pending.len(), PAINT_END, Vec::new()));
         }
     }
 
@@ -247,10 +256,10 @@ impl Outbox {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
         if s.pending.len() + bytes.len() > MAX_PENDING {
             s.pending.clear();
-            let latest = s.resizes.pop_back();
-            s.resizes.clear();
-            if let Some((_, size)) = latest {
-                s.resizes.push_back((0, size));
+            let latest = s.markers.iter().rfind(|(_, kind, _)| *kind == RESIZE).map(|(_, _, size)| size.clone());
+            s.markers.clear();
+            if let Some(size) = latest {
+                s.markers.push_back((0, RESIZE, size));
             }
             return false;
         }
@@ -287,6 +296,19 @@ impl Outbox {
             self.control_bytes -= frame.len();
             return Some(frame);
         }
+        if let Some((&channel, _)) = self
+            .streams
+            .iter()
+            .find(|(_, s)| !s.paused && s.markers.front().is_some_and(|(at, kind, _)| *at == 0 && *kind == PAINT_END))
+        {
+            let payload = self
+                .streams
+                .get_mut(&channel)
+                .and_then(|s| s.markers.pop_front())
+                .map(|(_, _, p)| p)
+                .unwrap_or_default();
+            return Some(encode(channel, PAINT_END, &payload));
+        }
         if let Some((&channel, _)) =
             self.streams.iter().find(|(_, s)| !s.paused && s.ending.is_some() && s.pending.is_empty())
         {
@@ -302,13 +324,13 @@ impl Outbox {
         let channel = *ready.iter().find(|ch| **ch > self.turn).or(ready.first())?;
         self.turn = channel;
         let s = self.streams.get_mut(&channel).expect("ready stream");
-        if s.resizes.front().is_some_and(|(at, _)| *at == 0) {
-            let (_, size) = s.resizes.pop_front().unwrap();
-            return Some(encode(channel, RESIZE, &size));
+        if s.markers.front().is_some_and(|(at, _, _)| *at == 0) {
+            let (_, kind, payload) = s.markers.pop_front().unwrap();
+            return Some(encode(channel, kind, &payload));
         }
-        let boundary = s.resizes.front().map_or(usize::MAX, |(at, _)| *at);
+        let boundary = s.markers.front().map_or(usize::MAX, |(at, _, _)| *at);
         let n = s.pending.len().min(s.credit).min(CHUNK).min(boundary);
-        for (at, _) in &mut s.resizes {
+        for (at, _, _) in &mut s.markers {
             *at -= n;
         }
         s.credit -= n;
@@ -475,5 +497,44 @@ mod tests {
 
         // Too far behind: the backlog is dropped so the caller can repaint.
         assert!(!out.data(1, &vec![b'b'; MAX_PENDING]));
+    }
+
+    #[test]
+    fn paint_end_separates_paint_from_live_bytes_even_at_zero_credit_or_finish() {
+        let mut out = Outbox::default();
+        out.open(1);
+        out.resize(1, &[80, 0, 24, 0]);
+        out.data(1, &vec![b'p'; WINDOW]);
+        out.paint_end(1);
+        out.data(1, b"live");
+        out.finish(1, b"{}");
+        let mut frames = Vec::new();
+        while let Some(f) = out.next_frame() {
+            frames.push((f[4], f.len() - HEADER));
+        }
+        assert_eq!(frames.first().copied(), Some((RESIZE, 4)));
+        assert_eq!(frames.last().copied(), Some((PAINT_END, 0)), "PAINT_END flushes even when credit hit 0");
+        out.credit(1, 4);
+        let tail: Vec<_> = std::iter::from_fn(|| out.next_frame()).map(|f| (f[4], f.len() - HEADER)).collect();
+        assert_eq!(tail, [(DATA, 4), (CLOSE, 2)]);
+    }
+
+    #[test]
+    fn resize_drops_superseded_unsent_paint_end() {
+        let mut out = Outbox::default();
+        out.open(1);
+        out.resize(1, &[80, 0, 24, 0]);
+        out.data(1, &vec![b'a'; CHUNK * 2]);
+        out.paint_end(1);
+        let first = out.next_frame().unwrap();
+        assert_eq!(first[4], RESIZE);
+        let chunk = out.next_frame().unwrap();
+        assert_eq!(chunk[4], DATA);
+        // Superseded mid-paint: old PAINT_END must be dropped cleanly.
+        out.resize(1, &[100, 0, 30, 0]);
+        out.data(1, b"new");
+        out.paint_end(1);
+        let remaining: Vec<_> = std::iter::from_fn(|| out.next_frame()).map(|f| (f[4], f[HEADER..].to_vec())).collect();
+        assert_eq!(remaining, vec![(RESIZE, vec![100, 0, 30, 0]), (DATA, b"new".to_vec()), (PAINT_END, vec![])]);
     }
 }

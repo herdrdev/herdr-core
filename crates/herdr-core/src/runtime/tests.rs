@@ -39,6 +39,7 @@ async fn image_streams_share_one_timer_task_and_keep_the_latest_deadline() {
             AttachRequest {
                 observe: false,
                 resize_notifications: false,
+                paint_boundaries: false,
                 history: 0,
                 size: (80, 24),
                 display: Display::default(),
@@ -159,6 +160,7 @@ async fn handover_carries_held_replies_and_answers_including_final_holder_output
             AttachRequest {
                 observe: false,
                 resize_notifications: false,
+                paint_boundaries: false,
                 history: 0,
                 size: (80, 24),
                 display: Display::default(),
@@ -242,6 +244,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
             AttachRequest {
                 observe: false,
                 resize_notifications: false,
+                paint_boundaries: false,
                 history: 0,
                 size: (80, 24),
                 display: Display::default(),
