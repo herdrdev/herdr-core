@@ -95,6 +95,10 @@ const PIECE_TIME: Duration = Duration::from_millis(350);
 /// Part files start so; `clean` names never do.
 const PART: &str = ".hc-put-";
 
+pub fn valid_handle(handle: &str) -> bool {
+    (16..=64).contains(&handle.len()) && handle.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A chunked put in progress, bound to the connection that began it.
 pub struct Transfer {
     pub terminal: u32,
@@ -154,10 +158,22 @@ fn publish_with_link(
 
 /// Part files a previous core left (it stopped mid-transfer).
 pub fn sweep(state: &Path) {
-    let dirs = std::fs::read_dir(state.join("files")).into_iter().flatten().flatten();
-    for file in dirs.flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten()) {
-        if file.file_name().to_string_lossy().starts_with(PART) {
-            let _ = std::fs::remove_file(file.path());
+    let files = state.join("files");
+    let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !crate::platform::is_link(&m));
+    if !real_dir(&files) {
+        return;
+    }
+    for dir in std::fs::read_dir(files).into_iter().flatten().flatten() {
+        if dir.file_name().to_str().and_then(crate::terminals::parse_id).is_none() || !real_dir(&dir.path()) {
+            continue;
+        }
+        for file in std::fs::read_dir(dir.path()).into_iter().flatten().flatten() {
+            let name = file.file_name();
+            if name.to_str().and_then(|n| n.strip_prefix(PART)).is_some_and(valid_handle)
+                && file.metadata().is_ok_and(|m| m.is_file() && !crate::platform::is_link(&m))
+            {
+                let _ = std::fs::remove_file(file.path());
+            }
         }
     }
 }
@@ -202,10 +218,43 @@ mod tests {
         assert!(second.ends_with("shot-2.png") && !part.exists());
         assert!(write_at(&part, 0, b"late").is_err(), "a removed part is not made again");
 
-        let left = open_part(&state, 3, "left").unwrap();
+        let left = open_part(&state, 3, "0abcdE0123456789").unwrap();
+        let unrelated = open_part(&state, 3, "left").unwrap();
         sweep(&state);
-        assert!(!left.exists() && first.exists() && second.exists(), "only parts go after a restart");
+        assert!(!left.exists() && unrelated.exists() && first.exists() && second.exists());
         std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_put_sweep_skips_links_in_the_staging_path() {
+        let root = crate::test_tmp().join(format!("hc-put-{}", crate::platform::random_hex()));
+        let state = root.join("state");
+        let outside = root.join("outside");
+        let part = open_part(&outside, 3, "abcdef0123456789").unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        link_dir(&outside.join("files"), &state.join("files"));
+        sweep(&state);
+        assert!(part.exists(), "files itself is a link");
+        #[cfg(unix)]
+        std::fs::remove_file(state.join("files")).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(state.join("files")).unwrap();
+        std::fs::create_dir(state.join("files")).unwrap();
+        link_dir(part.parent().unwrap(), &dir(&state, 3));
+        sweep(&state);
+        assert!(part.exists(), "the terminal directory is a link");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn link_dir(from: &Path, to: &Path) {
+        std::os::unix::fs::symlink(from, to).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn link_dir(from: &Path, to: &Path) {
+        let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(to).arg(from).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
     }
 
     #[test]

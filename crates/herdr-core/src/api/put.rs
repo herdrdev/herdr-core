@@ -56,7 +56,7 @@ fn conn(core: Ctx<'_>) -> Result<(&Arc<crate::wire::Conn>, usize), RpcError> {
 
 /// A transfer's handle: what the sender picked, checked before anything keeps it.
 fn handle(transfer: &str) -> Result<(), RpcError> {
-    match (16..=64).contains(&transfer.len()) && transfer.bytes().all(|b| b.is_ascii_hexdigit()) {
+    match put::valid_handle(transfer) {
         true => Ok(()),
         false => Err(RpcError::invalid_params("transfer must be 16 to 64 hex digits")),
     }

@@ -367,6 +367,11 @@ pub fn private_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
+pub fn is_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 pub fn try_lock(file: &File) -> bool {
     unsafe {
         let mut ov: OVERLAPPED = zeroed();
