@@ -393,9 +393,9 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 let cancelled = sends.track(&request);
                 let pending = crate::api::begin_read(conn, &request);
                 let (core, conn) = (core.clone(), conn.clone());
-                let task = tokio::spawn(async move {
-                    let _pending = pending;
+                let call = async move {
                     let handled = SEND_CANCELLED.scope(cancelled, handle(&core, Some(&conn), None, &payload)).await;
+                    drop(pending);
                     if let Some(reply) = &handled.reply {
                         conn.with(|out| {
                             out.control(wire::encode(0, wire::DATA, reply.to_string().as_bytes()));
@@ -409,7 +409,14 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                     handled.after(&core);
-                });
+                };
+                // Abort only affects begins already read on this connection. Its
+                // local handler never waits for a piece or for the network.
+                if request["method"] == "terminal.put_abort" {
+                    call.await;
+                    continue;
+                }
+                let task = tokio::spawn(call);
                 if matches!(request["method"].as_str(), Some("machine.exec" | "terminal.put")) {
                     execs.0.retain(|(_, exec)| !exec.is_finished());
                     execs.0.push((request["id"].to_string(), task.abort_handle()));

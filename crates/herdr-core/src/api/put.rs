@@ -72,8 +72,7 @@ fn gone(handle: &str) -> RpcError {
 
 /// A begin read on `conn`, noted before its call runs (in frame order), so an
 /// abort read after it finds it pending. The call's task keeps what this
-/// returns: the begin is pending until that task ends, however it ends
-/// (answered, refused before its handler ran, cancelled).
+/// returns until the begin has an answer or its task is cancelled.
 pub fn begin_read(conn: &Arc<crate::wire::Conn>, request: &serde_json::Value) -> Option<Pending> {
     let h = request["params"]["transfer"].as_str().filter(|h| handle(h).is_ok());
     let h = h.filter(|_| request["method"] == "terminal.put_begin")?;
