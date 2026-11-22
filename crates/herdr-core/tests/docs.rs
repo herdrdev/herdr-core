@@ -8,13 +8,15 @@ use serde_json::json;
 #[test]
 fn a_subscription_can_ask_for_documents_by_name() {
     let s = Session::new();
-    s.json(&["server", "status"]);
+    let live = run(&s, &["sleep", "100"]);
     let mut c = s.connect();
     // One subscriber names a document, the other asks for everything.
     let mut named = s.connect();
-    named.call(1, "events.subscribe", json!({"docs": ["app"]}));
+    let snapshot = named.call(1, "events.subscribe", json!({"docs": ["app"]}));
+    assert_eq!(snapshot["result"]["terminals"], json!([]));
     let mut all = s.connect();
-    all.call(1, "events.subscribe", json!({}));
+    let snapshot = all.call(1, "events.subscribe", json!({}));
+    assert_eq!(snapshot["result"]["terminals"][0]["address"], live);
     c.call(2, "doc.set", json!({"name": "other", "value": 1, "version": 0}));
     c.call(3, "doc.set", json!({"name": "app", "value": 2, "version": 0}));
     // The named subscriber skipped `other`: its first document event is `app`.
@@ -126,8 +128,9 @@ fn reconnecting_a_machine_tells_document_readers_to_refetch() {
     s.env.push(fake_ssh(&s, &[("rohan", &remote)]));
     s.env.push(("HC_RECONNECT_MS".into(), "200".into()));
     s.json(&["machine", "add", "rohan"]);
+    run(&s, &["sleep", "100"]);
     let mut events = s.connect();
-    events.call(1, "events.subscribe", json!({}));
+    events.call(1, "events.subscribe", json!({"docs": ["app"]}));
     let mut c = s.connect();
     c.call(1, "doc.set", json!({"on": "rohan", "name": "app", "value": "before", "version": 0}));
     next_event(&mut events, |m| m["params"]["type"] == "doc");
@@ -143,6 +146,7 @@ fn reconnecting_a_machine_tells_document_readers_to_refetch() {
     std::fs::remove_file(s.root.join("down")).unwrap();
     let missed = next_event(&mut events, |m| m["method"] == "missed");
     assert!(missed["params"]["seq"].is_u64());
+    assert_eq!(missed["params"]["terminals"], json!([]));
     assert_eq!(
         c.call(3, "doc.get", json!({"on": "rohan", "name": "app"}))["result"],
         json!({"value": "during gap", "version": 2})

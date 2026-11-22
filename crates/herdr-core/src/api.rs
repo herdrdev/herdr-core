@@ -154,7 +154,7 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+        "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
         errors ["not_found", "machine_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
