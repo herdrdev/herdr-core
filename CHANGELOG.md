@@ -3,16 +3,16 @@
 ## [0.1.22] - 2026-11-22
 
 ### New
-- **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer has every document change from every terminal delivered to it, and no longer has to filter them out itself. An unfiltered subscriber still hears every document, and existing terminal filters keep their behavior; a subscriber that selects a terminal and also names documents hears both. (#273, thanks @felixzsh)
+- **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer gets every document change on the machines it watches, and no longer has to filter them out itself. An unfiltered subscriber still hears every document, and existing terminal filters keep their behavior; a subscriber that selects a terminal and also names documents hears both. (#273, thanks @felixzsh)
 
 ### Fixed
-- **A full disk no longer leaves the core unable to start terminals.** Before, one failed save stopped every later one, so new terminals failed with "registry writer stopped" until the core restarted. Now a failed save is retried until it works, and send, wait and keys keep working meanwhile. (#270, thanks @sundarshahi)
-- **Pasting a big file or screenshot into a terminal on another machine no longer freezes it.** Files now travel in pieces, so the terminal and the machine link stay responsive while it sends. Machines on older cores still get files the old way.
-- A second core started while one is already running leaves the running core's socket and programs alone. (#200, thanks @deepcoldy)
+- **A full disk no longer leaves the core unable to start terminals.** Before, new terminals could fail with "registry writer stopped" until the core restarted. Now saving resumes once there is space again, and send, wait and keys keep working meanwhile. While a save fails, `hc run` reports an error even if the program already started: check `hc ls --all` before running it again. Stopping and restarting the core also work on a full disk. (#249, #270, thanks @sundarshahi)
+- **Pasting a big file or screenshot into a terminal on another machine no longer freezes it.** Between updated cores files now travel in pieces, so the terminal and the machine link stay responsive while it sends. Machines on older cores, and pastes relayed through another machine, still send the file in one go.
+- A second core with another state folder no longer takes over a core that is already running on the same socket and ends its programs. (#200, thanks @deepcoldy)
 - After a reconnect, a remote terminal keeps the size of the window you last used, even when you resize or switch windows while it reconnects. (#271, thanks @tiago-peixoto)
-- On Windows, `hc connect` waits for its replies before it exits when its input ends. (#274, thanks @sundarshahi)
-- A program started on another machine can reach the terminal that started it while its first foreground run is still going.
-- The manual says that `hc exec` ends commands after 60 seconds. (#262)
+- On Windows, `hc connect` waits for the replies to its requests before it exits when its input ends. (#274, thanks @sundarshahi)
+- A program started on another machine can reach the terminal that started it while its first foreground run is still going. (#264, thanks @JinJieBeWater)
+- The manual says that `hc exec` ends commands after 60 seconds by default. (#262)
 
 ## [0.1.21] - 2026-11-12
 
