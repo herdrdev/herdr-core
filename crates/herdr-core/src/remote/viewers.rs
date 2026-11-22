@@ -21,16 +21,19 @@ pub(super) const RESIZE_LOST: &str = "resize notifications lost";
 
 /// Viewers left waiting by a dropped line to `m` get their terminal back.
 pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
-    let mut waiting: Vec<((usize, u32), Relayed)> = core
+    let started = Instant::now();
+    let mut waiting: Vec<_> = core
         .lock()
         .relayed
         .iter()
         .filter(|(_, r)| r.machine == m.id && !Arc::ptr_eq(&r.line, &line))
-        .map(|(k, r)| (*k, r.clone()))
+        .map(|(k, r)| (*k, r.active_at))
         .collect();
     // Resumed viewers tie there; the last attached wins unless another viewer stayed active.
-    waiting.sort_by_key(|(_, r)| r.active_at);
-    for ((key, here), r) in waiting {
+    waiting.sort_by_key(|(_, active_at)| *active_at);
+    let mut activity_missed = false;
+    for (key @ (_, here), was_active_at) in waiting {
+        let Some(r) = core.lock().relayed.get(&key).cloned() else { continue };
         // The screen is painted again; the viewer already has its history.
         let mut params = r.params.clone();
         params["history"] = 0.into();
@@ -42,25 +45,38 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
-        if !st.relayed.contains_key(&(key, here)) {
+        let Some(current) = st.relayed.get_mut(&key).filter(|v| Arc::ptr_eq(&v.line, &r.line)) else {
+            if let Ok(reply) = reply {
+                close_remote_viewer(&line, &reply);
+            }
             continue;
-        }
+        };
         let reply = reply.ok();
         if r.automatic_input && reply.as_ref().is_some_and(|reply| !automatic_input(&line, reply)) {
-            st.relayed.remove(&(key, here));
-            if let Some(there) = reply.as_ref().and_then(|reply| reply["channel"].as_u64()) {
-                lock(&line.streams).remove(&(there as u32));
-                let _ = line.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
-            }
+            st.relayed.remove(&key);
+            close_remote_viewer(&line, reply.as_ref().unwrap());
             r.conn.with(|out| out.close(here, b""));
             continue;
         }
         match reply.and_then(|reply| reply["channel"].as_u64()) {
             Some(there) => {
-                st.relayed.insert((key, here), Relayed { line: line.clone(), there: there as u32, ..r });
+                let there = there as u32;
+                current.line = line.clone();
+                current.there = there;
+                activity_missed |= current.active_at != was_active_at;
+                if current.params["cols"] != r.params["cols"] || current.params["rows"] != r.params["rows"] {
+                    resend_size(current);
+                }
+                if current.params["display"] != r.params["display"] {
+                    let _ = line.frames.send(wire::encode(
+                        there,
+                        wire::FACTS,
+                        current.params["display"].to_string().as_bytes(),
+                    ));
+                }
             }
             None => {
-                st.relayed.remove(&(key, here));
+                st.relayed.remove(&key);
                 // A downgraded path must not deliver paints sized for the old
                 // contract; any other failure still hands over what arrived.
                 if lost_resize {
@@ -70,6 +86,35 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
                 }
             }
         }
+    }
+    if activity_missed {
+        // Resumed attaches tie. Reapply their sizes in activity order, including
+        // activity that reached the new line before a later viewer resumed. A
+        // synthetic focus frame could also type a focus report into the program.
+        let st = core.lock();
+        let mut active: Vec<_> = st
+            .relayed
+            .values()
+            .filter(|r| Arc::ptr_eq(&r.line, &line) && r.params["observe"] != true && r.active_at >= started)
+            .collect();
+        active.sort_by_key(|r| r.active_at);
+        for r in active {
+            resend_size(r);
+        }
+    }
+}
+
+fn resend_size(viewer: &Relayed) {
+    let cols = viewer.params["cols"].as_u64().unwrap_or_default() as u16;
+    let rows = viewer.params["rows"].as_u64().unwrap_or_default() as u16;
+    let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+    let _ = viewer.line.frames.send(wire::encode(viewer.there, wire::RESIZE, &size));
+}
+
+fn close_remote_viewer(line: &Line, reply: &Value) {
+    if let Some(there) = reply["channel"].as_u64() {
+        lock(&line.streams).remove(&(there as u32));
+        let _ = line.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
     }
 }
 

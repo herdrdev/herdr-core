@@ -179,6 +179,64 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
 }
 
 #[tokio::test]
+async fn reattach_keeps_a_size_and_focus_change_while_waiting_for_a_reply() {
+    let root = crate::test_tmp().join(format!("hc-reattach-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let machine: Machine = serde_json::from_value(json!({
+        "name": "away", "target": "away", "id": "away", "host": "away", "version": "test"
+    }))
+    .unwrap();
+    let conn = Arc::new(Conn::default());
+    let (old_frames, _old_rx) = mpsc::unbounded_channel();
+    let old = Line::new(old_frames, &json!({}));
+    let now = std::time::Instant::now();
+    for (ch, active_at) in [(7, now - Duration::from_secs(1)), (8, now)] {
+        core.lock().relayed.insert(
+            (conn_key(&conn), ch),
+            Relayed {
+                active_at,
+                automatic_input: false,
+                line: old.clone(),
+                there: ch,
+                conn: conn.clone(),
+                machine: machine.id.clone(),
+                params: json!({"terminal": "t1", "cols": 80, "rows": 24}),
+            },
+        );
+    }
+    let (frames, mut rx) = mpsc::unbounded_channel();
+    let line = Line::new(frames, &json!({}));
+    let task = tokio::spawn(reattach(core.clone(), machine, line.clone()));
+    let frame = rx.recv().await.unwrap();
+    let first: Value = serde_json::from_slice(&frame[wire::HEADER..]).unwrap();
+    let size = [132, 0, 45, 0];
+    assert!(relay_in(&core, &conn, 7, wire::RESIZE, &size));
+    assert!(relay_in(&core, &conn, 8, wire::FOCUS, &[1]));
+    line.take_reply(json!({"id": first["id"], "result": {"channel": 17}}));
+    assert_eq!(rx.recv().await.unwrap(), wire::encode(17, wire::RESIZE, &size));
+    let frame = rx.recv().await.unwrap();
+    let second: Value = serde_json::from_slice(&frame[wire::HEADER..]).unwrap();
+    line.take_reply(json!({"id": second["id"], "result": {"channel": 18}}));
+    task.await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), wire::encode(17, wire::RESIZE, &size));
+    assert_eq!(rx.recv().await.unwrap(), wire::encode(18, wire::RESIZE, &[80, 0, 24, 0]));
+    {
+        let st = core.lock();
+        assert_eq!(st.relayed[&(conn_key(&conn), 7)].params["cols"], 132);
+        assert!(st.relayed[&(conn_key(&conn), 8)].active_at > st.relayed[&(conn_key(&conn), 7)].active_at);
+    }
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn reconnect_rejects_downgrade_before_mapping_fallback_data() {
     for stalled in [false, true] {
         // The immediate relay is capable, but its deeper path has downgraded.
