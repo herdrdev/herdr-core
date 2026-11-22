@@ -122,12 +122,32 @@ pub fn write_at(part: &Path, offset: usize, bytes: &[u8]) -> io::Result<()> {
     f.write_all(bytes)
 }
 
-/// The finished part becomes `name` (or a free variant) without replacing
-/// anything: a hard link fails on a taken name on every OS, unlike rename.
-/// A state folder without hard links (FAT, exFAT, some network mounts) fails the put.
+/// The finished part becomes `name` (or a free variant) without replacing anything.
 pub fn publish(part: &Path, name: &str) -> io::Result<PathBuf> {
+    publish_with_link(part, name, |from, to| std::fs::hard_link(from, to))
+}
+
+fn publish_with_link(
+    part: &Path,
+    name: &str,
+    mut link: impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> io::Result<PathBuf> {
     let dir = part.parent().unwrap_or(Path::new("."));
-    let path = land(dir, name, |path| std::fs::hard_link(part, path))?;
+    let path = land(dir, name, |path| match link(part, path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => {
+            // FAT and some network mounts cannot publish with a hard link.
+            let mut from = std::fs::File::open(part)?;
+            let mut to = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+            let copied = io::copy(&mut from, &mut to);
+            drop(to);
+            if copied.is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            copied.map(drop)
+        }
+    })?;
     let _ = std::fs::remove_file(part);
     Ok(path)
 }
@@ -185,6 +205,19 @@ mod tests {
         let left = open_part(&state, 3, "left").unwrap();
         sweep(&state);
         assert!(!left.exists() && first.exists() && second.exists(), "only parts go after a restart");
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_finished_part_can_land_where_hard_links_are_unavailable() {
+        let state = crate::test_tmp().join(format!("hc-put-{}", crate::platform::random_hex()));
+        let first = stage(&state, 3, "shot.png", b"first").unwrap();
+        let part = open_part(&state, 3, "abc").unwrap();
+        write_at(&part, 0, b"second").unwrap();
+        let second = publish_with_link(&part, "shot.png", |_, _| Err(io::ErrorKind::Unsupported.into())).unwrap();
+        assert_eq!(std::fs::read(first).unwrap(), b"first");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second");
+        assert!(second.ends_with("shot-2.png") && !part.exists());
         std::fs::remove_dir_all(state).unwrap();
     }
 
