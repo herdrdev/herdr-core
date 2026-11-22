@@ -2993,7 +2993,7 @@
       }
     },
     {
-      "description": "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
+      "description": "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). On a direct route with chunk support, the timeout applies to each piece. A core sending the whole file to a relay applies its machine timeout to that call. Types nothing: paste the path yourself.",
       "errors": [
         {
           "code": -32000,
@@ -3029,6 +3029,13 @@
             "kind": "unavailable"
           },
           "message": "unavailable"
+        },
+        {
+          "code": -32603,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
         }
       ],
       "name": "terminal.put",
@@ -3099,6 +3106,13 @@
             "kind": "unavailable"
           },
           "message": "unavailable"
+        },
+        {
+          "code": -32603,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
         },
         {
           "code": -32000,
@@ -3182,6 +3196,13 @@
           "message": "invalid_params"
         },
         {
+          "code": -32603,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
+        },
+        {
           "code": -32000,
           "data": {
             "kind": "needs_framed"
@@ -3250,6 +3271,13 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32603,
+          "data": {
+            "kind": "internal"
+          },
+          "message": "internal"
         },
         {
           "code": -32000,
@@ -3871,7 +3899,7 @@
           "message": "conflict"
         },
         {
-          "code": -32000,
+          "code": -32603,
           "data": {
             "kind": "internal"
           },

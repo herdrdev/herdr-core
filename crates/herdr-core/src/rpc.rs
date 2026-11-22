@@ -114,7 +114,11 @@ pub fn openrpc(methods: Vec<Value>, defs: Map<String, Value>, version: &str, gen
                 .flatten()
                 .filter_map(Value::as_str)
                 .map(|kind| {
-                    let code = if kind == "invalid_params" { -32602 } else { -32000 };
+                    let code = match kind {
+                        "invalid_params" => -32602,
+                        "internal" => -32603,
+                        _ => -32000,
+                    };
                     json!({"code": code, "message": kind, "data": {"kind": kind}})
                 })
                 .collect();

@@ -121,17 +121,17 @@ methods! { Ctx<'_>;
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.put" => terminal_put, PutParams => PutResult,
-        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
-        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable"];
+        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). On a direct route with chunk support, the timeout applies to each piece. A core sending the whole file to a relay applies its machine timeout to that call. Types nothing: paste the path yourself.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable", "internal"];
     "terminal.put_begin" => terminal_put_begin, PutBeginParams => PutBeginResult,
         "Between cores: begin a put that comes in pieces, so a big file never holds up a line. The file appears only once finished.",
-        errors ["not_found", "finished", "invalid_params", "unavailable", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "unavailable", "internal", "needs_framed"];
     "terminal.put_chunk" => terminal_put_chunk, PutPieceParams => PutPieceResult,
         "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
-        errors ["not_found", "finished", "invalid_params", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "internal", "needs_framed"];
     "terminal.put_finish" => terminal_put_finish, PutTransferParams => PutResult,
         "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
-        errors ["not_found", "finished", "invalid_params", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "internal", "needs_framed"];
     "terminal.put_abort" => terminal_put_abort, PutTransferParams => Empty,
         "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
         errors ["invalid_params", "unavailable", "needs_framed"];

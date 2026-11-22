@@ -173,6 +173,8 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Use the returned address to wait/read it; don't launch a duplicate.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
 `hc put <t> <file>` sends a file beside a terminal and prints its destination.
+A direct link with chunk support times out per piece. On a multi-hop route,
+a core sending the whole file to a relay applies its machine timeout to that call.
 `hc label <t> key=value` adds labels.
 
 ## Other machines and files
