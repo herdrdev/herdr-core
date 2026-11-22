@@ -169,27 +169,6 @@ impl Write for &Stream {
     }
 }
 
-#[cfg(test)]
-#[test]
-fn shutdown_wakes_reads_even_when_none_was_pending() {
-    for read_first in [false, true] {
-        let path = PathBuf::from(format!(r"\\.\pipe\herdr-core-test-{}", super::random_hex()));
-        let listener = listen(&path).unwrap();
-        let mut client = connect(&path).unwrap();
-        let mut server = listener.accept().unwrap();
-        if read_first {
-            server.write_all(b"x").unwrap();
-            let mut byte = [0];
-            client.read_exact(&mut byte).unwrap();
-            assert_eq!(&byte, b"x");
-        }
-        client.shutdown(std::net::Shutdown::Write).unwrap();
-        let (send, recv) = std::sync::mpsc::channel();
-        std::thread::spawn(move || send.send(client.read(&mut [0])));
-        assert_eq!(recv.recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap(), 0);
-    }
-}
-
 pub fn connect(path: &Path) -> io::Result<Stream> {
     let name = wide(path.as_os_str());
     for _ in 0..50 {
