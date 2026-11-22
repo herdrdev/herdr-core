@@ -30,6 +30,10 @@ fn late(machine: &str, what: &str, deadline: Duration) -> RpcError {
 }
 
 pub(super) async fn forward(core: &Core, m: &Machine, params: Value) -> Result<Value, RpcError> {
+    // Only terminal.put carries a terminal address the next core can route again.
+    if params["terminal"].as_str().is_some_and(|t| t.contains('/')) {
+        return forward_once(core, m, "terminal.put", params).await;
+    }
     let line = line(core, m).await?;
     if !line.features.iter().any(|f| f == "put_chunks") {
         return forward_once(core, m, "terminal.put", params).await;

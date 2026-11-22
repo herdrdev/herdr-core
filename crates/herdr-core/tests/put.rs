@@ -45,6 +45,24 @@ fn a_file_lands_beside_the_terminal_keeps_its_name_and_goes_with_it() {
     s.json(&["put", &there, file.to_str().unwrap()]);
 }
 
+#[test]
+fn a_put_can_cross_two_machines() {
+    let end = Session::new();
+    let mut middle = Session::new();
+    middle.env.push(fake_ssh(&middle, &[("end", &end)]));
+    middle.json(&["machine", "add", "end"]);
+    let t = run(&end, &["sleep", "100"]);
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("middle", &middle)]));
+    s.json(&["machine", "add", "middle"]);
+    let file = s.root.join("two-hop.txt");
+    std::fs::write(&file, b"through two machines").unwrap();
+    let result = s.json(&["put", &format!("middle/end/{t}"), file.to_str().unwrap()]);
+    let path = std::path::Path::new(result["path"].as_str().unwrap());
+    assert!(path.starts_with(&end.root), "{result}");
+    assert_eq!(std::fs::read(path).unwrap(), b"through two machines");
+}
+
 /// `s` with rohan behind a fake ssh whose uplink carries ~100 KB/s, and calls
 /// there that may take 2 s each. While `<s root>/stall` exists the uplink
 /// carries nothing, but still takes in what is sent, counted in `<s root>/sent`.
