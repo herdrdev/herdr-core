@@ -56,6 +56,7 @@ pub fn serve() -> io::Result<()> {
     if crate::client::connect_existing(&paths).is_some() {
         return Err(io::Error::other(format!("another core already listens at {}", paths.socket.display())));
     }
+    crate::paths::sweep_snapshot_temps(&paths.state);
     // Where we listen, for clients whose env points elsewhere.
     lock.set_len(0)?;
     io::Write::write_all(&mut lock, paths.socket.as_os_str().as_encoded_bytes())?;

@@ -11,6 +11,36 @@ use common::*;
 use serde_json::Value;
 
 #[test]
+fn startup_after_an_upgrade_cleans_abandoned_snapshot_temps() {
+    let s = Session::new();
+    let state = s.root.join("state/herdr-core/test");
+    std::fs::create_dir_all(state.join("screens")).unwrap();
+    let abandoned = [
+        "terminals.tmp",
+        "docs.tmp",
+        "peers.tmp-0e9a1a0c2ca1b175efcbf1da641ff095",
+        "screens/t1.tmp",
+        "screens/t2.tmp-82501c46e1fcfe35a01d8d27f42d2c85",
+    ];
+    let kept = ["notes.tmp", "terminals.tmp-1234", "screens/picture.tmp", "screens/t3.snap"];
+    for name in abandoned.into_iter().chain(kept) {
+        std::fs::write(state.join(name), b"snapshot bytes").unwrap();
+    }
+    s.json(&["server", "start"]);
+    for name in abandoned {
+        assert!(!state.join(name).exists(), "abandoned temp remains: {name}");
+    }
+    for name in kept {
+        assert!(state.join(name).exists(), "unrelated file removed: {name}");
+    }
+
+    let writing = state.join(abandoned[2]);
+    std::fs::write(&writing, b"another writer's temp").unwrap();
+    assert!(s.hc(&["serve"]).status.success());
+    assert!(writing.exists(), "a losing starter must leave the running core's temps alone");
+}
+
+#[test]
 fn draft_handover_works_with_a_previous_core_in_both_directions() {
     let Some(old) = std::env::var_os("HC_OLD_BIN").map(std::path::PathBuf::from) else {
         eprintln!("skipped: no HC_OLD_BIN (run scripts/upgrade-test.sh <previous release>)");

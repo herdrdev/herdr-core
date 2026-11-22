@@ -2,7 +2,7 @@
 //! state files are read and written.
 
 use crate::rpc::RpcError;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// Where one core keeps its socket and state. `HC_SESSION` names an isolated core.
@@ -68,10 +68,43 @@ pub fn read_state<T: serde::de::DeserializeOwned + Default>(path: &Path) -> io::
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
-    std::fs::rename(tmp, path)
+    let tmp = path.with_extension(format!("tmp-{}", crate::platform::random_hex()));
+    let mut file = crate::platform::private_file(&tmp)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let result = written.and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
+}
+
+/// With the core lock held, clear snapshots left before rename by a previous writer.
+pub fn sweep_snapshot_temps(state: &Path) {
+    sweep_temps(state, |stem| matches!(stem, "core" | "docs" | "machines" | "peers" | "terminals"));
+    let screens = state.join("screens");
+    if screens.symlink_metadata().is_ok_and(|meta| meta.file_type().is_dir()) {
+        sweep_temps(&screens, |stem| crate::terminals::parse_id(stem).is_some());
+    }
+}
+
+fn sweep_temps(dir: &Path, snapshot: impl Fn(&str) -> bool) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some((stem, ext)) = name.to_str().and_then(|name| name.rsplit_once('.')) else { continue };
+        let temp = ext == "tmp"
+            || ext
+                .strip_prefix("tmp-")
+                .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        if temp && snapshot(stem) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let path = entry.path();
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                let _ = writeln!(io::stderr(), "core: cannot remove abandoned snapshot {}: {error}", path.display());
+            }
+        }
+    }
 }
 
 /// Hex digits in a holder's socket name.
