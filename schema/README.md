@@ -70,6 +70,9 @@ keys: a viewer that honors 9001 sends key events in that format itself.
 The viewer sends keys as DATA on the same channel, and RESIZE,
 FOCUS and FACTS as it changes. The last active viewer sets the size
 (active: it attached, typed, resized or gained focus); `observe` viewers never type or resize.
+A non-observe viewer may pass `keep_size_on_detach: true` to leave the terminal at its
+current size instead of reverting to the configured headless size when it detaches as the
+last active viewer.
 Automatic query answers (including mode 2048 reports, kitty graphics and XTGETTCAP
 replies) use AUTOMATIC_INPUT, not DATA. Their bytes reach the program unchanged,
 including duplicates from multiple viewers, but do not take size/display ownership

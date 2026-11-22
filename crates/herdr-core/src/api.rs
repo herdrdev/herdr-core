@@ -468,6 +468,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
     let req = crate::viewers::AttachRequest {
         observe: p.observe,
         resize_notifications: p.resize_notifications,
+        keep_size_on_detach: p.keep_size_on_detach,
         history: p.history,
         size: (p.cols, p.rows),
         display: p.display,
