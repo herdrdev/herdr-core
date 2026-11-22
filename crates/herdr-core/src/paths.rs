@@ -79,6 +79,34 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
+/// With the core lock held, clear snapshots left before rename by a previous writer.
+pub fn sweep_snapshot_temps(state: &Path) {
+    sweep_temps(state, |stem| matches!(stem, "core" | "docs" | "machines" | "peers" | "terminals"));
+    let screens = state.join("screens");
+    if screens.symlink_metadata().is_ok_and(|meta| meta.file_type().is_dir()) {
+        sweep_temps(&screens, |stem| crate::terminals::parse_id(stem).is_some());
+    }
+}
+
+fn sweep_temps(dir: &Path, snapshot: impl Fn(&str) -> bool) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some((stem, ext)) = name.to_str().and_then(|name| name.rsplit_once('.')) else { continue };
+        let temp = ext == "tmp"
+            || ext
+                .strip_prefix("tmp-")
+                .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        if temp && snapshot(stem) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let path = entry.path();
+            if let Err(error) = std::fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                let _ = writeln!(io::stderr(), "core: cannot remove abandoned snapshot {}: {error}", path.display());
+            }
+        }
+    }
+}
+
 /// Hex digits in a holder's socket name.
 pub const HOLDER_ID: usize = 8;
 
