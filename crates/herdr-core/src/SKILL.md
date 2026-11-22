@@ -147,7 +147,7 @@ hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
 
-If `hc run` reports a registry save failure, the terminal may already exist. Check `hc ls` before retrying.
+If `hc run` reports a registry save failure, the program may already have run. Check `hc ls --all` (it shows finished terminals too) before retrying; if its record is gone (`--rm`), check what the command did.
 
 ### Slow commands: don't block yourself
 
