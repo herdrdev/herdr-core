@@ -94,15 +94,15 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown"];
     "terminal.kill" => terminal_kill, TerminalParams => Public,
         "End the program: hangup, then terminate, then kill. Returns the observed result.",
-        errors ["not_found", "machine_unknown"];
+        errors ["not_found", "machine_unknown", "unavailable"];
     "terminal.rm" => terminal_rm, TerminalParams => RemoveResult,
         "Remove a finished terminal.",
-        errors ["not_found", "machine_unknown", "live"];
+        errors ["not_found", "machine_unknown", "live", "unavailable"];
     "terminal.keep" => terminal_keep, KeepParams => Public,
-        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params"];
+        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params", "unavailable"];
     "terminal.label" => terminal_label, LabelParams => Public,
         "Set or remove labels (free-form `key=value`, never interpreted).",
-        errors ["not_found", "machine_unknown", "invalid_params"];
+        errors ["not_found", "machine_unknown", "invalid_params", "unavailable"];
     "terminal.read" => terminal_read, ReadParams => ReadResult,
         "The screen plus `lines` of history as text, live or finished.",
         errors ["not_found", "machine_unknown"];
@@ -114,7 +114,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
-        errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
+        errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config", "unavailable"];
     "terminal.keys" => terminal_keys, KeysParams => KeysResult,
         "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
@@ -122,20 +122,20 @@ methods! { Ctx<'_>;
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.put" => terminal_put, PutParams => PutResult,
-        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
-        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable"];
+        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). On a direct route with chunk support, the timeout applies to each piece. A core sending the whole file to a relay applies its machine timeout to that call. Types nothing: paste the path yourself.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable", "internal"];
     "terminal.put_begin" => terminal_put_begin, PutBeginParams => PutBeginResult,
         "Between cores: begin a put that comes in pieces, so a big file never holds up a line. The file appears only once finished.",
-        errors ["not_found", "finished", "invalid_params", "unavailable", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "unavailable", "internal", "needs_framed"];
     "terminal.put_chunk" => terminal_put_chunk, PutPieceParams => PutPieceResult,
         "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
-        errors ["not_found", "invalid_params", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "internal", "needs_framed"];
     "terminal.put_finish" => terminal_put_finish, PutTransferParams => PutResult,
         "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
-        errors ["not_found", "finished", "invalid_params", "needs_framed"];
+        errors ["not_found", "finished", "invalid_params", "internal", "needs_framed"];
     "terminal.put_abort" => terminal_put_abort, PutTransferParams => Empty,
         "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
-        errors ["needs_framed"];
+        errors ["invalid_params", "unavailable", "needs_framed"];
     "machine.exec" => machine_exec, ExecParams => ExecResult,
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
         errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
@@ -155,7 +155,7 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
+        "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
         errors ["not_found", "machine_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
@@ -314,7 +314,7 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
         let st = core.lock();
         machines.iter().map(|m| crate::remote::view(&st, m)).collect()
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(ListResult { terminals, hidden_finished, machines })
 }
 
@@ -322,7 +322,7 @@ async fn terminal_get(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcErr
     let id = resolve(core, &p.terminal)?;
     core.saw(p.caller.as_deref(), id);
     let result = record(core, id).map(Public);
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     result
 }
 
@@ -414,7 +414,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
                 ReadResult { text, complete: false, how: "screen".into(), why }
             }
         };
-        core.flush_saved().await?;
+        core.flush_observed().await?;
         return Ok(result);
     }
     let result = {
@@ -443,7 +443,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
             why: None,
         }
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(result)
 }
 
@@ -527,7 +527,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
     } else {
         None
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(SendResult { status: sent.status, turn: sent.turn, started: sent.started, wait })
 }
 
@@ -562,7 +562,7 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
     let id = resolve(core, &p.terminal)?;
     let (status, turn) = core.keys(id, &p.keys).await?;
     core.saw(p.caller.as_deref(), id);
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(KeysResult { status, turn })
 }
 
@@ -577,7 +577,7 @@ async fn terminal_interrupt(core: Ctx<'_>, p: InterruptParams) -> Result<Interru
         Interrupted::StillWorking => "still_working",
         Interrupted::Unknown => "unknown",
     };
-    core.flush_saved().await?;
+    core.flush_observed().await?;
     Ok(InterruptResult { outcome: outcome.into(), key })
 }
 

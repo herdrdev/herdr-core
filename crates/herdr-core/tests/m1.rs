@@ -377,21 +377,34 @@ fn finished_terminals_and_ids_survive_server_stop() {
 }
 
 #[test]
-fn a_failed_registry_write_does_not_break_get_or_stop() {
-    let s = Session::new();
-    let terminal = run(&s, &["sleep", "100"]);
+fn a_failed_registry_write_does_not_hide_command_results() {
+    let mut s = Session::new();
+    s.env.push(("HC_QUIET_MS".into(), "0".into()));
+    let terminal = run(&s, &["sh", "-c", "trap '' INT; echo ready; exec cat"]);
+    wait_text(&s, &terminal, "ready");
     let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
     let core = status(&s)["pid"].as_i64().unwrap();
-    // A directory in place of the temporary file fails even when tests run as root.
-    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
-    std::fs::create_dir(&tmp).unwrap();
-    let label = s.hc(&["label", &terminal, "disk=failed"]);
-    let get = s.hc(&["get", &terminal]);
-    let stop = s.hc(&["server", "stop"]);
-    std::fs::remove_dir(tmp).unwrap();
-    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
-        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
-    }
+    // The final rename fails even when tests run as root.
+    let snapshot = s.root.join("state/herdr-core/test/terminals.json");
+    let block_save = || {
+        std::fs::remove_file(&snapshot).unwrap();
+        std::fs::create_dir(&snapshot).unwrap();
+    };
+    block_save();
+    let (_, label) = s.err(&["--json", "label", &terminal, "disk=failed"]);
+    assert_eq!(label["error"]["kind"], "unavailable", "{label}");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "failed");
+    s.json(&["send", &terminal, "written while saves fail"]);
+    s.json(&["keys", &terminal, "enter"]);
+    assert_eq!(s.json(&["wait", &terminal, "--timeout", "0.1"])["reason"], "timeout");
+    assert_eq!(s.json(&["interrupt", &terminal, "--timeout", "0.1"])["outcome"], "unknown");
+    wait_text(&s, &terminal, "written while saves fail");
+
+    std::fs::remove_dir(&snapshot).unwrap();
+    assert_eq!(s.json(&["label", &terminal, "disk=restored"])["labels"]["disk"], "restored");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "restored");
+    block_save();
+    assert_eq!(s.json(&["server", "stop"])["stopped"], true);
     assert!(!pid_alive(pid), "stop left the program running");
     wait_until("core stops after a failed disk write", || !pid_alive(core));
 }

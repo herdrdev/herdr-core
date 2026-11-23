@@ -9,11 +9,20 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 
 #[test]
-fn delivery_and_restart_errors_are_discoverable() {
+fn discoverable_errors_use_their_wire_codes() {
     let doc = herdr_core::api::openrpc();
-    for (method, kind) in [("terminal.send", "cancelled"), ("server.restart", "invalid_params")] {
+    for (method, kind, code) in [
+        ("terminal.send", "cancelled", -32000),
+        ("server.restart", "invalid_params", -32602),
+        ("terminal.put_begin", "internal", -32603),
+        ("terminal.put_chunk", "internal", -32603),
+        ("terminal.put_finish", "internal", -32603),
+    ] {
         let method = doc["methods"].as_array().unwrap().iter().find(|m| m["name"] == method).unwrap();
-        assert!(method["errors"].as_array().unwrap().iter().any(|e| e["data"]["kind"] == kind), "{method}");
+        assert!(
+            method["errors"].as_array().unwrap().iter().any(|e| e["data"]["kind"] == kind && e["code"] == code),
+            "{method}"
+        );
     }
 }
 
