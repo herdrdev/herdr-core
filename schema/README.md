@@ -40,7 +40,9 @@ Errors are JSON-RPC errors with a stable kind and a hint:
 ```
 
 `hello` with `{"framed": true}` switches the connection to **framed mode**
-after its reply. Attach needs it; everything else works in both modes.
+after its reply. Use framed mode for `terminal.attach` and the four upload
+methods `terminal.put_begin`, `terminal.put_chunk`, `terminal.put_finish` and
+`terminal.put_abort`. Other methods work in both modes.
 
 ## Framed mode
 
@@ -203,8 +205,9 @@ the same stream with `machine: "rohan"` (this core's name for it). Terminal,
 parent and label filters exclude doc events. A subscription may also name the
 documents it wants — `docs: ["name", "prefix*"]`, where a name ending in `*`
 is a prefix — and hears theirs; naming narrows, as it does in every other
-dimension, so naming documents and no terminal asks for documents alone,
-and naming both hears both. A subscriber that names no document is unchanged. The event carries no value;
+dimension. Naming documents alone gives an empty terminal list in the initial
+snapshot and every `missed` snapshot. Naming documents and terminal filters
+receives both kinds of events. The event carries no value;
 call `doc.get` to read it, using `on` for another machine.
 
 Subscribe before reading. Read documents after subscribing or reconnecting,
@@ -212,7 +215,7 @@ a `missed` notification, or a remote machine reconnect: snapshots contain
 terminals only, not documents, and changes while disconnected are not replayed.
 A remote stream's `missed`, and each successful establishment of its event
 subscription (including the first connection), are reported locally as `missed`
-to unfiltered subscribers, using the local sequence. Refetch documents on all
+to unfiltered and document subscribers, using the local sequence. Refetch documents on all
 watched machines after it.
 
 ## Status

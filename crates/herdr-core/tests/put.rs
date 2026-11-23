@@ -45,6 +45,24 @@ fn a_file_lands_beside_the_terminal_keeps_its_name_and_goes_with_it() {
     s.json(&["put", &there, file.to_str().unwrap()]);
 }
 
+#[test]
+fn a_put_can_cross_two_machines() {
+    let end = Session::new();
+    let mut middle = Session::new();
+    middle.env.push(fake_ssh(&middle, &[("end", &end)]));
+    middle.json(&["machine", "add", "end"]);
+    let t = run(&end, &["sleep", "100"]);
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("middle", &middle)]));
+    s.json(&["machine", "add", "middle"]);
+    let file = s.root.join("two-hop.txt");
+    std::fs::write(&file, b"through two machines").unwrap();
+    let result = s.json(&["put", &format!("middle/end/{t}"), file.to_str().unwrap()]);
+    let path = std::path::Path::new(result["path"].as_str().unwrap());
+    assert!(path.starts_with(&end.root), "{result}");
+    assert_eq!(std::fs::read(path).unwrap(), b"through two machines");
+}
+
 /// `s` with rohan behind a fake ssh whose uplink carries ~100 KB/s, and calls
 /// there that may take 2 s each. While `<s root>/stall` exists the uplink
 /// carries nothing, but still takes in what is sent, counted in `<s root>/sent`.
@@ -371,6 +389,30 @@ fn a_late_piece_leaves_alone_a_put_that_took_its_handle_again() {
     assert_eq!(framed(&mut conn, 102, "terminal.put_chunk", piece(b"new"))["result"]["bytes"], 3, "B untouched");
     let done = framed(&mut conn, 103, "terminal.put_finish", serde_json::json!({"transfer": h}));
     assert_eq!(std::fs::read(done["result"]["path"].as_str().unwrap()).unwrap(), b"new", "{done}");
+}
+
+#[test]
+fn concurrent_puts_wait_when_the_recipient_is_full() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    slow_uplink(&mut s, &rohan);
+    let there = run(&s, &["--on", "rohan", "sleep", "100"]);
+    let mut conn = framed_conn(&s);
+    let count = 4 + herdr_core::put::MAX_TRANSFERS as u64;
+    let data = herdr_core::put::encode(&[3; 4096]);
+    for id in 1..=count {
+        send(
+            &mut conn,
+            Some(id),
+            "terminal.put",
+            serde_json::json!({"terminal": there, "name": format!("{id}.png"), "data": data}),
+        );
+    }
+    for _ in 0..count {
+        let done = next_reply(&mut conn);
+        let path = done["result"]["path"].as_str().unwrap_or_else(|| panic!("{done}"));
+        assert_eq!(std::fs::read(path).unwrap(), [3; 4096]);
+    }
 }
 
 #[test]

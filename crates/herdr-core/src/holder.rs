@@ -123,7 +123,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         let stream = stream?;
         std::thread::spawn(move || {
             if let Err(e) = holder.serve(stream) {
-                eprintln!("holder: core connection: {e}");
+                let _ = writeln!(io::stderr(), "holder: core connection: {e}");
             }
         });
     }
@@ -407,7 +407,7 @@ impl Holder {
         let (code, signal) = match platform::wait(&mut child) {
             Ok(ended) => ended,
             Err(e) => {
-                eprintln!("holder: wait {}: {e}", crate::terminals::address(id));
+                let _ = writeln!(io::stderr(), "holder: wait {}: {e}", crate::terminals::address(id));
                 return;
             }
         };
