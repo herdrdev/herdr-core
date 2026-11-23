@@ -266,7 +266,7 @@ fn screen(
         let line = clip(line, cols.saturating_sub(2));
         if i == selected {
             let pad = cols.saturating_sub(plain(&line).chars().count() + 2);
-            s.push_str(&format!("\x1b[48;5;237m\x1b[36m\u{203a}\x1b[39m {line}{}\x1b[0m\r\n", " ".repeat(pad)));
+            s.push_str(&format!("\x1b[7m\x1b[36m\u{203a}\x1b[39m {line}{}\x1b[0m\r\n", " ".repeat(pad)));
         } else {
             s.push_str(&format!("  {line}\r\n"));
         }
@@ -430,6 +430,14 @@ mod tests {
         ];
         assert_eq!(visible(&items, "tests"), [0, 2, 3]);
         assert_eq!(visible(&items, ""), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn the_selected_row_uses_the_terminals_own_colors() {
+        let lines = ["o t1".to_string(), "o t2".to_string()];
+        let s = screen("hc", "", "recent", (2, 2), &lines, 1, 0);
+        assert!(s.contains("\x1b[7m\x1b[36m\u{203a}\x1b[39m o t2"), "reverse video suits any theme: {s:?}");
+        assert!(!s.contains("\x1b[48;5;"), "a fixed palette background is dark on dark in light themes: {s:?}");
     }
 
     #[test]
