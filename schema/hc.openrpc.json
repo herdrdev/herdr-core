@@ -285,7 +285,7 @@
             "type": "array"
           },
           "cwd": {
-            "description": "Its working directory now (resolved by the OS).",
+            "description": "Its working directory (from the OS, or a terminal report if access is denied).",
             "type": "string"
           },
           "name": {

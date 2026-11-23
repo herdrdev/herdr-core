@@ -141,6 +141,11 @@ Each event's `data`, and how to apply it to a snapshot:
 | `size` | `{cols, rows}` | set both |
 | `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
 
+On Linux, if the core can identify the process but is denied access to its
+working directory, it uses the terminal's latest OSC 7 directory report if it
+names an absolute path on this machine. This is a hint from the terminal;
+the OS directory takes precedence whenever it can be read.
+
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,
 `children_of`, labels). When a machine's line comes back, its terminals that

@@ -36,6 +36,75 @@ fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
     assert_eq!(get(&s, &t)["foreground"], event, "the record says the same");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn reported_cwd_fills_in_when_process_cwd_is_unreadable() {
+    const FOLDERS: [(&str, &str); 2] = [("first folder", "first%20folder"), ("second folder", "second%20folder")];
+    if let Some(root) = std::env::var_os("HC_TEST_CWD_REPORT_ROOT") {
+        let root = std::path::PathBuf::from(root);
+        let next = || assert!(std::io::stdin().read_line(&mut String::new()).unwrap() > 0);
+        println!("\x1b]7;file://localhost{}/first%20folder\x07ready to change folder", root.display());
+        next();
+        std::env::set_current_dir(root.join("readable")).unwrap();
+        for (dir, encoded) in FOLDERS {
+            next();
+            // Reproduce denied /proc/<pid>/cwd without requiring a second group or privileges.
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            std::env::set_current_dir(root.join(dir)).unwrap();
+            println!("\x1b]7;file://localhost{}/{encoded}\x1b\\reported {encoded}", root.display());
+        }
+        next();
+        return;
+    }
+
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));
+    let root = s.root.canonicalize().unwrap();
+    let readable = root.join("readable");
+    std::fs::create_dir(&readable).unwrap();
+    for (dir, _) in FOLDERS {
+        std::fs::create_dir(root.join(dir)).unwrap();
+    }
+    let exe = std::env::current_exe().unwrap();
+    let t = run(
+        &s,
+        &[
+            "env",
+            &format!("HC_TEST_CWD_REPORT_ROOT={}", root.display()),
+            exe.to_str().unwrap(),
+            "--nocapture",
+            "--exact",
+            "reported_cwd_fills_in_when_process_cwd_is_unreadable",
+        ],
+    );
+    wait_until("initial cwd report", || text(&s, &t).contains("ready to change folder"));
+    let pid = get(&s, &t)["pid"].as_u64().unwrap();
+    s.json(&["send", &t, "change readable folder"]);
+    wait_until("readable process cwd takes precedence over the report", || {
+        get(&s, &t)["foreground"]["cwd"] == readable.to_str().unwrap()
+    });
+
+    let mut conn = s.connect();
+    conn.call(1, "events.subscribe", json!({"terminal": t}));
+    for (dir, encoded) in FOLDERS {
+        s.json(&["send", &t, "change folder"]);
+        wait_until("the process reported its new folder", || text(&s, &t).contains(&format!("reported {encoded}")));
+        match std::fs::read_link(format!("/proc/{pid}/cwd")) {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+            Ok(_) => {
+                eprintln!("skipping inaccessible cwd check: this test can inspect non-dumpable processes");
+                return;
+            }
+        }
+        let path = root.join(dir);
+        let event = next_event(&mut conn, |m| {
+            m["params"]["type"] == "foreground" && m["params"]["data"]["cwd"] == path.to_str().unwrap()
+        });
+        assert_eq!(event["params"]["data"]["pid"], pid);
+        assert_eq!(get(&s, &t)["foreground"], event["params"]["data"]);
+    }
+}
+
 #[test]
 fn root_agent_keeps_status_when_a_foreground_tool_returns() {
     let mut s = Session::new();

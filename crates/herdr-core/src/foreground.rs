@@ -15,18 +15,22 @@ pub struct Foreground {
     /// Its name as the OS has it (`node`, `vim`, `sh`).
     pub name: String,
     pub argv: Vec<String>,
-    /// Its working directory now (resolved by the OS).
+    /// Its working directory (from the OS, or a terminal report if access is denied).
     pub cwd: String,
 }
 
 /// The facts about `pid`, if it is still there to read.
 #[cfg(target_os = "linux")]
-pub fn about(pid: i32) -> Option<Foreground> {
+fn about(pid: i32, reported_cwd: impl FnOnce() -> Option<String>) -> Option<Foreground> {
     let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?.trim_end().to_string();
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let argv =
         cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?.display().to_string();
+    let cwd = match std::fs::read_link(format!("/proc/{pid}/cwd")) {
+        Ok(path) => path.display().to_string(),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => reported_cwd()?,
+        Err(_) => return None,
+    };
     Some(Foreground { pid, name, argv, cwd })
 }
 
@@ -34,7 +38,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
 /// platform put in front, with the folder and command line Windows keeps in
 /// its memory. None for a 32-bit process, whose own copy of them lives elsewhere.
 #[cfg(windows)]
-pub fn about(pid: i32) -> Option<Foreground> {
+fn about(pid: i32, _reported_cwd: impl FnOnce() -> Option<String>) -> Option<Foreground> {
     use std::ffi::c_void;
     use std::mem::{MaybeUninit, size_of};
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -93,7 +97,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn about(pid: i32) -> Option<Foreground> {
+fn about(pid: i32, _reported_cwd: impl FnOnce() -> Option<String>) -> Option<Foreground> {
     let mut name = [0u8; 256];
     let n = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
     let name = String::from_utf8_lossy(&name[..n.max(0) as usize]).into_owned();
@@ -155,16 +159,62 @@ fn shell_root(root: &Foreground) -> bool {
     matches!(name, "sh" | "bash" | "zsh" | "fish" | "nu" | "dash" | "ksh" | "tcsh")
 }
 
+fn reported_directory(report: &str, hostname: &str) -> Option<String> {
+    let (uri, escaped) = match report.split_once(':')? {
+        ("file", uri) => (uri, true),
+        ("kitty-shell-cwd", uri) => (uri, false),
+        _ => return None,
+    };
+    let path = if let Some(uri) = uri.strip_prefix("//") {
+        let (host, path) = uri.split_at(uri.find('/')?);
+        if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") && !host.eq_ignore_ascii_case(hostname) {
+            return None;
+        }
+        path
+    } else {
+        uri
+    };
+    if !path.starts_with('/') {
+        return None;
+    }
+
+    let path = if escaped {
+        let mut bytes = path.bytes();
+        let mut decoded = Vec::with_capacity(path.len());
+        while let Some(b) = bytes.next() {
+            decoded.push(match b {
+                b'%' => {
+                    let hi = char::from(bytes.next()?).to_digit(16)?;
+                    let lo = char::from(bytes.next()?).to_digit(16)?;
+                    ((hi << 4) | lo) as u8
+                }
+                b'?' | b'#' => return None,
+                _ => b,
+            });
+        }
+        String::from_utf8(decoded).ok()?
+    } else {
+        path.to_owned()
+    };
+    (!path.starts_with("//") && !path.chars().any(char::is_control)).then_some(path)
+}
+
 impl Core {
     /// Keeps every live terminal's `foreground` current, with an event on each change.
     pub async fn watch_foreground(self: Arc<Self>) {
         let ms = std::env::var("HC_FOREGROUND_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+        let hostname = crate::platform::hostname();
         loop {
             tokio::time::sleep(Duration::from_millis(ms)).await;
             let live: Vec<u32> = self.lock().reg.terminals.values().filter(|t| t.is_live()).map(|t| t.id()).collect();
             for id in live {
                 let pgid = self.foreground(id).await;
-                let now = (pgid > 0).then(|| about(pgid)).flatten();
+                let now = (pgid > 0).then_some(pgid).and_then(|pid| {
+                    about(pid, || {
+                        let st = self.lock();
+                        reported_directory(st.screens.get(&id)?.reported_pwd()?, &hostname)
+                    })
+                });
                 let mut st = self.lock();
                 let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live()) else {
                     continue;
@@ -197,6 +247,34 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_reports_accept_local_absolute_paths_only() {
+        for (report, path) in [
+            ("file:/tmp", "/tmp"),
+            ("file:///", "/"),
+            ("file://LOCALHOST/tmp/a%20b%23c", "/tmp/a b#c"),
+            ("file://host/tmp/%C3%A9", "/tmp/\u{e9}"),
+            ("kitty-shell-cwd://host/tmp/a%20b#c", "/tmp/a%20b#c"),
+        ] {
+            assert_eq!(reported_directory(report, "host").as_deref(), Some(path), "{report}");
+        }
+        for report in [
+            "",
+            "https://host/tmp",
+            "file://elsewhere/tmp",
+            "file://host",
+            "file:relative/path",
+            "file:///tmp?query",
+            "file:///tmp#fragment",
+            "file:///%2Felsewhere/tmp",
+            "file:///tmp/%00",
+            "file:///tmp/%A",
+            "file:///tmp/%FF",
+        ] {
+            assert_eq!(reported_directory(report, "host"), None, "{report}");
+        }
+    }
 
     #[test]
     fn command_flags_keep_shell_roots_from_clearing_live_status() {

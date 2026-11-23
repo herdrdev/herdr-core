@@ -53,6 +53,7 @@ mod ffi {
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
     pub const DATA_SCROLLBAR: i32 = 9;
     pub const DATA_TITLE: i32 = 12;
+    pub const DATA_PWD: i32 = 13;
     pub const DATA_COLOR_FOREGROUND_DEFAULT: i32 = 22;
     pub const DATA_COLOR_BACKGROUND_DEFAULT: i32 = 23;
     pub const DATA_COLOR_CURSOR_DEFAULT: i32 = 24;
@@ -628,6 +629,17 @@ impl Terminal {
             return String::new();
         }
         String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    }
+
+    /// The latest raw directory report from terminal output (e.g. OSC 7).
+    pub fn reported_pwd(&self) -> Option<&str> {
+        let mut s = ffi::Str { ptr: ptr::null(), len: 0 };
+        let rc = unsafe { ffi::ghostty_terminal_get(self.raw, ffi::DATA_PWD, (&raw mut s).cast()) };
+        if rc != ffi::SUCCESS || s.ptr.is_null() || s.len == 0 {
+            return None;
+        }
+        // Ghostty owns the string until the next mutation, which needs &mut self.
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).ok()
     }
 
     /// The active screen and its scrollback as plain text, soft wraps joined.
