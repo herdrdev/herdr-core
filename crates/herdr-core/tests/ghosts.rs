@@ -62,6 +62,63 @@ fn kill_spares_programs_that_ignore_hangup() {
 }
 
 #[test]
+fn kill_wakes_and_ends_a_stopped_foreground_job() {
+    let s = Session::new();
+    let helper = s.root.join("stopped_fg.py");
+    let pid_file = s.root.join("stopped-fg");
+    // Mimic an interactive shell whose foreground job (in its own process group)
+    // catches SIGHUP to restore termios, stops on SIGTTOU right after the shell
+    // reclaims the PTY with TIOCSPGRP and exits, then exits once woken by SIGCONT.
+    std::fs::write(
+        &helper,
+        r#"import os, signal, sys, time
+
+pid_file = sys.argv[1]
+r_fd, w_fd = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(w_fd)
+    os.setpgid(0, 0)
+    os.read(r_fd, 1)
+    os.close(r_fd)
+    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+    got_hup = []
+    signal.signal(signal.SIGHUP, lambda *_: got_hup.append(1))
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    while not got_hup:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    os.kill(os.getpid(), signal.SIGTTOU)
+    os._exit(0)
+else:
+    os.close(r_fd)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    try:
+        os.setpgid(child, child)
+    except OSError:
+        pass
+    os.tcsetpgrp(0, child)
+    os.close(w_fd)
+    def on_hup(*_):
+        try:
+            os.tcsetpgrp(0, os.getpid())
+        except OSError:
+            pass
+        os._exit(0)
+    signal.signal(signal.SIGHUP, on_hup)
+    os.waitpid(child, 0)
+"#,
+    )
+    .unwrap();
+    let t = run(&s, &format!("exec python3 {helper:?} {pid_file:?}"));
+    let pids = started(&s, &["stopped-fg"]);
+    let _cleanup = Survivors(pids.clone());
+    s.json(&["kill", &t]);
+    gone(&pids);
+}
+
+#[test]
 fn detached_programs_survive_a_normal_exit() {
     let s = Session::new();
     let script = format!("{} {} sleep 0.3", stubborn(&s, "same", false), stubborn(&s, "detached", true));

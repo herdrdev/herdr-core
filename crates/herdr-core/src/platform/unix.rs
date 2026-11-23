@@ -6,6 +6,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 pub fn check_via(_target: &str) -> io::Result<()> {
     Ok(())
@@ -646,6 +647,7 @@ pub struct Pty {
     master: File,
     stop: Stream,
     _stop_sender: Stream,
+    last_foreground: AtomicI32,
 }
 
 /// Cancels blocked IO when the holder releases the terminal, even if a
@@ -749,7 +751,11 @@ pub fn spawn_pty(
         });
     }
     let child = cmd.spawn()?;
-    Ok((Pty { master, stop, _stop_sender: stop_sender }, child))
+    Ok((Pty { master, stop, _stop_sender: stop_sender, last_foreground: AtomicI32::new(0) }, child))
+}
+
+fn same_session(pgid: i32, sid: i32) -> bool {
+    pgid > 0 && unsafe { libc::getsid(pgid) == sid }
 }
 
 impl Pty {
@@ -769,23 +775,61 @@ impl Pty {
 
     /// The process group in the foreground (a shell's job), or -1.
     pub fn foreground(&self) -> i32 {
-        unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        if fg > 0 {
+            self.last_foreground.store(fg, Ordering::Relaxed);
+        }
+        fg
     }
 
     /// The program's group, plus whatever group is in the foreground.
     pub fn signal(&self, pid: u32, signal: i32) {
+        let sid = pid as i32;
+        // Read the foreground group before signaling the session leader: an
+        // interactive shell handling SIGHUP reclaims the PTY via TIOCSPGRP
+        // before exiting.
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let target_fg = if fg > 0 && fg != sid {
+            self.last_foreground.store(fg, Ordering::Relaxed);
+            fg
+        } else {
+            let prev = self.last_foreground.load(Ordering::Relaxed);
+            if prev != sid && same_session(prev, sid) {
+                prev
+            } else {
+                self.last_foreground.store(0, Ordering::Relaxed);
+                0
+            }
+        };
         unsafe {
-            libc::killpg(pid as i32, signal);
-            let fg = libc::tcgetpgrp(self.master.as_raw_fd());
-            if fg > 0 && fg != pid as i32 {
-                libc::killpg(fg, signal);
+            libc::killpg(sid, signal);
+            if target_fg > 0 {
+                libc::killpg(target_fg, signal);
             }
         }
     }
 
     /// Its program is gone: hang up what still holds the terminal.
     pub fn hang_up(&self, pid: u32) {
-        unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
+        let sid = pid as i32;
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let last_fg = self.last_foreground.swap(0, Ordering::Relaxed);
+        // Send SIGHUP + SIGCONT to both the shell's group and its last
+        // foreground job group: a TUI job stopped by SIGTTOU during shell
+        // teardown (e.g. restoring termios right after the shell ran TIOCSPGRP)
+        // stays frozen in T state if the shell exited before the stop settled.
+        let mut signaled = [0i32; 3];
+        let mut count = 0;
+        for pgid in [sid, fg, last_fg] {
+            if pgid > 0 && !signaled[..count].contains(&pgid) && (pgid == sid || same_session(pgid, sid)) {
+                signaled[count] = pgid;
+                count += 1;
+                unsafe {
+                    libc::killpg(pgid, libc::SIGHUP);
+                    libc::killpg(pgid, libc::SIGCONT);
+                }
+            }
+        }
     }
 }
 
