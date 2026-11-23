@@ -180,7 +180,10 @@ pub fn main() -> i32 {
     }
     let json = (asked || piped) && !table;
     match run(cmd, json, asked) {
-        Ok(Some(out)) => {
+        Ok(Some(mut out)) => {
+            if table && piped {
+                out.human = picker::plain(&out.human);
+            }
             print(&out, json);
             0
         }

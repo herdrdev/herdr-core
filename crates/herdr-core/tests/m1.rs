@@ -80,6 +80,7 @@ fn ls_table_overrides_piped_output_without_changing_json_defaults() {
     let table = s.hc(&["ls", "--table", "--label", "where=workspace / terminal"]);
     assert!(table.status.success(), "hc ls --table: {}", String::from_utf8_lossy(&table.stderr));
     let text = String::from_utf8(table.stdout).unwrap();
+    assert!(!text.contains('\x1b'), "{text:?}");
     assert!(text.contains("NAME") && text.contains("table-probe") && text.contains("workspace / terminal"), "{text}");
 
     for args in [["ls"].as_slice(), &["ls", "--json"]] {
