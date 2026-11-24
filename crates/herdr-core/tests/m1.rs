@@ -73,6 +73,31 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 }
 
 #[test]
+fn ls_table_overrides_piped_output_without_changing_json_defaults() {
+    let s = Session::new();
+    run(&s, &["--name", "table-probe", "--label", "where=workspace / terminal", "sleep", "100"]);
+
+    let table = s.hc(&["ls", "--table", "--label", "where=workspace / terminal"]);
+    assert!(table.status.success(), "hc ls --table: {}", String::from_utf8_lossy(&table.stderr));
+    let text = String::from_utf8(table.stdout).unwrap();
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(text.contains("NAME") && text.contains("table-probe") && text.contains("workspace / terminal"), "{text}");
+
+    for args in [["ls"].as_slice(), &["ls", "--json"]] {
+        let output = s.hc(args);
+        assert!(output.status.success());
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["terminals"][0]["name"], "table-probe");
+    }
+
+    for args in [["--json", "ls", "--table"], ["ls", "--table", "--json"]] {
+        let (code, error) = s.err(&args);
+        assert_eq!(code, 2);
+        assert_eq!(error["error"]["kind"], "usage");
+    }
+}
+
+#[test]
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));
@@ -377,21 +402,34 @@ fn finished_terminals_and_ids_survive_server_stop() {
 }
 
 #[test]
-fn a_failed_registry_write_does_not_break_get_or_stop() {
-    let s = Session::new();
-    let terminal = run(&s, &["sleep", "100"]);
+fn a_failed_registry_write_does_not_hide_command_results() {
+    let mut s = Session::new();
+    s.env.push(("HC_QUIET_MS".into(), "0".into()));
+    let terminal = run(&s, &["sh", "-c", "trap '' INT; echo ready; exec cat"]);
+    wait_text(&s, &terminal, "ready");
     let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
     let core = status(&s)["pid"].as_i64().unwrap();
-    // A directory in place of the temporary file fails even when tests run as root.
-    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
-    std::fs::create_dir(&tmp).unwrap();
-    let label = s.hc(&["label", &terminal, "disk=failed"]);
-    let get = s.hc(&["get", &terminal]);
-    let stop = s.hc(&["server", "stop"]);
-    std::fs::remove_dir(tmp).unwrap();
-    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
-        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
-    }
+    // The final rename fails even when tests run as root.
+    let snapshot = s.root.join("state/herdr-core/test/terminals.json");
+    let block_save = || {
+        std::fs::remove_file(&snapshot).unwrap();
+        std::fs::create_dir(&snapshot).unwrap();
+    };
+    block_save();
+    let (_, label) = s.err(&["--json", "label", &terminal, "disk=failed"]);
+    assert_eq!(label["error"]["kind"], "unavailable", "{label}");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "failed");
+    s.json(&["send", &terminal, "written while saves fail"]);
+    s.json(&["keys", &terminal, "enter"]);
+    assert_eq!(s.json(&["wait", &terminal, "--timeout", "0.1"])["reason"], "timeout");
+    assert_eq!(s.json(&["interrupt", &terminal, "--timeout", "0.1"])["outcome"], "unknown");
+    wait_text(&s, &terminal, "written while saves fail");
+
+    std::fs::remove_dir(&snapshot).unwrap();
+    assert_eq!(s.json(&["label", &terminal, "disk=restored"])["labels"]["disk"], "restored");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "restored");
+    block_save();
+    assert_eq!(s.json(&["server", "stop"])["stopped"], true);
     assert!(!pid_alive(pid), "stop left the program running");
     wait_until("core stops after a failed disk write", || !pid_alive(core));
 }

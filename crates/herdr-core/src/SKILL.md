@@ -11,6 +11,7 @@ It does not arrange windows; use `herdr-app --skill` for that.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
+Use `hc ls --table` for a plain-text table in captured or piped output.
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 ## Delegate a task
@@ -147,6 +148,8 @@ hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
 
+If `hc run` reports a registry save failure, the program may already have run. Check `hc ls --all` (it shows finished terminals too) before retrying; if its record is gone (`--rm`), check what the command did.
+
 ### Slow commands: don't block yourself
 
 Your own shell tool holds you until its command ends: no messages, no
@@ -173,6 +176,8 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Use the returned address to wait/read it; don't launch a duplicate.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
 `hc put <t> <file>` sends a file beside a terminal and prints its destination.
+A direct link with chunk support times out per piece. On a multi-hop route,
+a core sending the whole file to a relay applies its machine timeout to that call.
 `hc label <t> key=value` adds labels.
 
 ## Other machines and files

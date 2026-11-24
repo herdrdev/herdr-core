@@ -12,8 +12,10 @@ pub struct Relayed {
     pub there: u32,
     pub conn: Arc<Conn>,
     pub machine: String,
+    pub terminal: String,
     pub params: Value,
     pub active_at: Instant,
+    pub size_pending: bool,
 }
 
 /// Why an opted-in stream was refused: a hop on the way lost resize support.
@@ -21,16 +23,17 @@ pub(super) const RESIZE_LOST: &str = "resize notifications lost";
 
 /// Viewers left waiting by a dropped line to `m` get their terminal back.
 pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
-    let mut waiting: Vec<((usize, u32), Relayed)> = core
+    let mut waiting: Vec<_> = core
         .lock()
         .relayed
         .iter()
         .filter(|(_, r)| r.machine == m.id && !Arc::ptr_eq(&r.line, &line))
-        .map(|(k, r)| (*k, r.clone()))
+        .map(|(k, r)| (*k, r.active_at))
         .collect();
     // Resumed viewers tie there; the last attached wins unless another viewer stayed active.
-    waiting.sort_by_key(|(_, r)| r.active_at);
-    for ((key, here), r) in waiting {
+    waiting.sort_by_key(|(_, active_at)| *active_at);
+    for (key @ (_, here), was_active_at) in waiting {
+        let Some(r) = core.lock().relayed.get(&key).cloned() else { continue };
         // The screen is painted again; the viewer already has its history.
         let mut params = r.params.clone();
         params["history"] = 0.into();
@@ -42,25 +45,55 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
-        if !st.relayed.contains_key(&(key, here)) {
+        let Some(current) = st.relayed.get(&key).filter(|v| Arc::ptr_eq(&v.line, &r.line)) else {
+            if let Ok(reply) = reply {
+                close_remote_viewer(&line, &reply);
+            }
             continue;
-        }
+        };
         let reply = reply.ok();
         if r.automatic_input && reply.as_ref().is_some_and(|reply| !automatic_input(&line, reply)) {
-            st.relayed.remove(&(key, here));
-            if let Some(there) = reply.as_ref().and_then(|reply| reply["channel"].as_u64()) {
-                lock(&line.streams).remove(&(there as u32));
-                let _ = line.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
-            }
+            st.relayed.remove(&key);
+            close_remote_viewer(&line, reply.as_ref().unwrap());
             r.conn.with(|out| out.close(here, b""));
             continue;
         }
-        match reply.and_then(|reply| reply["channel"].as_u64()) {
+        match reply.as_ref().and_then(|reply| reply["channel"].as_u64()) {
             Some(there) => {
-                st.relayed.insert((key, here), Relayed { line: line.clone(), there: there as u32, ..r });
+                let there = there as u32;
+                let terminal =
+                    reply.as_ref().and_then(|r| r["terminal"]["address"].as_str()).unwrap_or(&current.terminal);
+                let missed = current.active_at != was_active_at;
+                let newer = missed
+                    && st.relayed.values().any(|v| {
+                        Arc::ptr_eq(&v.line, &line)
+                            && v.terminal == terminal
+                            && v.params["observe"] != true
+                            && v.active_at > current.active_at
+                    });
+                let terminal = terminal.to_owned();
+                let current = st.relayed.get_mut(&key).expect("still attached");
+                current.line = line.clone();
+                current.there = there;
+                current.terminal = terminal;
+                current.size_pending =
+                    current.params["cols"] != r.params["cols"] || current.params["rows"] != r.params["rows"];
+                // A resize also claims size control. Replay only missed activity,
+                // and leave a newer viewer on the same terminal in control.
+                if !newer && (missed || current.size_pending) {
+                    resend_size(current);
+                    current.size_pending = false;
+                }
+                if current.params["display"] != r.params["display"] {
+                    let _ = line.frames.send(wire::encode(
+                        there,
+                        wire::FACTS,
+                        current.params["display"].to_string().as_bytes(),
+                    ));
+                }
             }
             None => {
-                st.relayed.remove(&(key, here));
+                st.relayed.remove(&key);
                 // A downgraded path must not deliver paints sized for the old
                 // contract; any other failure still hands over what arrived.
                 if lost_resize {
@@ -70,6 +103,20 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
                 }
             }
         }
+    }
+}
+
+fn resend_size(viewer: &Relayed) {
+    let cols = viewer.params["cols"].as_u64().unwrap_or_default() as u16;
+    let rows = viewer.params["rows"].as_u64().unwrap_or_default() as u16;
+    let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+    let _ = viewer.line.frames.send(wire::encode(viewer.there, wire::RESIZE, &size));
+}
+
+fn close_remote_viewer(line: &Line, reply: &Value) {
+    if let Some(there) = reply["channel"].as_u64() {
+        lock(&line.streams).remove(&(there as u32));
+        let _ = line.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
     }
 }
 
@@ -110,8 +157,14 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
                 there,
                 conn: conn.clone(),
                 machine: m.id.clone(),
+                terminal: r["terminal"]["address"]
+                    .as_str()
+                    .or_else(|| params["terminal"].as_str())
+                    .unwrap_or_default()
+                    .into(),
                 params,
                 active_at: Instant::now(),
+                size_pending: false,
             };
             core.lock().relayed.insert((conn_key(conn), here), viewer);
             r["channel"] = here.into();
@@ -126,27 +179,28 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
 
 /// A viewer's frame for a relayed stream goes there. False: not relayed.
 pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u8]) -> bool {
-    let r = {
-        let mut st = core.lock();
-        let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
-        if r.params["observe"] != true
-            && (kind == wire::DATA
-                || (kind == wire::RESIZE && payload.len() == 4)
-                || (kind == wire::FOCUS && payload.first() == Some(&1)))
-        {
-            r.active_at = Instant::now();
+    let mut st = core.lock();
+    let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
+    let resize = kind == wire::RESIZE && payload.len() == 4;
+    if r.params["observe"] != true
+        && (kind == wire::DATA || resize || (kind == wire::FOCUS && payload.first() == Some(&1)))
+    {
+        r.active_at = Instant::now();
+        if r.size_pending && !resize {
+            resend_size(r);
+            r.size_pending = false;
         }
-        // What a reattach after a dropped line brings back.
-        if kind == wire::RESIZE && payload.len() == 4 {
-            r.params["cols"] = u16::from_le_bytes([payload[0], payload[1]]).into();
-            r.params["rows"] = u16::from_le_bytes([payload[2], payload[3]]).into();
-        } else if kind == wire::FACTS
-            && let Ok(display) = serde_json::from_slice::<Value>(payload)
-        {
-            r.params["display"] = display;
-        }
-        r.clone()
-    };
+    }
+    // What a reattach after a dropped line brings back.
+    if resize {
+        r.params["cols"] = u16::from_le_bytes([payload[0], payload[1]]).into();
+        r.params["rows"] = u16::from_le_bytes([payload[2], payload[3]]).into();
+        r.size_pending = false;
+    } else if kind == wire::FACTS
+        && let Ok(display) = serde_json::from_slice::<Value>(payload)
+    {
+        r.params["display"] = display;
+    }
     // Read here: our stream to the viewer may send more, and so may the one there to us.
     if kind == wire::CREDIT && payload.len() == 4 {
         conn.with(|out| out.credit(here, u32::from_le_bytes(payload.try_into().unwrap()) as usize));

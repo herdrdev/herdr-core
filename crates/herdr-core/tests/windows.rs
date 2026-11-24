@@ -398,6 +398,29 @@ fn only_this_account_may_open_the_cores_pipe() {
     }
 }
 
+#[test]
+fn pipe_shutdown_wakes_reads_even_when_none_was_pending() {
+    use herdr_core::platform;
+    use std::io::{Read, Write};
+
+    for read_first in [false, true] {
+        let path = PathBuf::from(format!(r"\\.\pipe\herdr-core-test-{}", platform::random_hex()));
+        let listener = platform::listen(&path).unwrap();
+        let mut client = platform::connect(&path).unwrap();
+        let mut server = listener.incoming().next().unwrap().unwrap();
+        if read_first {
+            server.write_all(b"x").unwrap();
+            let mut byte = [0];
+            client.read_exact(&mut byte).unwrap();
+            assert_eq!(&byte, b"x");
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let (send, recv) = std::sync::mpsc::channel();
+        std::thread::spawn(move || send.send(client.read(&mut [0])));
+        assert_eq!(recv.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(), 0);
+    }
+}
+
 /// `hc connect` fed by `stdin`, its output once it exits (or a failure after 20 s).
 fn connect_once(s: &Session, stdin: std::process::Stdio, input: Option<&str>) -> String {
     let mut child =

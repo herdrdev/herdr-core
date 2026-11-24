@@ -116,6 +116,9 @@ fn notification(method: &str, params: Value) -> String {
 impl Core {
     /// Terminals the filter matches: here, then those mirrored from machines.
     pub fn matching(&self, st: &State, filter: &Filter) -> Vec<Value> {
+        if !filter.wants_terminals() {
+            return Vec::new();
+        }
         let here = st.reg.terminals.values().map(record);
         let afar = st.mirrors.values().filter(|_| !filter.here_only).flat_map(|m| m.values().cloned());
         here.chain(afar).filter(|r| filter.matches(r)).collect()
