@@ -114,11 +114,11 @@ default 60-second hold, but a parent configured above that
 can still outwait a child with a shorter limit. Sends to an added machine keep
 waiting while its line is alive.
 
-Messages between agents carry a sender tag by default. `send --raw` omits
-that tag, for slash commands or other exact input (including punctuation and
-Unicode). It still pastes and submits normally, waits for readiness, refuses
-blocked targets unless `--force`, and supports `--if` and `--wait` locally
-and across machines.
+Messages between agents carry a sender tag by default. Use `send --raw` for
+slash commands or other text that must arrive without it. Nothing else
+changes: readiness, paste and submit, the blocked refusal, `--if` and `--wait`.
+On another machine the core there must know `--raw` too: an older one still
+tags the text.
 
 Reports arrive tagged, for example:
 

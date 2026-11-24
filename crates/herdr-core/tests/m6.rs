@@ -363,12 +363,9 @@ fn messages_between_agents_say_who_sent_them() {
     );
     assert!(sent["error"].is_null(), "{sent}");
     wait_until("raw API slash command", || text(&s, &agent).lines().any(|l| l.trim_end() == "got:/compact"));
-    for raw in ["/clear", "A_ :\" !?@( + 日本語 café"] {
-        hc_in(&s, &sender, &["send", "--raw", &agent, raw]);
-        wait_until("raw input is submitted unchanged", || {
-            text(&s, &agent).lines().any(|l| l.trim_end() == format!("got:{raw}"))
-        });
-    }
+    let raw = "/clear A_ :\" !?@( + 日本語 café";
+    hc_in(&s, &sender, &["send", "--raw", &agent, raw]);
+    wait_until("raw CLI text", || text(&s, &agent).lines().any(|l| l.trim_end() == format!("got:{raw}")));
     s.json(&["send", &agent, "from a person"]);
     let line = |t: &str, want: &str| text(&s, t).lines().any(|l| l.trim_end() == want);
     wait_until("a person's send is untouched", || line(&agent, "got:from a person"));
