@@ -516,3 +516,64 @@ fn adding_says_what_went_wrong_and_saves_nothing() {
     assert_eq!(kind(&["rm", "nope"]), "machine_unknown");
     assert_eq!(s.json(&["machine", "ls"])["machines"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn a_line_that_keeps_going_quiet_waits_longer_before_dialing_again() {
+    use std::time::{Duration, Instant};
+
+    let rohan = Session::new();
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+    // A line dies of silence after 0.6 s: 0.5 s machine_timeout + 0.1 s heartbeat.
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "machine_timeout = 0.5\n").unwrap();
+    s.env.push(("HC_HEARTBEAT_MS".into(), "100".into()));
+    // The path goes quiet 0.3 s after every connect and never answers again, so
+    // each line dies of silence: a link that flaps, not a core that restarts.
+    let dials = s.root.join("dials");
+    let shim = executable(
+        &s,
+        &format!(
+            "#!/usr/bin/env python3\n\
+             import os, select, subprocess, sys, time\n\
+             with open({dials:?}, \"a\") as f:\n    f.write(\"dial\\n\")\n\
+             child = subprocess.Popen([{ssh:?}] + sys.argv[1:], stdout=subprocess.PIPE)\n\
+             fd = child.stdout.fileno()\n\
+             end = None\n\
+             while True:\n\
+             \x20   left = None if end is None else end - time.time()\n\
+             \x20   if left is not None and left <= 0:\n        break\n\
+             \x20   r, _, _ = select.select([fd], [], [], left)\n\
+             \x20   if not r:\n        break\n\
+             \x20   data = os.read(fd, 65536)\n\
+             \x20   if not data:\n        sys.exit(0)\n\
+             \x20   if end is None:\n        end = time.time() + 0.3\n\
+             \x20   sys.stdout.buffer.write(data)\n\
+             \x20   sys.stdout.buffer.flush()\n\
+             while os.read(fd, 65536):\n    pass\n",
+            dials = dials.display().to_string(),
+            ssh = ssh
+        ),
+    );
+    s.env.push(("HC_SSH".into(), shim));
+    s.json(&["machine", "add", "rohan"]);
+
+    // Adding dials a few times itself; only the redials after it matter here.
+    let count = || std::fs::read_to_string(&dials).map(|text| text.lines().count()).unwrap_or(0);
+    let base = count();
+    let mut times = Vec::new();
+    let start = Instant::now();
+    while times.len() < 3 {
+        while times.len() < count() - base {
+            times.push(start.elapsed());
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "dialed only {} times", times.len());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // The first line costs a silence window; later ones wait longer before
+    // dialing again, so a flapping path is not redialed every window forever.
+    let gaps: Vec<_> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(gaps[1] >= gaps[0] + Duration::from_millis(150), "the wait must grow between dials, got {:?}", gaps);
+}

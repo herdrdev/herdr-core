@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -23,9 +23,11 @@ type Sink = (Arc<Conn>, u32);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
+mod backoff;
 mod put;
 mod run;
 mod viewers;
+use backoff::Backoff;
 use run::forward_once;
 #[cfg(test)]
 use viewers::automatic_input;
@@ -228,10 +230,6 @@ pub fn view(st: &State, m: &Machine) -> MachineView {
     MachineView { machine: m.clone(), state: state.into(), since_ms, why }
 }
 
-fn reconnect_max() -> Duration {
-    Duration::from_millis(std::env::var("HC_RECONNECT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
-}
-
 /// Keeps the line to every added machine up.
 pub fn start_all(core: &Arc<Core>) {
     let ids: Vec<String> = core.lock().machines.iter().map(|m| m.id.clone()).collect();
@@ -271,7 +269,7 @@ pub fn forget(core: &Core, st: &mut State, id: &str) {
 }
 
 async fn supervise(core: Arc<Core>, id: String) {
-    let mut backoff = Duration::from_millis(250);
+    let mut backoff = Backoff::new();
     let mut login_backoff = Duration::ZERO;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
@@ -298,7 +296,6 @@ async fn supervise(core: Arc<Core>, id: String) {
                 down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]));
             }
             Ok(d) => {
-                backoff = Duration::from_millis(250);
                 login_backoff = Duration::ZERO;
                 // It may have been updated since it was added.
                 if let Some(v) = d.hello["version"].as_str().filter(|v| *v != m.version) {
@@ -308,9 +305,16 @@ async fn supervise(core: Arc<Core>, id: String) {
                     }
                     crate::machines::save(&core.paths.state, &st.machines);
                 }
-                hold(&core, &m, d).await;
-                // Dial again at once: most drops are a restart there. Calls meanwhile
-                // wait for that dial instead of failing; only a failed one is "down".
+                let up = Instant::now();
+                let ended = hold(&core, &m, d).await;
+                // Dial again at once: most drops are a restart there. A line that
+                // went quiet, though, may be a path that flaps, and that one waits
+                // longer each time. Calls meanwhile wait for the dial instead of
+                // failing; only a failed one is "down".
+                let healthy = silence_window(&core) * 2;
+                if let Some(wait) = backoff.ended(ended == Ended::Quiet, up.elapsed(), healthy) {
+                    tokio::time::sleep(wait).await;
+                }
                 core.lock().lines.insert(id.clone(), LineState::Connecting);
                 core.changed.notify_waiters();
                 continue;
@@ -330,8 +334,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into()),
             Err(e) => down(&mut core.lock(), e.message),
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(reconnect_max());
+        tokio::time::sleep(backoff.failed()).await;
     }
 }
 
@@ -347,8 +350,22 @@ async fn refresh_status(core: &Arc<Core>, m: &Machine, line: &Arc<Line>) {
     }
 }
 
+/// How long a machine may send nothing before its line is given up. A line that
+/// outlived twice this was up for real, not flapping.
+fn silence_window(core: &Core) -> Duration {
+    crate::config::load(&core.paths.config).unwrap_or_default().machine_timeout() + crate::server::heartbeat_every()
+}
+
+/// Why a line ended: the machine went quiet, or it closed the line (a restart
+/// there, a retired line, or it was forgotten here).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Ended {
+    Quiet,
+    Closed,
+}
+
 /// Serves one open line until it closes.
-async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
+async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) -> Ended {
     let (frames, mut out) = mpsc::unbounded_channel::<Vec<u8>>();
     let line = Line::new(frames, &d.hello);
     {
@@ -378,23 +395,22 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     let mut stderr = d.stderr;
     let drain = tokio::spawn(async move { tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await });
     // It sends heartbeats: a machine silent this long is stuck, not quiet.
-    let silence = crate::config::load(&core.paths.config).unwrap_or_default().machine_timeout()
-        + crate::server::heartbeat_every();
+    let silence = silence_window(core);
     // Silence is no bytes at all: a big frame on a slow link keeps flowing.
     let heard = wire::Heard::default();
     let mut stdout = heard.watch(&mut d.stdout);
     let mut sends = crate::server::Sends::default();
-    loop {
+    let ended = loop {
         let (channel, kind, payload) = tokio::select! {
-            () = &mut refresh => break,
+            () = &mut refresh => break Ended::Closed,
             frame = wire::read_frame(&mut stdout) => match frame {
                 Ok(Some(frame)) => frame,
-                _ => break,
+                _ => break Ended::Closed,
             },
-            () = line.retired.notified() => break,
+            () = line.retired.notified() => break Ended::Closed,
             () = heard.silent_for(silence) => {
                 let _ = writeln!(io::stderr(), "core: {} sent nothing for {} s: line given up", m.name, silence.as_secs());
-                break;
+                break Ended::Quiet;
             }
         };
         match (channel, kind) {
@@ -446,7 +462,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
             }
             _ => {}
         }
-    }
+    };
     writer.abort();
     drain.abort();
     // No longer the line to use, before anyone waiting hears it is lost (a
@@ -470,6 +486,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     // Killed, not waited for: a Mac core once never heard the old ssh had
     // died and stayed "connecting" for good. It is reaped in the background.
     let _ = d.child.start_kill();
+    ended
 }
 
 /// CAN first: the line may have dropped mid-sequence, which would swallow this.
