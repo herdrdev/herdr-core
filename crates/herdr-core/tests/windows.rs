@@ -4,6 +4,9 @@
 //! these cover what Windows does differently: pipes, ConPTY, job objects,
 //! Ctrl+C, handle inheritance, the console attach runs in.
 
+#[path = "windows/submit.rs"]
+mod submit;
+
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -1,7 +1,7 @@
 //! Parents and children: news about a child is typed into its parent agent
 //! as a marked note, only when the parent can take it and hasn't seen it.
 
-use crate::input::{Step, paste};
+use crate::input::{Step, paste, submit_steps};
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State, now_ms};
 use crate::terminals::{Terminal, parse_id};
@@ -245,6 +245,10 @@ impl Core {
             match self.type_note(parent).await {
                 Ok(true) => continue,
                 Ok(false) => {}
+                Err(e) if e.kind == "invalid_params" => {
+                    eprintln!("cannot submit child notes to {}: {}", crate::terminals::address(parent), e.message);
+                    break; // Invalid submit keys cannot improve by retrying; leave the news pending.
+                }
                 Err(_) => continue, // it got busy while we waited for quiet: try again
             }
             let mut st = self.lock();
@@ -273,13 +277,10 @@ impl Core {
                 let mut text: Vec<String> =
                     kids.iter().map(|id| self.note_for(st, *id, &st.reg.terminals[id].address)).collect();
                 text.extend(afar.iter().cloned());
-                let bracketed = st.screens.get(&parent).is_some_and(|s| s.dec_mode(2004));
+                let screen = st.screens.get(&parent).expect("live terminal has a screen");
                 let told = kids.iter().map(|id| (*id, st.reg.terminals[id].news)).collect();
-                let steps = vec![
-                    Step::Write(paste(bracketed, &text.join("\n"))),
-                    Step::Pause(crate::input::PASTE_GAP),
-                    Step::Write(b"\r".to_vec()),
-                ];
+                let mut steps = vec![Step::Write(paste(screen.dec_mode(2004), &text.join("\n")))];
+                steps.extend(submit_steps(screen, t)?);
                 Ok((told, steps))
             })
             .await;
