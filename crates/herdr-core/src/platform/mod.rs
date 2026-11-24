@@ -31,6 +31,8 @@ mod macos_launchd;
 #[cfg(target_os = "macos")]
 mod macos_responsibility;
 #[cfg(target_os = "macos")]
+mod macos_return;
+#[cfg(target_os = "macos")]
 mod macos_session;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
@@ -207,6 +209,16 @@ pub fn monitor_host_shutdown() -> impl Sized {
     #[cfg(target_os = "macos")]
     {
         macos_shutdown::monitor()
+    }
+}
+
+/// Calls `returned` each time the person comes back to this computer (macOS: a
+/// full wake, or input after idling). Elsewhere nothing reports it yet.
+#[allow(unused_variables)]
+pub fn watch_person_returns(returned: fn()) {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = macos_return::watch(returned) {
+        eprintln!("core: cannot watch for the person returning: {e}");
     }
 }
 

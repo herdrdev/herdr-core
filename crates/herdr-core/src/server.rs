@@ -65,6 +65,7 @@ pub fn serve() -> io::Result<()> {
     let info = load_identity(&paths.state, platform::machine_id())?;
     let socket = paths.socket.clone();
     let _shutdown_watch = platform::monitor_host_shutdown();
+    platform::watch_person_returns(crate::remote::person_returned);
     // Adopt the holder's terminals before anyone can talk to us.
     let core = Core::start(paths, info)?;
     let bound = AsyncListener::bind(&socket)?;

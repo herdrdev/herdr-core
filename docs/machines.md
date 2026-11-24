@@ -164,6 +164,10 @@ which holds up everything else on its connection and gives up after `machine_tim
 
 Once a machine is added, core retries a lost connection. If SSH authentication fails,
 it shows `needs_login` and retries after 2 minutes, then 5 minutes, then every 10 minutes.
+If the SSH agent had the key but couldn't sign (locked, or a hardware key asleep or unplugged),
+it retries as for a lost connection instead, so unlocking the agent is enough.
+On macOS, when you come back (a full wake, or input after idling), it dials at once and then
+retries after 10 seconds, 30 seconds and 1 minute before slowing down again.
 Run `hc machine login box` in a terminal to log in and reconnect immediately.
 A successful connection resets these delays. Reattach after it returns.
 To forget the connection here, use `hc machine rm box`. That does not stop its remote terminals.

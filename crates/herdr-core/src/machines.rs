@@ -287,6 +287,20 @@ fn wants_login(err: &str) -> bool {
             && ["publickey", "keyboard-interactive", "password"].iter().any(|k| err.contains(k))
 }
 
+/// ssh's agent had the key but couldn't sign with it: locked, or its token is
+/// unplugged or asleep. Its key never sent the server a bad signature.
+fn agent_refused(err: &str) -> bool {
+    (err.contains("signing failed") || err.contains("agent refused operation"))
+        && !err.contains("Too many authentication failures")
+}
+
+const KEY_LOCKED: &str = "couldn't sign with its key";
+
+/// A login refused because the agent couldn't sign: it may work again once unlocked.
+pub fn key_locked(e: &RpcError) -> bool {
+    e.kind == "needs_login" && e.message.contains(KEY_LOCKED)
+}
+
 /// An open pipe to the core there, past its hello.
 pub struct Dialed {
     pub child: tokio::process::Child,
@@ -384,6 +398,13 @@ async fn dial_once(
                 ));
             }
             if wants_login(&err) {
+                if agent_refused(&err) {
+                    return Err(RpcError::new(
+                        "needs_login",
+                        format!("the ssh agent for {target} {KEY_LOCKED} (locked, or its key isn't there)"),
+                        "unlock it; the line reconnects on its own",
+                    ));
+                }
                 if cfg!(windows) && !to.via {
                     return Err(RpcError::new(
                         "needs_login",
