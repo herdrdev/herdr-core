@@ -14,6 +14,9 @@
 - A program started on another machine can reach the terminal that started it while its first foreground run is still going. (#264, thanks @JinJieBeWater)
 - The manual says that `hc exec` ends commands after 60 seconds by default. (#262)
 
+### New
+- On macOS, `HC_NO_LAUNCHD=1` keeps a core out of launchd: for an app that supervises its own core from a LaunchAgent or login item it already has, so the core doesn't add a second Background Items entry. Programs in its terminals inherit it, so a core one of them starts stays out too.
+
 ## [0.1.21] - 2026-11-12
 
 ### New

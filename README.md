@@ -36,6 +36,12 @@ once. A plain SIGTERM keeps terminals and screens, but does not save settings.
 The new launcher still chooses the session's location and, on macOS, whether it
 starts from SSH or launchd.
 
+On macOS a core started outside SSH moves itself into a launchd job of its own,
+so it outlives the app that started it. An app that supervises its own core
+(from a LaunchAgent or login item it already has) sets `HC_NO_LAUNCHD=1` in the
+core's environment: the core then starts directly, never as a launchd job, and
+so does any core a program in its terminals starts.
+
 See [security](docs/security.md) for the trust and signing details.
 
 ## Run it and come back

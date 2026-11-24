@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const DETACH: &str = "HC_LAUNCHD_DETACH";
 const SENTINEL: &str = "--hc-launchd";
 const DIRECT: &str = "HC_LAUNCHD_DIRECT";
+const NO_LAUNCHD: &str = "HC_NO_LAUNCHD";
 const LAUNCHCTL: &str = "/bin/launchctl";
 const PREFIX: &str = "dev.herdr.core.";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -123,7 +124,8 @@ pub fn prepare_core() {
     unsafe {
         std::env::remove_var(DIRECT);
     }
-    if direct || std::env::args_os().nth(1).as_deref() == Some(OsStr::new(SENTINEL)) || ssh() {
+    let sentinel = std::env::args_os().nth(1).as_deref() == Some(OsStr::new(SENTINEL));
+    if direct || sentinel || ssh() || launchd_opted_out() {
         return;
     }
     let result = (|| {
@@ -149,10 +151,22 @@ fn ssh() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some()
 }
 
+/// `HC_NO_LAUNCHD=1`: an app that supervises its own core (a LaunchAgent, a
+/// login item) keeps every core, and every core a program in its terminals
+/// starts, out of launchd: a launchd job registers a Background Items entry
+/// the app already has. The core then lives as long as whatever started it.
+fn launchd_opted_out() -> bool {
+    opts_out(std::env::var_os(NO_LAUNCHD).as_deref())
+}
+
+fn opts_out(value: Option<&OsStr>) -> bool {
+    value == Some(OsStr::new("1"))
+}
+
 /// Only `serve` uses this path. Holders and programs inherit its coalition.
 /// SSH is already outside the app, and must retain its existing lifetime.
 pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
-    if ssh() {
+    if ssh() || launchd_opted_out() {
         return false;
     }
     match launch(cmd, log) {
@@ -493,6 +507,15 @@ fn xml(value: &OsStr) -> io::Result<String> {
 mod tests {
     use super::*;
     use std::os::unix::ffi::OsStrExt;
+
+    #[test]
+    fn only_hc_no_launchd_1_opts_out() {
+        assert!(opts_out(Some(OsStr::new("1"))));
+        for value in ["0", "", "true", "yes"] {
+            assert!(!opts_out(Some(OsStr::new(value))), "{value:?}");
+        }
+        assert!(!opts_out(None));
+    }
 
     #[test]
     fn startup_command_timeout_reaps_only_its_child() {
