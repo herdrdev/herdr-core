@@ -10,9 +10,8 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
     };
     let first = template.as_ref().map(|t| crate::templates::first_message(t, &p.argv[1..].join(" ")));
     match (&template, p.line.take(), p.argv.is_empty()) {
-        // A shell line (VAR=value prefixes, quotes, ~); sh replaces itself with a single command.
-        (Some(t), None, _) => p.argv = vec!["sh".into(), "-c".into(), t.command.clone()],
         // The shell is this machine's: the caller may be on another kind.
+        (Some(t), None, _) => p.argv = crate::platform::shell_line(&t.command),
         (None, Some(line), true) => p.argv = crate::platform::shell_line(&line),
         (None, None, true) => p.argv = crate::config::load(&core.paths.config)?.shell()?,
         (None, None, false) => {}
