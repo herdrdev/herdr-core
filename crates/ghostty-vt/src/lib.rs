@@ -45,6 +45,7 @@ mod ffi {
     pub const OPT_COLOR_FOREGROUND: i32 = 11;
     pub const OPT_COLOR_BACKGROUND: i32 = 12;
     pub const OPT_COLOR_CURSOR: i32 = 13;
+    pub const OPT_COLOR_PALETTE: i32 = 14;
     pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 27;
     pub const OPT_CONTINUATION_MAX_BYTES: i32 = 31;
     pub const OPT_MODE_DEFAULT: i32 = 33;
@@ -56,6 +57,7 @@ mod ffi {
     pub const DATA_COLOR_FOREGROUND_DEFAULT: i32 = 22;
     pub const DATA_COLOR_BACKGROUND_DEFAULT: i32 = 23;
     pub const DATA_COLOR_CURSOR_DEFAULT: i32 = 24;
+    pub const DATA_COLOR_PALETTE_DEFAULT: i32 = 25;
     pub const DATA_MODE: i32 = 37;
     pub const FORMAT_PLAIN: i32 = 0;
     pub const FORMAT_VT: i32 = 1;
@@ -423,7 +425,7 @@ impl Terminal {
             set(ffi::OPT_TITLE_CHANGED, on_title_changed as *const c_void);
         }
         let mut term = term;
-        term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), &[], None);
         term
     }
 
@@ -560,10 +562,33 @@ impl Terminal {
     }
 
     /// Display facts from a viewer: default colors and cell size in pixels.
-    /// `None` keeps what was known before. Changed colors queue a mode 2031 report
-    /// for subscribers, even within the same light/dark scheme (they may re-query).
-    pub fn set_display(&mut self, fg: Option<Rgb>, bg: Option<Rgb>, cursor: Option<Rgb>, cell: Option<(u32, u32)>) {
+    /// `None` keeps what was known before; `palette[i]` sets palette color i.
+    /// Changed colors queue a mode 2031 report for subscribers, even within the
+    /// same light/dark scheme (they may re-query).
+    pub fn set_display(
+        &mut self,
+        fg: Option<Rgb>,
+        bg: Option<Rgb>,
+        cursor: Option<Rgb>,
+        palette: &[Option<Rgb>],
+        cell: Option<(u32, u32)>,
+    ) {
         let mut changed = false;
+        if palette.iter().any(Option::is_some) {
+            let mut colors: [Rgb; 256] = [[0; 3]; 256];
+            let rc = unsafe {
+                ffi::ghostty_terminal_get(self.raw, ffi::DATA_COLOR_PALETTE_DEFAULT, colors.as_mut_ptr().cast())
+            };
+            let old = colors;
+            for (slot, c) in colors.iter_mut().zip(palette) {
+                *slot = c.unwrap_or(*slot);
+            }
+            // Without the current default there is nothing to merge into.
+            if rc == ffi::SUCCESS && old != colors {
+                changed = true;
+                unsafe { ffi::ghostty_terminal_set(self.raw, ffi::OPT_COLOR_PALETTE, colors.as_ptr().cast()) };
+            }
+        }
         for (opt, data, rgb) in [
             (ffi::OPT_COLOR_FOREGROUND, ffi::DATA_COLOR_FOREGROUND_DEFAULT, fg),
             (ffi::OPT_COLOR_BACKGROUND, ffi::DATA_COLOR_BACKGROUND_DEFAULT, bg),
