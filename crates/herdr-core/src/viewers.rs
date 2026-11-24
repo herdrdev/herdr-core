@@ -306,15 +306,16 @@ impl Core {
             let answered = Self::viewer(&mut st, conn, channel).unwrap().1.answers.feed(bytes);
             let mut now = Vec::new();
             let mut from = 0;
+            let viewer = Some((conn, channel));
             // Insert at the complete answer, before any trailing unfinished APC.
             // Queue both through the gate so expiry cannot overtake them.
             for (end, query) in answered {
-                now.extend(st.gates.entry(id).or_default().viewer(&bytes[from..end], !automatic));
+                now.extend(st.gates.entry(id).or_default().viewer_from(&bytes[from..end], !automatic, viewer));
                 let waited = st.relays.get_mut(&id).map(|r| r.answered(&[(end, query)])).unwrap_or_default();
                 now.extend(st.gates.entry(id).or_default().viewer(&waited, false));
                 from = end;
             }
-            now.extend(st.gates.entry(id).or_default().viewer(&bytes[from..], !automatic));
+            now.extend(st.gates.entry(id).or_default().viewer_from(&bytes[from..], !automatic, viewer));
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
