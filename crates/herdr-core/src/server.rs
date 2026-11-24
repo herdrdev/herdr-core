@@ -2,6 +2,7 @@
 //! (a named pipe on Windows).
 
 use crate::api::{self, CoreInfo};
+use crate::endpoints::{self, Bound};
 use crate::paths::Paths;
 use crate::platform::{self, AsyncListener};
 use crate::rpc::{self, RpcError};
@@ -73,6 +74,7 @@ pub fn serve() -> io::Result<()> {
         let mut listener = AsyncListener::serve(bound)?;
         platform::start_logout_linger();
         crate::restart::discard(&core.paths);
+        endpoints::recover(&core).await;
         let kept = core.clone();
         tokio::spawn(async move {
             kept.clone().recover_kept(true).await;
@@ -94,7 +96,7 @@ pub fn serve() -> io::Result<()> {
             tokio::select! {
                 accepted = listener.accept() => {
                     let (read, write) = accepted?;
-                    tokio::spawn(connection(core.clone(), read, write));
+                    tokio::spawn(connection(core.clone(), read, write, None));
                 }
                 _ = core.stop.notified() => break,
                 // Keep programs/screens, but only an explicit restart preserves environment.
@@ -104,6 +106,7 @@ pub fn serve() -> io::Result<()> {
                 }
             }
         }
+        endpoints::shutdown(&mut core.lock());
         platform::remove_endpoint(&socket);
         finish(&core).await
     })
@@ -175,7 +178,12 @@ fn hostname() -> String {
 
 /// A connection starts in plain mode (one JSON-RPC message per line);
 /// a successful `hello` with `framed: true` switches it to frames.
-async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Writer) -> io::Result<()> {
+pub(crate) async fn connection(
+    core: Arc<Core>,
+    read: platform::AsyncRead,
+    mut write: Writer,
+    bound: Option<Bound>,
+) -> io::Result<()> {
     let mut read = BufReader::new(read);
     let mut line = String::new();
     let plain = std::sync::Mutex::new(None);
@@ -194,7 +202,7 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
         if line.trim().is_empty() {
             continue;
         }
-        let handling = handle(&core, None, Some(&plain), line.as_bytes());
+        let handling = handle(&core, None, Some(&plain), bound.as_ref(), line.as_bytes());
         // An exec ends when its caller goes away.
         let method = serde_json::from_str::<Value>(&line).ok().and_then(|r| r["method"].as_str().map(String::from));
         let handled = match method.as_deref() {
@@ -245,11 +253,13 @@ async fn connection(core: Arc<Core>, read: platform::AsyncRead, mut write: Write
             break;
         }
     }
-    let conn = Arc::new(Conn::default());
+    let conn = Arc::new(Conn::new(bound));
     let mut writer = tokio::spawn(write_frames(core.clone(), conn.clone(), write));
     // Another core dialing in says who it is in its hello.
-    let hello: Value = serde_json::from_str(&line).unwrap_or_default();
-    crate::remote::peer_joined(&core, &conn, &hello["params"]);
+    if conn.bound.is_none() {
+        let hello: Value = serde_json::from_str(&line).unwrap_or_default();
+        crate::remote::peer_joined(&core, &conn, &hello["params"]);
+    }
     // It ends when it closes, can't be written to, or stopped reading so long
     // that its replies passed `MAX_CONTROL`.
     let result = tokio::select! {
@@ -384,7 +394,7 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                     continue;
                 }
                 let request = serde_json::from_slice::<Value>(&payload).unwrap_or_default();
-                if request["method"] == "$/cancelRequest" {
+                if request["method"] == "$/cancelRequest" && !conn.bound.as_ref().is_some_and(Bound::retired) {
                     let id = request["params"]["id"].to_string();
                     execs.0.iter().filter(|(of, _)| *of == id).for_each(|(_, exec)| exec.abort());
                     sends.cancel(Some(&id));
@@ -394,7 +404,9 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
                 let pending = crate::api::begin_read(conn, &request);
                 let (core, conn) = (core.clone(), conn.clone());
                 let call = async move {
-                    let handled = SEND_CANCELLED.scope(cancelled, handle(&core, Some(&conn), None, &payload)).await;
+                    let handled = SEND_CANCELLED
+                        .scope(cancelled, handle(&core, Some(&conn), None, conn.bound.as_ref(), &payload))
+                        .await;
                     drop(pending);
                     if let Some(reply) = &handled.reply {
                         conn.with(|out| {
@@ -508,6 +520,7 @@ async fn handle(
     core: &Arc<Core>,
     conn: Option<&Arc<Conn>>,
     plain: Option<&std::sync::Mutex<Option<api::PlainSub>>>,
+    bound: Option<&Bound>,
     message: &[u8],
 ) -> Handled {
     let reply = |reply| Handled { reply: Some(reply), framed: false, stop: false };
@@ -519,8 +532,23 @@ async fn handle(
         let err = RpcError::invalid_request("missing method");
         return reply(rpc::response(request["id"].clone(), Err(err)));
     };
-    let call = api::Call { core, conn, plain };
-    let params = crate::remote::from_peer(core, conn, request["params"].clone());
+    let reject = |err| Handled {
+        reply: request.get("id").map(|id| rpc::response(id.clone(), Err(err))),
+        framed: false,
+        stop: false,
+    };
+    let mut params = request["params"].clone();
+    if let Some(bound) = bound {
+        params = match endpoints::bind_params(method, params, bound) {
+            Ok(params) => params,
+            Err(err) => return reject(err),
+        };
+    }
+    let (params, remote) = crate::remote::from_peer(core, conn, params);
+    if let Err(err) = endpoints::check_run_request(method, &params, remote) {
+        return reject(err);
+    }
+    let call = api::Call { core, conn, plain, bound, remote };
     let result = match crate::remote::route(core, method, &params) {
         _ if method == "$/orphaned" => crate::remote::orphaned(core, conn, &params).await,
         Ok(Some((crate::remote::To::Machine(machine), params))) if method == "terminal.attach" => match conn {

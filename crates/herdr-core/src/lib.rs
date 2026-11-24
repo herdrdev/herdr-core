@@ -4,6 +4,7 @@ pub mod attach;
 pub mod cli;
 pub mod client;
 pub mod config;
+mod endpoints;
 pub mod events;
 pub mod exec;
 pub mod files;

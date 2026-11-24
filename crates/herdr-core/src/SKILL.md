@@ -180,6 +180,13 @@ A direct link with chunk support times out per piece. On a multi-hop route,
 a core sending the whole file to a relay applies its machine timeout to that call.
 `hc label <t> key=value` adds labels.
 
+### Bound terminals
+
+Use `hc run --bind` to give a local child its own endpoint. On that endpoint,
+`hello` returns `you.terminal` and `you.instance` so the child can identify itself
+and the running core. Calls that take a caller use the endpoint's terminal.
+The endpoint grants the same account-wide API access as the shared socket.
+
 ## Other machines and files
 
 Your harness's own file tools touch only the machine you run on. Use hc for

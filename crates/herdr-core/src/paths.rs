@@ -34,9 +34,9 @@ impl Paths {
             None => (run.join(format!("{prefix}{session}.sock")), run.join(format!("{prefix}{session}.holder.sock"))),
         };
         // Holders listen on `<holder_socket minus .sock>.<id>.sock`: the longest path.
-        let longest = holder_socket.as_os_str().len() + 1 + HOLDER_ID;
+        let longest = socket_path_len(&socket, &holder_socket);
         let max = crate::platform::MAX_SOCKET_PATH;
-        if socket.as_os_str().len().max(longest) > max {
+        if longest > max {
             return Err(RpcError::new(
                 "usage",
                 format!(
@@ -76,6 +76,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Hex digits in a holder's socket name.
 pub const HOLDER_ID: usize = 8;
+
+pub(crate) fn socket_path_len(socket: &Path, holder: &Path) -> usize {
+    socket.as_os_str().len().max(holder.as_os_str().len() + 1 + HOLDER_ID)
+}
 
 /// The session name goes into folder and pipe names. Spaces around it are
 /// dropped (cmd's `set X=a & ...` keeps the one before `&`); characters a

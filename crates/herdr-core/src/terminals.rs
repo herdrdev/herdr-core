@@ -1,6 +1,7 @@
 //! Terminal records: ids, names, labels, lifecycle facts and retention.
 //! Pure state, no IO; the core persists `Registry` as JSON.
 
+use crate::endpoints::EndpointRecord;
 use crate::rpc::RpcError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,10 +11,24 @@ pub const RETAIN_MS: u64 = 24 * 60 * 60 * 1000;
 pub const MAX_FINISHED: usize = 500;
 pub const KEEP_RETRY_MS: u64 = 1500;
 
+/// The endpoint's last observed state in full terminal records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Binding {
+    Bound,
+    Lost,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug, PartialEq)]
 pub struct Terminal {
     /// `t7`: this terminal forever on this core.
     pub address: String,
+    /// State of the endpoint requested when the terminal was started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub(crate) endpoint: Option<EndpointRecord>,
     pub name: Option<String>,
     pub labels: BTreeMap<String, String>,
     pub argv: Vec<String>,
@@ -262,6 +277,8 @@ impl Registry {
             id,
             Terminal {
                 address: address(id),
+                bound: None,
+                endpoint: None,
                 name: new.name,
                 labels: new.labels.into_iter().filter(|(_, v)| !v.is_empty()).collect(),
                 argv: new.argv,
@@ -417,6 +434,7 @@ const PRIVATE: &[&str] = &[
     "told_parent",
     "scope",
     "holder",
+    "endpoint",
     "printed",
     "full_screen",
     "win32_input",

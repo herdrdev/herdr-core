@@ -15,6 +15,24 @@ pub(super) enum ServerCmd {
     },
 }
 
+pub(super) fn check_endpoint_command(cmd: Option<&Cmd>) -> Result<(), RpcError> {
+    if crate::endpoints::in_cli()
+        && matches!(
+            cmd,
+            Some(
+                Cmd::Serve
+                    | Cmd::Hold { .. }
+                    | Cmd::Server { action: ServerCmd::Start | ServerCmd::Restart { .. } }
+                    | Cmd::Update { .. }
+                    | Cmd::Connect { session: Some(_) }
+            )
+        )
+    {
+        return Err(crate::endpoints::lifecycle_refusal());
+    }
+    Ok(())
+}
+
 pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
     if fresh && std::env::var_os("HC_TERMINAL_ID").is_some() {
         eprintln!(
@@ -51,7 +69,11 @@ pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
 
 /// Stops the core and returns once it has exited (its connection closes).
 pub(super) fn stop(paths: &Paths) -> Result<Out, RpcError> {
-    let Some(stream) = client::connect_existing(paths) else {
+    let stream = if crate::endpoints::in_cli() {
+        client::require_existing(paths)?
+    } else if let Some(stream) = client::connect_existing(paths) {
+        stream
+    } else {
         crate::restart::discard_if_stopped(paths);
         return Ok(Out { json: json!({"stopped": false}), human: "no core running".into() });
     };

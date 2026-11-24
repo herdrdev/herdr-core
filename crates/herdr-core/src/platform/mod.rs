@@ -9,6 +9,14 @@ pub use session::{LoginSession, holder_current};
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+#[cfg(unix)]
+mod unix_endpoint;
+#[cfg(unix)]
+pub(crate) use unix_endpoint::*;
+#[cfg(windows)]
+mod windows_endpoint;
+#[cfg(windows)]
+pub(crate) use windows_endpoint::*;
 
 #[cfg(target_os = "linux")]
 mod linux_login;
@@ -320,9 +328,16 @@ pub(crate) fn restored_environment(
         if named(key, "XPC_FLAGS") {
             return true;
         }
-        [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
-            .iter()
-            .any(|name| named(key, name))
+        [
+            crate::sweep::VAR,
+            crate::sweep::RUNTIME,
+            crate::endpoints::MODE,
+            "HC_LAUNCHD_DIRECT",
+            "HC_LAUNCHD_DETACH",
+            "_HC_RESPONSIBLE_PID",
+        ]
+        .iter()
+        .any(|name| named(key, name))
     };
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();

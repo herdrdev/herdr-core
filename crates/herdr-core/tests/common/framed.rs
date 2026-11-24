@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub type Frame = (u32, u8, Vec<u8>);
@@ -21,12 +22,24 @@ pub struct Framed {
 impl Framed {
     pub fn open(s: &Session) -> Framed {
         s.json(&["server", "start"]);
-        let stream = UnixStream::connect(s.socket()).unwrap();
+        Self::open_at(&s.socket())
+    }
+
+    pub fn open_at(path: &Path) -> Framed {
+        Self::hello_at(path, json!({"framed": true}))
+    }
+
+    pub fn hello_at(path: &Path, params: Value) -> Framed {
+        let stream = UnixStream::connect(path).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut writer = stream;
-        writeln!(writer, r#"{{"jsonrpc":"2.0","id":0,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
+        let hello = json!({"jsonrpc": "2.0", "id": 0, "method": "hello", "params": params});
+        writeln!(writer, "{hello}").unwrap();
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["result"]["framed"], true, "{reply}");
         Framed { reader, writer, next_id: 1, stash: VecDeque::new() }
     }
 
@@ -50,9 +63,13 @@ impl Framed {
 
     /// One call on channel 0; other frames that arrive meanwhile are stashed.
     pub fn call(&mut self, method: &str, params: Value) -> Value {
+        self.request(json!({"jsonrpc": "2.0", "method": method, "params": params}))
+    }
+
+    pub fn request(&mut self, mut req: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
-        let req = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        req["id"] = id.into();
         self.send(0, wire::DATA, req.to_string().as_bytes());
         loop {
             let frame = self.read(Duration::from_secs(10)).expect("reply");

@@ -113,6 +113,14 @@ pub struct HelloParams {
 }
 
 #[derive(Serialize, JsonSchema)]
+pub struct EndpointCaller {
+    /// Terminal that owns this connection's endpoint.
+    pub terminal: String,
+    /// Running core instance that accepted this connection.
+    pub instance: String,
+}
+
+#[derive(Serialize, JsonSchema)]
 pub struct HelloResult {
     pub generation: u32,
     pub version: String,
@@ -120,6 +128,11 @@ pub struct HelloResult {
     pub framed: bool,
     pub methods: Vec<String>,
     pub features: Vec<String>,
+    /// Random id of the running core process. Changes on restart.
+    pub instance: String,
+    /// Present when this connection is on a terminal's bound endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub you: Option<EndpointCaller>,
     /// OS login inherited by this core. Absent when unavailable or unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_session: Option<crate::platform::LoginSession>,
@@ -143,6 +156,8 @@ pub struct HolderInfo {
 #[derive(Serialize, JsonSchema)]
 pub struct StatusResult {
     pub core: CoreInfo,
+    /// Random id of the running core process. Changes on restart.
+    pub instance: String,
     pub version: String,
     pub pid: u32,
     pub uptime_ms: u64,
@@ -304,6 +319,10 @@ pub struct RunParams {
     /// Who is calling (`HC_TERMINAL_ID` inside a terminal).
     #[arg(skip)]
     pub caller: Option<String>,
+    /// Give this terminal an endpoint that identifies it as the caller. Local runs only.
+    #[arg(long)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bind: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]

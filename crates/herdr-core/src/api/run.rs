@@ -89,18 +89,12 @@ pub(crate) fn not_stopping(st: &crate::runtime::State) -> Result<(), RpcError> {
 }
 
 pub(super) async fn start(
-    core: &Arc<Core>,
+    core: Ctx<'_>,
     p: RunParams,
     template: Option<crate::templates::Template>,
 ) -> Result<Terminal, RpcError> {
+    crate::endpoints::check_run(p.bind, p.on.is_some(), core.remote)?;
     not_stopping(&core.lock())?;
-    core.ensure_holder().await.map_err(|e| {
-        RpcError::new(
-            "unavailable",
-            format!("no holder: {e}"),
-            "run hc server restart on this machine, then retry; see holder.log and core.log in the state directory",
-        )
-    })?;
     let settings = crate::config::load(&core.paths.config)?;
     let (cols, rows) = match p.size {
         Some(size) if size.cols > 0 && size.rows > 0 => (size.cols, size.rows),
@@ -130,6 +124,15 @@ pub(super) async fn start(
             .map(crate::terminals::address),
         _ => None,
     };
+    let endpoint_path = p.bind.then(|| crate::endpoints::new_path(&core.paths)).transpose()?;
+    core.ensure_holder().await.map_err(|e| {
+        RpcError::new(
+            "unavailable",
+            format!("no holder: {e}"),
+            "run hc server restart on this machine, then retry; see holder.log and core.log in the state directory",
+        )
+    })?;
+    let endpoint = endpoint_path.as_deref().map(crate::endpoints::Prepared::bind).transpose()?;
     let (id, rx) = {
         let mut st = core.lock();
         not_stopping(&st)?;
@@ -160,13 +163,16 @@ pub(super) async fn start(
             identity: identity.clone(),
         };
         let id = st.reg.create(new, now_ms())?;
+        if let Some(endpoint) = endpoint {
+            endpoint.install(core.core, &mut st, id);
+        }
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
         if let Some(display) = &p.display {
             display.apply(&mut screen);
         }
         st.screens.insert(id, screen);
-        let (env, scope) = terminal_env(core, id, &cwd, env);
+        let (env, scope) = terminal_env(core, id, &cwd, env, endpoint_path.as_deref());
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
@@ -214,9 +220,19 @@ pub(crate) fn terminal_env(
     id: u32,
     cwd: &str,
     mut env: BTreeMap<String, String>,
+    endpoint: Option<&std::path::Path>,
 ) -> (BTreeMap<String, String>, String) {
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
-    env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
+    if let Some(path) = endpoint {
+        let keys = ["HC_SOCKET", "HC_TERMINAL_SOCKET", crate::endpoints::MODE];
+        env.retain(|k, _| !keys.iter().any(|key| crate::platform::environment_key_eq(k.as_ref(), key)));
+        let path = path.to_str().expect("a terminal endpoint has a UTF-8 path");
+        env.insert("HC_SOCKET".into(), path.into());
+        env.insert("HC_TERMINAL_SOCKET".into(), path.into());
+        env.insert(crate::endpoints::MODE.into(), "1".into());
+    } else {
+        env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
+    }
     let scope = crate::sweep::token();
     env.insert(crate::sweep::VAR.into(), scope.clone());
     // Preserve the requested spelling, including symlinks.
@@ -237,6 +253,7 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("TERM_PROGRAM".into(), "ghostty".into());
     crate::platform::merge_env(&mut env, extra);
+    env.retain(|key, _| !crate::platform::environment_key_eq(key.as_ref(), crate::endpoints::MODE));
     if let Ok(session) = std::env::var("HC_SESSION") {
         env.insert("HC_SESSION".into(), session);
     }

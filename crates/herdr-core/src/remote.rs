@@ -618,18 +618,20 @@ async fn from_machine(core: Arc<Core>, m: Machine, line: Arc<Line>, message: Val
         }
         return;
     }
-    let result = match parent.filter(|_| CALLS_BACK.contains(&method)) {
-        None => Err(RpcError::new(
+    let allowed = parent.filter(|_| CALLS_BACK.contains(&method));
+    let result = match (crate::endpoints::check_run_request(method, &params, true), allowed) {
+        (Err(e), _) => Err(e),
+        (Ok(()), None) => Err(RpcError::new(
             "denied",
             format!("{} may only reach the terminals here that started its own", m.name),
             "",
         )),
-        Some(id) => {
+        (Ok(()), Some(id)) => {
             params["terminal"] = crate::terminals::address(id).into();
             if let Some(caller) = params["caller"].as_str() {
                 params["caller"] = format!("{}/{caller}", m.name).into();
             }
-            let call = crate::api::Call { core: &core, conn: None, plain: None };
+            let call = crate::api::Call { core: &core, conn: None, plain: None, bound: None, remote: true };
             crate::api::dispatch(&call, method, params).await
         }
     };
@@ -687,25 +689,19 @@ pub fn peer_joined(core: &Arc<Core>, conn: &Arc<Conn>, hello: &Value) {
     save_peers(core, &st);
 }
 
-/// A call from a peer: its callers (`<its id>/t3`) as this core calls them.
-pub fn from_peer(core: &Core, conn: Option<&Arc<Conn>>, mut params: Value) -> Value {
-    let Some(conn) = conn else { return params };
+/// Record whether this call came from a peer and translate what it calls its terminals.
+pub fn from_peer(core: &Core, conn: Option<&Arc<Conn>>, mut params: Value) -> (Value, bool) {
+    let Some(conn) = conn else { return (params, false) };
     let st = core.lock();
     let key = conn_key(conn);
-    let Some((id, (_, line))) = st.peer_lines.iter().find(|(_, (k, _))| *k == key) else { return params };
+    let Some((id, (_, line))) = st.peer_lines.iter().find(|(_, (k, _))| *k == key) else { return (params, false) };
     negotiate_resize(line, &mut params);
     if let (Some(rest), Some(peer)) =
         (params["caller"].as_str().and_then(|c| c.strip_prefix(&format!("{id}/"))), st.peers.get(id))
     {
         params["caller"] = format!("{}/{rest}", peer.name).into();
     }
-    params
-}
-
-/// Whether `conn` is a core that dialed in.
-pub fn is_peer(core: &Core, conn: &Arc<Conn>) -> bool {
-    let key = conn_key(conn);
-    core.lock().peer_lines.values().any(|(k, _)| *k == key)
+    (params, true)
 }
 
 pub fn peer_left(core: &Core, conn: &Arc<Conn>) {

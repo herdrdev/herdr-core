@@ -14,6 +14,31 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
 
 #[test]
+fn a_bound_terminal_reaches_its_own_pipe() {
+    let s = Session::new();
+    let script = s.file(
+        "bound.ps1",
+        &format!(
+            r#"
+if ($env:HC_ENDPOINT -ne '1' -or $env:HC_SOCKET -ne $env:HC_TERMINAL_SOCKET) {{ exit 1 }}
+$request = '{{"jsonrpc":"2.0","id":1,"method":"hello"}}'
+$reply = $request | & '{BIN}' connect
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'hello.json'), ($reply -join "`n"))
+Start-Sleep -Seconds 100
+"#,
+        ),
+    );
+    let child = s.bg(&["--bind", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script]);
+    let reply = s.root.join("hello.json");
+    let mut hello = Value::Null;
+    wait_until("bound child receives raw hello", || {
+        hello = std::fs::read(&reply).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+        !hello.is_null()
+    });
+    assert_eq!(hello["result"]["you"]["terminal"], child);
+}
+
+#[test]
 fn via_runs_without_a_console_and_passes_the_remote_line_whole() {
     let s = Session::new();
     std::fs::create_dir_all(s.root.join("via dir")).unwrap();
@@ -142,6 +167,7 @@ fn cmd_at(exe: &Path, session: &str, root: &Path) -> Command {
         .env("HC_SETTLE_MS", "0")
         .env_remove("HC_TERMINAL_ID")
         .env_remove("HC_SOCKET")
+        .env_remove("HC_ENDPOINT")
         .env_remove("SSH_CONNECTION")
         .env_remove("SSH_CLIENT")
         .env_remove("SSH_TTY");

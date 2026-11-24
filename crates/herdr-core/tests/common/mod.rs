@@ -5,7 +5,7 @@ pub mod framed;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -139,7 +139,11 @@ impl Session {
 
     /// A raw plain-mode connection to an already running core.
     pub fn connect(&self) -> Conn {
-        let stream = UnixStream::connect(self.socket()).unwrap();
+        self.connect_at(&self.socket())
+    }
+
+    pub fn connect_at(&self, path: &Path) -> Conn {
+        let stream = UnixStream::connect(path).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         Conn { reader: BufReader::new(stream.try_clone().unwrap()), writer: stream }
     }
@@ -199,6 +203,10 @@ pub struct Conn {
 impl Conn {
     pub fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
         let req = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.request(req)
+    }
+
+    pub fn request(&mut self, req: Value) -> Value {
         writeln!(self.writer, "{req}").unwrap();
         let mut line = String::new();
         self.reader.read_line(&mut line).unwrap();
