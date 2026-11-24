@@ -128,6 +128,10 @@ pub struct Conn {
     pub puts_pending: std::sync::Mutex<std::collections::HashMap<String, (usize, bool)>>,
     /// The core ends it: it misbehaved.
     pub end: tokio::sync::Notify,
+    /// A stream on it was relayed to another core, so its frames may belong there.
+    pub relayed: std::sync::atomic::AtomicBool,
+    /// A viewer on it may have a resize repaint waiting, so its writer must look in the state.
+    pub repaints: std::sync::atomic::AtomicBool,
 }
 
 impl Conn {

@@ -140,6 +140,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));
         let (old_frames, mut old_rx) = mpsc::unbounded_channel();
+        conn.relayed.store(true, Ordering::SeqCst);
         core.lock().relayed.insert(
             (conn_key(&conn), 7),
             Relayed {
@@ -196,6 +197,7 @@ async fn reattach_applies_missed_sizes_without_replaying_delivered_activity() {
     }))
     .unwrap();
     let conn = Arc::new(Conn::default());
+    conn.relayed.store(true, Ordering::SeqCst);
     let (old_frames, _old_rx) = mpsc::unbounded_channel();
     let old = Line::new(old_frames, &json!({}));
     let (frames, mut rx) = mpsc::unbounded_channel();
@@ -467,4 +469,30 @@ fn the_line_lost_notice_shows_even_if_the_line_dropped_mid_sequence() {
     screen.write(b"\x1b_Gm=1;AAAA");
     screen.write(lost_notice("rohan").as_bytes());
     assert!(screen.plain_text().contains("[line to rohan lost"));
+}
+
+#[test]
+fn frames_on_a_connection_that_never_relayed_do_not_wait_for_the_state_lock() {
+    let root = crate::test_tmp().join(format!("hc-relay-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let conn = Arc::new(Conn::default());
+    // Stands in for output being parsed.
+    let parsing = core.lock();
+    let (done, credited) = std::sync::mpsc::channel();
+    let c = core.clone();
+    let credit =
+        std::thread::spawn(move || done.send(relay_in(&c, &conn, 7, wire::CREDIT, &1u32.to_le_bytes())).unwrap());
+    let relayed = credited.recv_timeout(std::time::Duration::from_secs(2));
+    drop(parsing);
+    credit.join().unwrap();
+    assert_eq!(relayed, Ok(false));
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
 }
