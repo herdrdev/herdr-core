@@ -201,7 +201,15 @@ async fn handover_carries_held_replies_and_answers_including_final_holder_output
             login_session: None,
             draining: false,
             previous: "handover".into(),
-            terminals: vec![proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None }],
+            terminals: vec![proto::HeldTerminal {
+                id,
+                pid: 0,
+                cols: 80,
+                rows: 24,
+                exit: None,
+                raw_offset: 0,
+                saved_offset: 0,
+            }],
         };
         successor.adopt(&mut st, &welcome, HashMap::new());
         assert!(st.reg.replies.is_empty());
@@ -539,7 +547,7 @@ fn on_fake_holder(root: &std::path::Path, answers: &[&str]) -> (Arc<Core>, u32, 
         st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
         id
     };
-    let held = proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None };
+    let held = proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None, raw_offset: 0, saved_offset: 0 };
     let welcome = proto::Welcome {
         version: proto::VERSION,
         instance: "fake".into(),
@@ -745,7 +753,15 @@ fn status_events_on_crash_adoption(tail: &[u8]) -> Vec<Value> {
         login_session: None,
         draining: false,
         previous: "crash".into(),
-        terminals: vec![proto::HeldTerminal { id, pid: 1, cols: 80, rows: 24, exit: None }],
+        terminals: vec![proto::HeldTerminal {
+            id,
+            pid: 1,
+            cols: 80,
+            rows: 24,
+            exit: None,
+            raw_offset: 0,
+            saved_offset: 0,
+        }],
     };
     {
         let mut st = core.lock();
