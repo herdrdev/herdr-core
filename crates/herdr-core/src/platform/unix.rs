@@ -796,18 +796,26 @@ impl Pty {
         }
     }
 
-    /// Its program is gone: hang up what still holds the terminal.
-    pub fn hang_up(&self, pid: u32) {
+    /// Its program is gone: hang up what still holds the terminal, and wake
+    /// any foreground job signaled before the leader exited.
+    pub fn hang_up(&self, pid: u32, still_open: bool) {
         let sid = pid as i32;
-        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
         let signaled_fg = self.signaled_foreground.swap(0, Ordering::Relaxed);
         // Send SIGHUP + SIGCONT to both the shell's group and its signaled
         // foreground job group: a TUI job stopped by SIGTTOU during shell
         // teardown (e.g. restoring termios right after the shell ran TIOCSPGRP)
         // stays frozen in T state if the shell exited before the stop settled.
+        // On macOS, XNU revokes the PTY when the session leader exits, so the
+        // master reader sees EOF (`!still_open`) even while that stopped job
+        // is still alive; still wake the foreground group we signaled.
+        let candidates = if still_open {
+            [sid, unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }, signaled_fg]
+        } else {
+            [0, 0, signaled_fg]
+        };
         let mut signaled = [0i32; 3];
         let mut count = 0;
-        for pgid in [sid, fg, signaled_fg] {
+        for pgid in candidates {
             if pgid > 0 && !signaled[..count].contains(&pgid) && (pgid == sid || same_session(pgid, sid)) {
                 signaled[count] = pgid;
                 count += 1;
