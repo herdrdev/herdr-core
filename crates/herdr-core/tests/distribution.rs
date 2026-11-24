@@ -609,6 +609,36 @@ fn the_install_script_marks_only_plain_release_downloads() {
     }
 }
 
+/// A checksum tool that exists but cannot run (another CPU's) is not a damaged
+/// download: the other one checks it, and with neither nothing is installed.
+#[test]
+fn the_install_script_checks_with_whichever_sha256_tool_runs() {
+    let s = Session::new();
+    let r = Releases::new(&s, THIS, &[&here()]);
+    let (stub, bin) = (s.root.join("stub"), s.root.join("bin"));
+    std::fs::create_dir_all(&stub).unwrap();
+    for tool in ["sha256sum", "shasum"] {
+        std::fs::write(stub.join(tool), "#!/bin/sh\nexit 126\n").unwrap();
+        Command::new("chmod").arg("755").arg(stub.join(tool)).status().unwrap();
+    }
+    let install = || {
+        s.program("sh")
+            .arg(format!("{ROOT}/../../distribution/install.sh"))
+            .env("PATH", format!("{}:/usr/bin:/bin", stub.display()))
+            .env("HERDR_RELEASES_URL", &r.url)
+            .env("HC_INSTALL_DIR", &bin)
+            .output()
+            .unwrap()
+    };
+    let out = install();
+    assert!(!out.status.success() && !bin.join("herdr-core").exists(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot check the download"), "{out:?}");
+
+    std::fs::remove_file(stub.join("shasum")).unwrap();
+    let out = install();
+    assert!(out.status.success() && bin.join("herdr-core").exists(), "{out:?}");
+}
+
 #[test]
 fn hc_update_downloads_checks_and_swaps() {
     let mut s = Session::new();
