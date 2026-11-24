@@ -99,6 +99,31 @@ fn queries_are_answered_once_by_the_core_with_the_viewers_colors() {
 }
 
 #[test]
+fn the_pty_size_carries_the_leading_viewers_cell_pixels() {
+    let s = Session::new();
+    std::fs::write(
+        s.root.join("px.py"),
+        "import fcntl, struct, termios\n\
+         print('PX', *struct.unpack('4H', fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))))\n",
+    )
+    .unwrap();
+    let px = format!("python3 {}", s.root.join("px.py").display());
+    let t = run(&s, &["sh", "-c", &script(&s, &format!("w go; {px}; w cell; {px}; w size; {px}; sleep 100"))]);
+    let mut v = Viewer::attach(&s, &t, 80, 24, json!({"display": {"cell": [9, 18]}}));
+    go(&s);
+    v.shows("PX 24 80 720 432");
+    // A new cell alone (e.g. a font size change) reaches the program too.
+    v.conn.send(v.channel, wire::FACTS, br#"{"cell":[10,20]}"#);
+    v.conn.call("terminal.get", json!({"terminal": t}));
+    touch(&s, "cell");
+    v.shows("PX 24 80 800 480");
+    v.conn.send(v.channel, wire::RESIZE, &[90, 0, 20, 0]);
+    v.conn.call("terminal.get", json!({"terminal": t}));
+    touch(&s, "size");
+    v.shows("PX 20 90 900 400");
+}
+
+#[test]
 fn display_changes_notify_an_idle_subscribed_program() {
     let s = Session::new();
     let received = s.root.join("replies");
