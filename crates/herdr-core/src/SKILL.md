@@ -90,6 +90,9 @@ children finish:
 - `reason: message`: the message arrives as your next input, possibly late;
   it is not output to fetch with `hc read`. Process it and wait again if needed.
 - `reason: timeout` (default 180 seconds): a check-in, not failure; wait again.
+  `--timeout` takes seconds (e.g. `600`, not `10m`). On an error exit, stop
+  and fix the error; do not loop on the exit status. A successful wait may
+  report a child exit separately in its result.
 - A child with a sent launch task counts as working until its turn advances
   past delivery, its root reports done, blocked, error after delivery, or it
   exits. Startup words and child records do not complete that task in either
@@ -346,6 +349,6 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include
-  3 not_found, 7 needs_target, 9 blocked, 10 status_mismatch, 11 finished.
+  2 usage, 3 not_found, 7 needs_target, 9 blocked, 10 status_mismatch, 11 finished.
 - Codex must run with `--no-daemon` (including templates), or its commands
   execute outside hc.
