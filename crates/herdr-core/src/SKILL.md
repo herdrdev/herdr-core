@@ -243,6 +243,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
+- `send --if idle|working|done` types only while the status is exactly that;
+  otherwise it types nothing (`status_mismatch`). `blocked` still needs `--force`.
 - A new Linux core started over SSH loads the account shell's non-interactive
   login environment once, so remote terminals and commands can find programs
   from login PATH settings. Local Linux starts, macOS and Windows are unchanged.
