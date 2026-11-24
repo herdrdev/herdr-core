@@ -128,8 +128,6 @@ pub struct Conn {
     pub puts_pending: std::sync::Mutex<std::collections::HashMap<String, (usize, bool)>>,
     /// The core ends it: it misbehaved.
     pub end: tokio::sync::Notify,
-    /// A stream on it was relayed to another core, so its frames may belong there.
-    pub relayed: std::sync::atomic::AtomicBool,
     /// A viewer on it may have a resize repaint waiting, so its writer must look in the state.
     pub repaints: std::sync::atomic::AtomicBool,
 }
@@ -162,6 +160,8 @@ struct Stream {
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
     ending: Option<Vec<u8>>,
+    /// This channel is relayed to another core.
+    relayed: bool,
 }
 
 /// What one connection still has to send. Control frames always go first;
@@ -193,8 +193,25 @@ impl Outbox {
     pub fn open(&mut self, channel: u32) {
         self.streams.insert(
             channel,
-            Stream { pending: VecDeque::new(), resizes: VecDeque::new(), paused: false, credit: WINDOW, ending: None },
+            Stream {
+                pending: VecDeque::new(),
+                resizes: VecDeque::new(),
+                paused: false,
+                credit: WINDOW,
+                ending: None,
+                relayed: false,
+            },
         );
+    }
+
+    pub fn set_relayed(&mut self, channel: u32, relayed: bool) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.relayed = relayed;
+        }
+    }
+
+    pub fn is_relayed(&self, channel: u32) -> bool {
+        self.streams.get(&channel).is_some_and(|s| s.relayed)
     }
 
     /// Attach output must wait until the reply installs the receiver's channel mapping.
@@ -240,7 +257,10 @@ impl Outbox {
     /// its last screen is what the viewer most wants to see).
     pub fn finish(&mut self, channel: u32, reason: &[u8]) {
         match self.streams.get_mut(&channel) {
-            Some(s) => s.ending = Some(reason.to_vec()),
+            Some(s) => {
+                s.relayed = false;
+                s.ending = Some(reason.to_vec());
+            }
             None => self.control(encode(channel, CLOSE, reason)),
         }
     }

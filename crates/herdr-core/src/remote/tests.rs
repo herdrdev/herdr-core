@@ -140,7 +140,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));
         let (old_frames, mut old_rx) = mpsc::unbounded_channel();
-        conn.relayed.store(true, Ordering::SeqCst);
+        conn.outbox().set_relayed(7, true);
         core.lock().relayed.insert(
             (conn_key(&conn), 7),
             Relayed {
@@ -197,7 +197,6 @@ async fn reattach_applies_missed_sizes_without_replaying_delivered_activity() {
     }))
     .unwrap();
     let conn = Arc::new(Conn::default());
-    conn.relayed.store(true, Ordering::SeqCst);
     let (old_frames, _old_rx) = mpsc::unbounded_channel();
     let old = Line::new(old_frames, &json!({}));
     let (frames, mut rx) = mpsc::unbounded_channel();
@@ -206,6 +205,10 @@ async fn reattach_applies_missed_sizes_without_replaying_delivered_activity() {
     for (ch, active_at, target, via) in
         [(7, now - Duration::from_secs(1), "t1", &old), (8, now, "t1", &old), (9, now, "t2", &line)]
     {
+        conn.with(|out| {
+            out.open(ch);
+            out.set_relayed(ch, true);
+        });
         core.lock().relayed.insert(
             (conn_key(&conn), ch),
             Relayed {
@@ -489,6 +492,37 @@ fn frames_on_a_connection_that_never_relayed_do_not_wait_for_the_state_lock() {
     let c = core.clone();
     let credit =
         std::thread::spawn(move || done.send(relay_in(&c, &conn, 7, wire::CREDIT, &1u32.to_le_bytes())).unwrap());
+    let relayed = credited.recv_timeout(std::time::Duration::from_secs(2));
+    drop(parsing);
+    credit.join().unwrap();
+    assert_eq!(relayed, Ok(false));
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn frames_on_a_local_channel_do_not_wait_for_the_state_lock_when_another_channel_is_relayed() {
+    let root = crate::test_tmp().join(format!("hc-relay-shared-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let conn = Arc::new(Conn::default());
+    conn.with(|out| {
+        out.open(1);
+        out.set_relayed(1, true);
+        out.open(2);
+    });
+    // Stands in for output being parsed.
+    let parsing = core.lock();
+    let (done, credited) = std::sync::mpsc::channel();
+    let c = core.clone();
+    let credit =
+        std::thread::spawn(move || done.send(relay_in(&c, &conn, 2, wire::CREDIT, &1u32.to_le_bytes())).unwrap());
     let relayed = credited.recv_timeout(std::time::Duration::from_secs(2));
     drop(parsing);
     credit.join().unwrap();
