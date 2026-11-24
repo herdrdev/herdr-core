@@ -55,9 +55,8 @@ pub fn build_id() -> String {
     static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUILD
         .get_or_init(|| {
-            #[cfg(target_os = "linux")]
-            if let Some(id) = running_build_id() {
-                return format!("elf:{id}");
+            if let Some(id) = platform::running_build_id() {
+                return id;
             }
             let exe = EXE.get().cloned().or_else(|| std::env::current_exe().ok());
             exe.and_then(|e| std::fs::metadata(e).ok()).map(|m| platform::file_identity(&m)).unwrap_or_default()
@@ -94,7 +93,7 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
     if let Some(err) = listening_elsewhere(paths) {
         return Err(err);
     }
-    platform::may_autostart(explicit)?;
+    platform::may_autostart(paths, explicit)?;
     paths.create_dirs().map_err(|e| unavailable(format!("cannot start core: {e}")))?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -140,57 +139,6 @@ fn listening_elsewhere(paths: &Paths) -> Option<RpcError> {
     ))
 }
 
-#[cfg(target_os = "linux")]
-fn running_build_id() -> Option<String> {
-    use std::io::Read;
-    let mut head = Vec::new();
-    std::fs::File::open("/proc/self/exe").ok()?.take(64 << 10).read_to_end(&mut head).ok()?;
-    elf_build_id(&head)
-}
-
-/// The GNU build-id note of a 64-bit little-endian ELF, from its first bytes.
-#[cfg(target_os = "linux")]
-fn elf_build_id(elf: &[u8]) -> Option<String> {
-    let int = |at: usize, len: usize| {
-        let bytes = elf.get(at..at.checked_add(len)?)?;
-        Some(bytes.iter().rev().fold(0usize, |n, &b| n << 8 | b as usize))
-    };
-    if elf.get(..6)? != b"\x7fELF\x02\x01" {
-        return None;
-    }
-    let (table, size) = (int(0x20, 8)?, int(0x36, 2)?);
-    (0..int(0x38, 2)?).find_map(|i| {
-        let header = table.checked_add(i.checked_mul(size)?)?;
-        if int(header, 4)? != 4 {
-            return None; // not PT_NOTE
-        }
-        let mut at = int(header + 8, 8)?;
-        let end = at.checked_add(int(header + 0x20, 8)?)?;
-        while at.checked_add(12)? <= end {
-            let (name, desc, kind) = (int(at, 4)?, int(at + 4, 4)?, int(at + 8, 4)?);
-            let desc_at = (at + 12).checked_add(name.next_multiple_of(4))?;
-            if kind == 3 && elf.get(at + 12..at + 12 + name)? == b"GNU\0" {
-                let id = elf.get(desc_at..desc_at.checked_add(desc)?)?;
-                return Some(id.iter().map(|b| format!("{b:02x}")).collect());
-            }
-            at = desc_at.checked_add(desc.next_multiple_of(4))?;
-        }
-        None
-    })
-}
-
-#[cfg(all(test, target_os = "linux"))]
-#[test]
-fn the_build_is_named_by_the_linkers_build_id() {
-    let elf = std::fs::read("/proc/self/exe").unwrap();
-    let id = elf_build_id(&elf).expect("the linker stamps a build id");
-    assert_eq!(build_id(), format!("elf:{id}"));
-    let note = elf.windows(16).position(|w| w[12..] == *b"GNU\0" && w[8..12] == [3, 0, 0, 0]).unwrap() + 16;
-    assert_eq!(id.len() / 2, elf[note - 12] as usize);
-    assert_eq!(&id[..2], format!("{:02x}", elf[note]));
-    assert_eq!(elf_build_id(b"#!/bin/sh\n"), None);
-}
-
 pub fn spawn_core(paths: &Paths) -> Result<(), RpcError> {
     spawn_detached(paths, &["serve"], "core.log").map_err(|e| unavailable(format!("cannot start core: {e}")))
 }
@@ -209,15 +157,7 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.
     cmd.args(args).env_remove(crate::sweep::VAR).env(crate::sweep::RUNTIME, "1");
-    #[cfg(target_os = "linux")]
-    if let Some(started) = platform::systemd::spawn(&cmd, &log) {
-        return started;
-    }
-    if platform::spawn_core_job(&mut cmd, &log) {
-        return Ok(());
-    }
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    platform::spawn_detached(cmd, log)
+    platform::spawn_runtime(paths, cmd, &log)
 }
 
 /// How long a starting core or holder may take to answer. A busy machine (or

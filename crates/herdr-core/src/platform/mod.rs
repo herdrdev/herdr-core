@@ -12,8 +12,12 @@ pub use unix::*;
 
 #[cfg(target_os = "linux")]
 mod linux_login;
+#[cfg(any(target_os = "linux", all(unix, test)))]
+mod linux_session;
 #[cfg(target_os = "linux")]
-pub mod systemd;
+mod systemd;
+#[cfg(target_os = "linux")]
+mod systemd_linger;
 
 /// Only a new SSH-started Linux core imports login settings; holders inherit the core.
 #[allow(unused_variables)]
@@ -40,7 +44,7 @@ mod macos_shutdown;
 pub fn logout_linger() -> (Option<bool>, Option<String>) {
     #[cfg(target_os = "linux")]
     {
-        systemd::logout_linger()
+        systemd_linger::logout_linger()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -51,7 +55,7 @@ pub fn logout_linger() -> (Option<bool>, Option<String>) {
 /// Refresh logout survival away from request handling.
 pub fn start_logout_linger() {
     #[cfg(target_os = "linux")]
-    systemd::start_logout_linger();
+    systemd_linger::start_logout_linger();
 }
 
 /// Whether foreground observations can distinguish a shell from its jobs.
@@ -170,9 +174,112 @@ pub fn verify_release_bundle(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether this session may start or restart the core.
+pub fn may_autostart(paths: &crate::paths::Paths, explicit: bool) -> Result<(), crate::rpc::RpcError> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = explicit;
+        linux_session::check_autostart(paths)
+    }
+    #[cfg(windows)]
+    {
+        let _ = paths;
+        if explicit { Ok(()) } else { windows_session::check_autostart() }
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (paths, explicit);
+        Ok(())
+    }
+}
+
+/// Starts a detached core or holder runtime (Linux systemd user service, macOS launchd job, or OS detached process).
+pub fn spawn_runtime(
+    paths: &crate::paths::Paths,
+    mut cmd: std::process::Command,
+    log: &std::path::Path,
+) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    match systemd::spawn(paths, &cmd, log) {
+        systemd::Spawn::Started => return Ok(()),
+        systemd::Spawn::Failed(err) => return Err(err),
+        systemd::Spawn::NoUserManager => {}
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = paths;
+    if spawn_core_job(&mut cmd, log) {
+        return Ok(());
+    }
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
+    spawn_detached(cmd, log)
+}
+
+/// Build identifier for the currently executing binary when provided directly by the OS format.
+pub fn running_build_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_running_build_id().map(|id| format!("elf:{id}"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_running_build_id() -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open("/proc/self/exe").ok()?.take(64 << 10).read_to_end(&mut head).ok()?;
+    elf_build_id(&head)
+}
+
+/// The GNU build-id note of a 64-bit little-endian ELF, from its first bytes.
+#[cfg(target_os = "linux")]
+fn elf_build_id(elf: &[u8]) -> Option<String> {
+    let int = |at: usize, len: usize| {
+        let bytes = elf.get(at..at.checked_add(len)?)?;
+        Some(bytes.iter().rev().fold(0usize, |n, &b| n << 8 | b as usize))
+    };
+    if elf.get(..6)? != b"\x7fELF\x02\x01" {
+        return None;
+    }
+    let (table, size) = (int(0x20, 8)?, int(0x36, 2)?);
+    (0..int(0x38, 2)?).find_map(|i| {
+        let header = table.checked_add(i.checked_mul(size)?)?;
+        if int(header, 4)? != 4 {
+            return None; // not PT_NOTE
+        }
+        let mut at = int(header + 8, 8)?;
+        let end = at.checked_add(int(header + 0x20, 8)?)?;
+        while at.checked_add(12)? <= end {
+            let (name, desc, kind) = (int(at, 4)?, int(at + 4, 4)?, int(at + 8, 4)?);
+            let desc_at = (at + 12).checked_add(name.next_multiple_of(4))?;
+            if kind == 3 && elf.get(at + 12..at + 12 + name)? == b"GNU\0" {
+                let id = elf.get(desc_at..desc_at.checked_add(desc)?)?;
+                return Some(id.iter().map(|b| format!("{b:02x}")).collect());
+            }
+            at = desc_at.checked_add(desc.next_multiple_of(4))?;
+        }
+        None
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn the_build_is_named_by_the_linkers_build_id() {
+    let elf = std::fs::read("/proc/self/exe").unwrap();
+    let id = elf_build_id(&elf).expect("the linker stamps a build id");
+    assert_eq!(crate::client::build_id(), format!("elf:{id}"));
+    let note = elf.windows(16).position(|w| w[12..] == *b"GNU\0" && w[8..12] == [3, 0, 0, 0]).unwrap() + 16;
+    assert_eq!(id.len() / 2, elf[note - 12] as usize);
+    assert_eq!(&id[..2], format!("{:02x}", elf[note]));
+    assert_eq!(elf_build_id(b"#!/bin/sh\n"), None);
+}
+
 /// macOS cores leave the app's process coalition; holders inherit the core's.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
+fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
     #[cfg(target_os = "macos")]
     if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
         return macos_launchd::spawn(cmd, log);
@@ -343,8 +450,8 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
     #[cfg(target_os = "linux")]
     {
         env.retain(|k, _| !systemd::SERVICE.contains(&k.as_str()));
-        if let Ok(Some(manager)) = tokio::task::spawn_blocking(systemd::manager_env).await {
-            systemd::apply_session(&mut env, &manager);
+        if let Ok(Some(manager)) = tokio::task::spawn_blocking(systemd_linger::manager_env).await {
+            systemd_linger::apply_session(&mut env, &manager);
         }
     }
     #[cfg(windows)]

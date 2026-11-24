@@ -335,6 +335,17 @@ paths start at your current folder. Prefer explicit paths for remote work.
   new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
   not by the saved environment. The update from an older core to 0.1.19 takes the
   updater's environment once: older cores can't write the note for their successor.
+- On Linux, shared sessions require a reachable `systemd --user` manager when
+  running inside a systemd service cgroup unless its `KillMode` is `process` or
+  `none`. When `systemd --user` is unreachable (custom `XDG_RUNTIME_DIR` or
+  missing tool/socket), autostart, `hc server restart`, and restarting a running
+  core during `hc update` refuse inside `KillMode=mixed`, `control-group`, or
+  unverified services so stopping that unit cannot kill the core and live
+  terminals. Enable linger (`loginctl enable-linger`) with standard
+  `XDG_RUNTIME_DIR`, run `hc server start` outside the service, or set
+  `KillMode=process`. Isolated sessions (`HC_SESSION` not `default`, with
+  scratch `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` outside shared home state) stay
+  allowed and keep stderr free of fallback warnings.
 - On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
   processes. They hang up the terminal and end its own program and foreground
   job; deliberately detached programs can survive (background server ports may

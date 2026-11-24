@@ -31,6 +31,7 @@ pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
         }
         return Ok(());
     };
+    crate::platform::may_autostart(paths, true)?;
     let params = if fresh {
         let hello = client::call(&stream, "hello", json!({}))?;
         if !hello["features"].as_array().is_some_and(|f| f.contains(&json!("restart_environment"))) {

@@ -259,10 +259,6 @@ pub struct Listener {
     next: std::sync::Mutex<Option<Pipe>>,
 }
 
-pub fn may_autostart(explicit: bool) -> Result<(), crate::rpc::RpcError> {
-    if explicit { Ok(()) } else { super::windows_session::check_autostart() }
-}
-
 pub fn status_may_start_core() -> bool {
     false
 }

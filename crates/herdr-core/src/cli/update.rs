@@ -36,6 +36,7 @@ pub(super) fn up_to_date(paths: &Paths, release: &str, human: String) -> Result<
     if let Some(stream) = client::connect_existing(paths) {
         let status = client::call(&stream, "server.status", json!({}))?;
         if older(&format!("hc {}", status["version"].as_str().unwrap_or_default()), &this) {
+            crate::platform::may_autostart(paths, true)?;
             client::call(&stream, "server.restart", json!({}))?;
             wait_closed(&stream);
             let status = call(paths, "server.status", json!({}))?;
@@ -74,6 +75,9 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
     let now = version_of(from).ok_or_else(|| refused(format!("{} is not a working hc", from.display()), ""))?;
     if older(&now, &was) && !force {
         return Err(refused(format!("{now} is older than this {was}"), "--force to go back anyway"));
+    }
+    if client::connect_existing(paths).is_some() {
+        crate::platform::may_autostart(paths, true)?;
     }
     // Staged beside it, checked, then swapped in: never a half-written hc.
     crate::platform::swap_in(from, &dest, |staged| version_of(staged).as_deref() == Some(now.as_str())).map_err(
