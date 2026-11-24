@@ -1,12 +1,11 @@
-//! The person is back at this Mac: powerd posts its user-activity level, and
-//! it reads active after a full wake or the first input after idling. A
-//! DarkWake has no user, so the background wakes of a sleeping Mac stay quiet.
+//! The person is back at this Mac: powerd's user-activity level turns active
+//! after a full wake or input after idling, never during a DarkWake.
 
 use std::ffi::{CStr, c_char, c_int};
 use std::io;
 
 const USER_ACTIVITY: &CStr = c"com.apple.system.powermanagement.useractivity2";
-/// kIOPMUserPresentActive (IOPMLibPrivate.h): the person is using the Mac.
+/// kIOPMUserPresentActive (IOPMLibPrivate.h).
 const PRESENT_ACTIVE: u64 = 1;
 
 // libSystem provides notify(3).
@@ -15,7 +14,7 @@ unsafe extern "C" {
     fn notify_get_state(token: c_int, state: *mut u64) -> u32;
 }
 
-/// Calls `returned`, on a thread of its own, each time the person becomes active.
+/// Calls `returned`, on its own thread, each time the person becomes active.
 pub fn watch(returned: fn()) -> io::Result<()> {
     watch_name(USER_ACTIVITY, returned)
 }

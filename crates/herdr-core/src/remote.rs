@@ -232,10 +232,8 @@ fn reconnect_max() -> Duration {
     Duration::from_millis(std::env::var("HC_RECONNECT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
 }
 
-/// Waits between dials while a machine needs a login, in seconds. A dropped line
-/// starts at 2 minutes: slow enough that a key the server keeps refusing doesn't
-/// get the person banned (fail2ban, CrowdSec). When the person comes back, their
-/// agent or key may take a moment to unlock, so the quicker steps come first.
+/// Seconds between dials while a login is needed. Slow so a refused key doesn't get
+/// the person banned (fail2ban, CrowdSec); the quick steps only follow a return.
 const LOGIN_WAITS: [u64; 6] = [10, 30, 60, 120, 300, 600];
 const LOGIN_FIRST: usize = 3;
 
@@ -243,11 +241,9 @@ fn login_wait(step: usize) -> Duration {
     Duration::from_secs(LOGIN_WAITS[step.min(LOGIN_WAITS.len() - 1)])
 }
 
-/// Wakes lines that wait for a login when the person comes back to this computer.
 static PERSON_RETURNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// The person is back (a full wake, input after idling): machines that need a
-/// login dial again now, then retry quickly for a while.
+/// The person is back: lines that need a login dial again now.
 pub fn person_returned() {
     PERSON_RETURNED.notify_waiters();
 }
@@ -295,7 +291,7 @@ async fn supervise(core: Arc<Core>, id: String) {
     let mut login_step = LOGIN_FIRST;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
-        // Made before dialing, so a return during the dial still counts.
+        // Before the dial, so a return during it counts.
         let returned = PERSON_RETURNED.notified();
         let down = |st: &mut State, why: String| {
             let since_ms = match st.lines.get(&id) {
@@ -339,7 +335,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             }
             Err(e) if e.kind == "needs_login" => {
                 down(&mut core.lock(), "needs_login".into());
-                // An agent that couldn't sign sent the server no bad signature: retry as for a drop.
+                // No bad signature reached the server: retry as for a drop.
                 let wait = if crate::machines::key_locked(&e) {
                     let wait = backoff;
                     backoff = (backoff * 2).min(reconnect_max());
@@ -350,7 +346,10 @@ async fn supervise(core: Arc<Core>, id: String) {
                 };
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {}
-                    _ = returned => login_step = 0,
+                    _ = returned => {
+                        let _ = writeln!(io::stderr(), "core: {} needs a login; the person returned: dialing again", m.name);
+                        login_step = 0;
+                    }
                 }
                 continue;
             }

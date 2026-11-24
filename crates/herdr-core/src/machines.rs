@@ -287,8 +287,7 @@ fn wants_login(err: &str) -> bool {
             && ["publickey", "keyboard-interactive", "password"].iter().any(|k| err.contains(k))
 }
 
-/// ssh's agent had the key but couldn't sign with it: locked, or its token is
-/// unplugged or asleep. Its key never sent the server a bad signature.
+/// The agent had the key but couldn't sign (locked, or a token asleep or unplugged).
 fn agent_refused(err: &str) -> bool {
     (err.contains("signing failed") || err.contains("agent refused operation"))
         && !err.contains("Too many authentication failures")
@@ -296,7 +295,6 @@ fn agent_refused(err: &str) -> bool {
 
 const KEY_LOCKED: &str = "couldn't sign with its key";
 
-/// A login refused because the agent couldn't sign: it may work again once unlocked.
 pub fn key_locked(e: &RpcError) -> bool {
     e.kind == "needs_login" && e.message.contains(KEY_LOCKED)
 }

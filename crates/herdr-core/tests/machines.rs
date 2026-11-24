@@ -429,7 +429,7 @@ fn a_line_whose_agent_could_not_sign_reconnects_soon_after_it_unlocks() {
     let rohan = Session::new();
     let mut s = Session::new();
     let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
-    // While `locked` exists, the agent lists the key but refuses to sign (a locked agent, a sleeping token).
+    // While `locked` exists, the agent refuses to sign.
     let locked = s.root.join("locked");
     let wrapper = executable(
         &s,
@@ -447,7 +447,6 @@ fn a_line_whose_agent_could_not_sign_reconnects_soon_after_it_unlocks() {
     rohan.hc(&["server", "restart"]);
     wait_until("needs login", || s.json(&["machine", "ls"])["machines"][0]["state"] == "needs_login");
     std::fs::remove_file(&locked).unwrap();
-    // Not the minutes a refused key waits: no bad signature reached the server.
     wait_until("connected again", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
 }
 
