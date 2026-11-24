@@ -4,7 +4,7 @@
 
 Non-Cargo inputs are checked in so regeneration doesn't depend on a license server:
 
-- `ghostty.txt`: Ghostty's MIT license at submodule commit `1e5cdb865807abc990181efb8ebfa9122955cce2`.
+- `ghostty.txt`: Ghostty's MIT license at submodule commit `b58ef1d678be2747c830bc1b1e6c0a086afecf9a`.
 - `simdutf.txt`, `highway.txt`, `wuffs.txt`: the libraries built into libghostty-vt, at the versions pinned by Ghostty.
 - `zig.txt`: Zig 0.16.0 compiler_rt.
 - `uucode*.txt`: [uucode at 9d55524551411b493cca41ca06363625d90aff1e](https://github.com/jacobsandlund/uucode/tree/9d55524551411b493cca41ca06363625d90aff1e), its `LICENSE.md` and both files in `licenses/`. Include the Hoehrmann decoder notice conservatively alongside the Unicode tables; both are part of the imported module.
