@@ -62,108 +62,63 @@ fn kill_spares_programs_that_ignore_hangup() {
 }
 
 #[test]
-fn kill_wakes_and_ends_a_stopped_foreground_job() {
-    let s = Session::new();
-    let helper = s.root.join("stopped_fg.py");
-    let pid_file = s.root.join("stopped-fg");
-    // Mimic an interactive shell whose foreground job (in its own process group)
-    // catches SIGHUP to restore termios, stops on SIGTTOU right after the shell
-    // reclaims the PTY with TIOCSPGRP and exits, then exits once woken by SIGCONT.
-    std::fs::write(
-        &helper,
-        r#"import os, signal, sys, time
-
-pid_file = sys.argv[1]
-r_fd, w_fd = os.pipe()
-child = os.fork()
-if child == 0:
-    os.close(w_fd)
-    os.setpgid(0, 0)
-    os.read(r_fd, 1)
-    os.close(r_fd)
-    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
-    got_hup = []
-    signal.signal(signal.SIGHUP, lambda *_: got_hup.append(1))
-    with open(pid_file, "w") as f:
-        f.write(str(os.getpid()))
-    while not got_hup:
-        time.sleep(0.01)
-    time.sleep(0.05)
-    os.kill(os.getpid(), signal.SIGTTOU)
-    os._exit(0)
-else:
-    os.close(r_fd)
-    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
-    try:
-        os.setpgid(child, child)
-    except OSError:
-        pass
-    os.tcsetpgrp(0, child)
-    os.close(w_fd)
-    def on_hup(*_):
-        try:
-            os.tcsetpgrp(0, os.getpid())
-        except OSError:
-            pass
-        os._exit(0)
-    signal.signal(signal.SIGHUP, on_hup)
-    os.waitpid(child, 0)
-"#,
-    )
-    .unwrap();
-    let t = run(&s, &format!("exec python3 {helper:?} {pid_file:?}"));
-    let pids = started(&s, &["stopped-fg"]);
-    let _cleanup = Survivors(pids.clone());
-    s.json(&["kill", &t]);
-    gone(&pids);
-}
-
-#[test]
 fn kill_wakes_stopped_foreground_job_after_foreground_poll() {
     let mut s = Session::new();
     s.env.push(("HC_FOREGROUND_MS".into(), "10".into()));
     let helper = s.root.join("stopped_fg_poll.py");
     let pid_file = s.root.join("stopped-fg-poll");
+    // Mimic an interactive shell whose foreground job (in its own process group)
+    // catches SIGHUP and stops before the shell exits after reclaiming the PTY.
+    // Double-forking orphans the job's process group up front so the shell's
+    // later exit does not trigger the kernel's orphaned-pgrp SIGHUP+SIGCONT,
+    // and SIGSTOP stops the job deterministically before teardown runs.
     std::fs::write(
         &helper,
         r#"import os, signal, sys, time
 
 pid_file = sys.argv[1]
 r_fd, w_fd = os.pipe()
-child = os.fork()
-if child == 0:
+c_r, c_w = os.pipe()
+mid = os.fork()
+if mid == 0:
+    os.close(r_fd)
     os.close(w_fd)
-    os.setpgid(0, 0)
-    os.read(r_fd, 1)
-    os.close(r_fd)
-    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
-    got_hup = []
-    signal.signal(signal.SIGHUP, lambda *_: got_hup.append(1))
-    with open(pid_file, "w") as f:
-        f.write(str(os.getpid()))
-    while not got_hup:
-        time.sleep(0.01)
-    time.sleep(0.15)
-    os.kill(os.getpid(), signal.SIGTTOU)
+    child = os.fork()
+    if child == 0:
+        os.close(c_r)
+        os.setpgid(0, 0)
+        got_hup = []
+        signal.signal(signal.SIGHUP, lambda *_: got_hup.append(1))
+        os.write(c_w, str(os.getpid()).encode())
+        os.close(c_w)
+        while not got_hup:
+            time.sleep(0.01)
+        os.kill(os.getpid(), signal.SIGSTOP)
+        os._exit(0)
+    os.close(c_r)
+    os.close(c_w)
     os._exit(0)
-else:
-    os.close(r_fd)
-    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+os.close(c_w)
+os.waitpid(mid, 0)
+child = int(os.read(c_r, 32).decode())
+os.close(c_r)
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+try:
+    os.setpgid(child, child)
+except OSError:
+    pass
+os.tcsetpgrp(0, child)
+def on_hup(*_):
     try:
-        os.setpgid(child, child)
+        os.tcsetpgrp(0, os.getpid())
     except OSError:
         pass
-    os.tcsetpgrp(0, child)
-    os.close(w_fd)
-    def on_hup(*_):
-        try:
-            os.tcsetpgrp(0, os.getpid())
-        except OSError:
-            pass
-        time.sleep(0.1)
-        os._exit(0)
-    signal.signal(signal.SIGHUP, on_hup)
-    os.waitpid(child, 0)
+    time.sleep(0.1)
+    os._exit(0)
+signal.signal(signal.SIGHUP, on_hup)
+with open(pid_file, "w") as f:
+    f.write(str(child))
+os.read(r_fd, 1)
 "#,
     )
     .unwrap();
