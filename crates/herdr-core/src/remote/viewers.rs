@@ -166,6 +166,7 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
                 active_at: Instant::now(),
                 size_pending: false,
             };
+            conn.outbox().set_relayed(here, true);
             core.lock().relayed.insert((conn_key(conn), here), viewer);
             r["channel"] = here.into();
             Ok(localize(core, &m.name, &[], r))
@@ -179,6 +180,10 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
 
 /// A viewer's frame for a relayed stream goes there. False: not relayed.
 pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u8]) -> bool {
+    // Local channels never relay: their credit must not wait while output is parsed.
+    if !conn.outbox().is_relayed(here) {
+        return false;
+    }
     let mut st = core.lock();
     let Some(r) = st.relayed.get_mut(&(conn_key(conn), here)) else { return false };
     let resize = kind == wire::RESIZE && payload.len() == 4;
