@@ -1094,8 +1094,10 @@ impl Pty {
         }
     }
 
-    pub fn hang_up(&self, _pid: u32) {
-        unsafe { TerminateJobObject(self.job.as_raw_handle() as HANDLE, 1) };
+    pub fn hang_up(&self, _pid: u32, still_open: bool) {
+        if still_open {
+            unsafe { TerminateJobObject(self.job.as_raw_handle() as HANDLE, 1) };
+        }
     }
 }
 

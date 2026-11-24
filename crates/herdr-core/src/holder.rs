@@ -285,11 +285,10 @@ impl Holder {
                     self.to_core(&mut st, &proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
                 proto::RELEASE => {
-                    if let Some(t) = self.lock().terms.remove(&id)
-                        && !t.reader_done
-                    {
-                        // Leftover background jobs still hold the PTY: hang them up.
-                        t.pty.hang_up(t.pid);
+                    if let Some(t) = self.lock().terms.remove(&id) {
+                        // Leftover jobs may still hold the PTY (or, on macOS,
+                        // survive after XNU revokes the PTY on leader exit).
+                        t.pty.hang_up(t.pid, !t.reader_done);
                     }
                     self.exit_if_drained();
                 }
