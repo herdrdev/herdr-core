@@ -140,6 +140,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));
         let (old_frames, mut old_rx) = mpsc::unbounded_channel();
+        conn.outbox().set_relayed(7, true);
         core.lock().relayed.insert(
             (conn_key(&conn), 7),
             Relayed {
@@ -149,7 +150,9 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
                 there: 9,
                 conn: conn.clone(),
                 machine: machine.id.clone(),
+                terminal: "t1".into(),
                 params: json!({"terminal": "t1"}),
+                size_pending: false,
             },
         );
         assert!(relay_in(&core, &conn, 7, wire::AUTOMATIC_INPUT, b"\x1b"));
@@ -176,6 +179,79 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         drop(core);
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[tokio::test]
+async fn reattach_applies_missed_sizes_without_replaying_delivered_activity() {
+    let root = crate::test_tmp().join(format!("hc-reattach-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let machine: Machine = serde_json::from_value(json!({
+        "name": "away", "target": "away", "id": "away", "host": "away", "version": "test"
+    }))
+    .unwrap();
+    let conn = Arc::new(Conn::default());
+    let (old_frames, _old_rx) = mpsc::unbounded_channel();
+    let old = Line::new(old_frames, &json!({}));
+    let (frames, mut rx) = mpsc::unbounded_channel();
+    let line = Line::new(frames, &json!({}));
+    let now = std::time::Instant::now();
+    for (ch, active_at, target, via) in
+        [(7, now - Duration::from_secs(1), "t1", &old), (8, now, "t1", &old), (9, now, "t2", &line)]
+    {
+        conn.with(|out| {
+            out.open(ch);
+            out.set_relayed(ch, true);
+        });
+        core.lock().relayed.insert(
+            (conn_key(&conn), ch),
+            Relayed {
+                active_at,
+                automatic_input: false,
+                line: via.clone(),
+                there: ch,
+                conn: conn.clone(),
+                machine: machine.id.clone(),
+                terminal: target.into(),
+                params: json!({"terminal": target, "cols": 80, "rows": 24}),
+                size_pending: false,
+            },
+        );
+    }
+    let task = tokio::spawn(reattach(core.clone(), machine, line.clone()));
+    let frame = rx.recv().await.unwrap();
+    let first: Value = serde_json::from_slice(&frame[wire::HEADER..]).unwrap();
+    let size = [132, 0, 45, 0];
+    assert!(relay_in(&core, &conn, 7, wire::RESIZE, &size));
+    line.take_reply(json!({"id": first["id"], "result": {"channel": 17}}));
+    assert_eq!(rx.recv().await.unwrap(), wire::encode(17, wire::RESIZE, &size));
+    let frame = rx.recv().await.unwrap();
+    let second: Value = serde_json::from_slice(&frame[wire::HEADER..]).unwrap();
+    let missed = [90, 0, 30, 0];
+    assert!(relay_in(&core, &conn, 8, wire::RESIZE, &missed));
+    assert!(relay_in(&core, &conn, 7, wire::FOCUS, &[1]));
+    assert!(relay_in(&core, &conn, 9, wire::RESIZE, &size));
+    assert_eq!(rx.try_recv().unwrap(), wire::encode(17, wire::FOCUS, &[1]));
+    assert_eq!(rx.try_recv().unwrap(), wire::encode(9, wire::RESIZE, &size));
+    line.take_reply(json!({"id": second["id"], "result": {"channel": 18}}));
+    task.await.unwrap();
+    assert!(rx.try_recv().is_err(), "a newer viewer is already in control and B was never disconnected");
+    {
+        let st = core.lock();
+        assert_eq!(st.relayed[&(conn_key(&conn), 7)].params["cols"], 132);
+        assert_eq!(st.relayed[&(conn_key(&conn), 8)].params["cols"], 90);
+    }
+    assert!(relay_in(&core, &conn, 8, wire::FOCUS, &[1]));
+    assert_eq!(rx.try_recv().unwrap(), wire::encode(18, wire::RESIZE, &missed));
+    assert_eq!(rx.try_recv().unwrap(), wire::encode(18, wire::FOCUS, &[1]));
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -269,7 +345,9 @@ async fn failed_reattach_drains_pending_data_before_close() {
             there: 9,
             conn: conn.clone(),
             machine: machine.id.clone(),
+            terminal: "t1".into(),
             params: json!({"terminal": "t1"}),
+            size_pending: false,
         },
     );
     drop(old_rx); // The viewer survives its old line.
@@ -394,4 +472,61 @@ fn the_line_lost_notice_shows_even_if_the_line_dropped_mid_sequence() {
     screen.write(b"\x1b_Gm=1;AAAA");
     screen.write(lost_notice("rohan").as_bytes());
     assert!(screen.plain_text().contains("[line to rohan lost"));
+}
+
+#[test]
+fn frames_on_a_connection_that_never_relayed_do_not_wait_for_the_state_lock() {
+    let root = crate::test_tmp().join(format!("hc-relay-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let conn = Arc::new(Conn::default());
+    // Stands in for output being parsed.
+    let parsing = core.lock();
+    let (done, credited) = std::sync::mpsc::channel();
+    let c = core.clone();
+    let credit =
+        std::thread::spawn(move || done.send(relay_in(&c, &conn, 7, wire::CREDIT, &1u32.to_le_bytes())).unwrap());
+    let relayed = credited.recv_timeout(std::time::Duration::from_secs(2));
+    drop(parsing);
+    credit.join().unwrap();
+    assert_eq!(relayed, Ok(false));
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn frames_on_a_local_channel_do_not_wait_for_the_state_lock_when_another_channel_is_relayed() {
+    let root = crate::test_tmp().join(format!("hc-relay-shared-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let conn = Arc::new(Conn::default());
+    conn.with(|out| {
+        out.open(1);
+        out.set_relayed(1, true);
+        out.open(2);
+    });
+    // Stands in for output being parsed.
+    let parsing = core.lock();
+    let (done, credited) = std::sync::mpsc::channel();
+    let c = core.clone();
+    let credit =
+        std::thread::spawn(move || done.send(relay_in(&c, &conn, 2, wire::CREDIT, &1u32.to_le_bytes())).unwrap());
+    let relayed = credited.recv_timeout(std::time::Duration::from_secs(2));
+    drop(parsing);
+    credit.join().unwrap();
+    assert_eq!(relayed, Ok(false));
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -29,6 +29,11 @@ fn check(ok: BOOL) -> io::Result<()> {
     if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
+fn event() -> io::Result<OwnedHandle> {
+    let handle = unsafe { CreateEventW(null(), 1, 0, null()) };
+    if handle.is_null() { Err(io::Error::last_os_error()) } else { Ok(unsafe { OwnedHandle::from_raw_handle(handle) }) }
+}
+
 // --- Connections: named pipes in overlapped mode ---------------------------
 //
 // Synchronous I/O on one pipe is serialized by Windows: a read waiting in one
@@ -37,21 +42,27 @@ fn check(ok: BOOL) -> io::Result<()> {
 
 struct Pipe {
     handle: OwnedHandle,
+    read_stopped: OwnedHandle,
 }
 
 impl Pipe {
+    fn new(handle: HANDLE) -> io::Result<Self> {
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+        Ok(Self { handle, read_stopped: event()? })
+    }
+
     fn raw(&self) -> HANDLE {
         self.handle.as_raw_handle() as HANDLE
     }
 
     /// One overlapped operation, waited for.
-    fn io(&self, op: impl FnOnce(HANDLE, *mut OVERLAPPED) -> BOOL) -> io::Result<usize> {
+    fn io(&self, reading: bool, op: impl FnOnce(HANDLE, *mut OVERLAPPED) -> BOOL) -> io::Result<usize> {
         unsafe {
-            let event = CreateEventW(null(), 1, 0, null());
-            if event.is_null() {
-                return Err(io::Error::last_os_error());
+            let stopped = self.read_stopped.as_raw_handle();
+            if reading && WaitForSingleObject(stopped, 0) == WAIT_OBJECT_0 {
+                return Ok(0);
             }
-            let event = OwnedHandle::from_raw_handle(event as RawHandle);
+            let event = event()?;
             let mut ov: OVERLAPPED = zeroed();
             ov.hEvent = event.as_raw_handle() as HANDLE;
             if op(self.raw(), &mut ov) == 0 {
@@ -61,6 +72,17 @@ impl Pipe {
                         ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED => Ok(0),
                         _ => Err(io::Error::from_raw_os_error(err as i32)),
                     };
+                }
+                if reading {
+                    // Shutdown can happen before ReadFile even starts. Check its persistent
+                    // signal while the read is pending and drain before dropping its buffer.
+                    let wait = WaitForMultipleObjects(2, [stopped, ov.hEvent].as_ptr(), 0, INFINITE);
+                    if wait != WAIT_OBJECT_0 + 1 {
+                        let result = if wait == WAIT_OBJECT_0 { Ok(0) } else { Err(io::Error::last_os_error()) };
+                        CancelIoEx(self.raw(), &ov);
+                        GetOverlappedResult(self.raw(), &ov, &mut 0, 1);
+                        return result;
+                    }
                 }
             }
             let mut n = 0u32;
@@ -75,13 +97,13 @@ impl Pipe {
     }
 
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.io(|h, ov| unsafe {
+        self.io(true, |h, ov| unsafe {
             ReadFile(h, buf.as_mut_ptr(), buf.len().min(u32::MAX as usize) as u32, null_mut(), ov)
         })
     }
 
     fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.io(|h, ov| unsafe {
+        let n = self.io(false, |h, ov| unsafe {
             WriteFile(h, buf.as_ptr(), buf.len().min(u32::MAX as usize) as u32, null_mut(), ov)
         })?;
         if n == 0 && !buf.is_empty() {
@@ -105,6 +127,7 @@ impl Stream {
     /// wakes any read waiting on it.
     pub fn shutdown(&self, _: std::net::Shutdown) -> io::Result<()> {
         unsafe {
+            check(SetEvent(self.0.read_stopped.as_raw_handle()))?;
             CancelIoEx(self.0.raw(), null());
             DisconnectNamedPipe(self.0.raw());
         }
@@ -156,7 +179,7 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
             CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, null(), OPEN_EXISTING, flags, null_mut())
         };
         if h != INVALID_HANDLE_VALUE {
-            return Ok(Stream(Arc::new(Pipe { handle: unsafe { OwnedHandle::from_raw_handle(h as RawHandle) } })));
+            return Ok(Stream(Arc::new(Pipe::new(h)?)));
         }
         // Every instance busy: one frees up as soon as the server accepts.
         if unsafe { GetLastError() } != ERROR_PIPE_BUSY {
@@ -227,7 +250,7 @@ fn new_instance(name: &[u16], first: bool) -> io::Result<Pipe> {
     if h == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
-    Ok(Pipe { handle: unsafe { OwnedHandle::from_raw_handle(h as RawHandle) } })
+    Pipe::new(h)
 }
 
 /// A pipe name others connect to (blocking accepts: the holder).
@@ -283,7 +306,7 @@ impl Listener {
             Some(pipe) => pipe,
             None => new_instance(&self.name, false)?,
         };
-        let connected = pipe.io(|h, ov| unsafe { ConnectNamedPipe(h, ov) });
+        let connected = pipe.io(false, |h, ov| unsafe { ConnectNamedPipe(h, ov) });
         match connected {
             Ok(_) => {}
             // A client that came before we waited is connected already.
@@ -365,6 +388,21 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 /// A new file with the user state directory's inherited permissions.
 pub fn private_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+pub fn is_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    fn full_name(path: &Path) -> io::Result<Vec<u16>> {
+        let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Ok(wide(std::fs::canonicalize(parent)?.join(name).as_os_str()))
+    }
+    let (from, to) = (full_name(from)?, full_name(to)?);
+    check(unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) })
 }
 
 pub fn try_lock(file: &File) -> bool {
