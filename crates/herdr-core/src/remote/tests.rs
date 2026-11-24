@@ -271,7 +271,7 @@ async fn reconnect_rejects_downgrade_before_mapping_fallback_data() {
                     "relay",
                     "terminal.attach",
                     json!({"observe": true, "resumed": true, "resize_notifications": true}),
-                    Some(((sink, 7), true)),
+                    Some(((sink, 7), StreamCaps { resize: true, paint_boundaries: false })),
                     Duration::from_secs(1),
                 )
                 .await
@@ -467,4 +467,60 @@ fn the_line_lost_notice_shows_even_if_the_line_dropped_mid_sequence() {
     screen.write(b"\x1b_Gm=1;AAAA");
     screen.write(lost_notice("rohan").as_bytes());
     assert!(screen.plain_text().contains("[line to rohan lost"));
+}
+
+#[tokio::test]
+async fn reconnect_rejects_paint_boundaries_downgrade_and_from_peer_strips_unsupported_feature() {
+    let (frames, mut rx) = mpsc::unbounded_channel();
+    let line = Line::new(frames, &json!({"features": ["resize_notifications", "paint_boundaries"]}));
+    let conn = Arc::new(Conn::default());
+    conn.with(|out| out.open(7));
+    let calling = line.clone();
+    let sink = conn.clone();
+    let task = tokio::spawn(async move {
+        calling
+            .call_into(
+                "relay",
+                "terminal.attach",
+                json!({"observe": true, "resumed": true, "resize_notifications": true, "paint_boundaries": true}),
+                Some(((sink, 7), StreamCaps { resize: true, paint_boundaries: true })),
+                Duration::from_secs(1),
+            )
+            .await
+    });
+    let request = rx.recv().await.unwrap();
+    let request: Value = serde_json::from_slice(&request[wire::HEADER..]).unwrap();
+    line.take_reply(json!({
+        "id": request["id"],
+        "result": {"channel": 9, "resize_notifications": true, "paint_boundaries": false}
+    }));
+    let err = task.await.unwrap().unwrap_err();
+    assert_eq!(err.message, PAINT_BOUNDARIES_LOST);
+    assert_eq!(rx.recv().await.unwrap(), wire::encode(9, wire::CLOSE, b""));
+    assert!(!lock(&line.streams).contains_key(&9));
+
+    let root = crate::test_tmp().join(format!("hc-peer-paint-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let peer_conn = Arc::new(Conn::default());
+    let (p_frames, _p_rx) = mpsc::unbounded_channel();
+    core.lock().peer_lines.insert(
+        "peer-old".into(),
+        (conn_key(&peer_conn), Line::new(p_frames, &json!({"features": ["resize_notifications"]}))),
+    );
+    let stripped = from_peer(
+        &core,
+        Some(&peer_conn),
+        json!({"terminal": "t1", "observe": true, "resize_notifications": true, "paint_boundaries": true}),
+    );
+    assert_eq!(stripped["resize_notifications"], true);
+    assert_eq!(stripped["paint_boundaries"], false);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
 }

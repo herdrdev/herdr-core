@@ -20,6 +20,8 @@ pub struct Relayed {
 
 /// Why an opted-in stream was refused: a hop on the way lost resize support.
 pub(super) const RESIZE_LOST: &str = "resize notifications lost";
+/// Why an opted-in stream was refused: a hop on the way lost paint-boundary support.
+pub(super) const PAINT_BOUNDARIES_LOST: &str = "paint boundaries lost";
 
 /// Viewers left waiting by a dropped line to `m` get their terminal back.
 pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
@@ -39,10 +41,15 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         params["history"] = 0.into();
         params["resumed"] = true.into();
         negotiate_resize(&line, &mut params);
+        negotiate_paint_boundaries(&line, &mut params);
         let deadline = deadline_for(&core, "terminal.attach", &params);
-        let sink = ((r.conn.clone(), here), r.params["resize_notifications"] == true);
+        let caps = StreamCaps {
+            resize: r.params["resize_notifications"] == true,
+            paint_boundaries: r.params["paint_boundaries"] == true,
+        };
+        let sink = ((r.conn.clone(), here), caps);
         let reply = line.call_into(&m.name, "terminal.attach", params, Some(sink), deadline).await;
-        let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
+        let lost_caps = matches!(&reply, Err(e) if e.message == RESIZE_LOST || e.message == PAINT_BOUNDARIES_LOST);
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
         let Some(current) = st.relayed.get(&key).filter(|v| Arc::ptr_eq(&v.line, &r.line)) else {
@@ -96,7 +103,7 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
                 st.relayed.remove(&key);
                 // A downgraded path must not deliver paints sized for the old
                 // contract; any other failure still hands over what arrived.
-                if lost_resize {
+                if lost_caps {
                     r.conn.with(|out| out.close(here, b""));
                 } else {
                     r.conn.with(|out| out.finish(here, b""));
@@ -130,16 +137,29 @@ pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
     }
 }
 
+pub(super) fn negotiate_paint_boundaries(line: &Line, params: &mut Value) {
+    if params["paint_boundaries"] == true && !line.features.iter().any(|f| f == "paint_boundaries") {
+        params["paint_boundaries"] = false.into();
+    }
+}
+
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Value) -> Result<Value, RpcError> {
     let line = line(core, m).await?;
     negotiate_resize(&line, &mut params);
+    negotiate_paint_boundaries(&line, &mut params);
     let here = conn.new_channel();
     conn.with(|out| out.open_paused(here));
     let deadline = deadline_for(core, "terminal.attach", &params);
     match line
-        .call_into(&m.name, "terminal.attach", params.clone(), Some(((conn.clone(), here), false)), deadline)
+        .call_into(
+            &m.name,
+            "terminal.attach",
+            params.clone(),
+            Some(((conn.clone(), here), StreamCaps::default())),
+            deadline,
+        )
         .await
     {
         Ok(mut r) => {
@@ -149,6 +169,9 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
                 && r["resize_notifications"] == true;
             r["resize_notifications"] = enabled.into();
             params["resize_notifications"] = enabled.into();
+            let paint_enabled = enabled && params["paint_boundaries"] == true && r["paint_boundaries"] == true;
+            r["paint_boundaries"] = paint_enabled.into();
+            params["paint_boundaries"] = paint_enabled.into();
             let automatic_input = automatic_input(&line, &r);
             r["automatic_input"] = automatic_input.into();
             let viewer = Relayed {

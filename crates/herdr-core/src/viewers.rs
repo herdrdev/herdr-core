@@ -33,6 +33,7 @@ pub struct Viewer {
     pub channel: u32,
     pub observe: bool,
     resize_notifications: bool,
+    pub(crate) paint_boundaries: bool,
     repaint_pending: bool,
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
@@ -59,6 +60,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 pub struct AttachRequest {
     pub observe: bool,
     pub resize_notifications: bool,
+    pub paint_boundaries: bool,
     pub history: usize,
     pub size: (u16, u16),
     pub display: Display,
@@ -81,11 +83,14 @@ impl Core {
         }
         let channel = conn.new_channel();
         let recovering = st.screens[&id].continuation().is_none();
+        let resize_notifications = req.observe && req.resize_notifications;
+        let paint_boundaries = resize_notifications && req.paint_boundaries;
         st.viewers.entry(id).or_default().push(Viewer {
             conn: conn.clone(),
             channel,
             observe: req.observe,
-            resize_notifications: req.observe && req.resize_notifications,
+            resize_notifications,
+            paint_boundaries,
             repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
@@ -100,12 +105,14 @@ impl Core {
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
             out.open_paused(channel);
-            if req.observe && req.resize_notifications {
+            if resize_notifications {
                 let t = &st.reg.terminals[&id];
                 let size = [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat();
                 out.resize(channel, &size);
             }
-            out.data(channel, &paint);
+            if out.data(channel, &paint) && paint_boundaries {
+                out.paint_end(channel);
+            }
         });
         Ok(channel)
     }
@@ -185,28 +192,46 @@ impl Core {
             t.win32_input = on;
             self.save(st);
         }
-        let recovered = recovered.map(|(at, paint)| {
-            let mut paint = paint_state(st, id, paint);
-            paint.extend_from_slice(&out[at..]);
-            paint
-        });
+        let recovered = recovered.map(|(at, paint)| (paint_state(st, id, paint), &out[at..]));
+        let size = st
+            .reg
+            .terminals
+            .get(&id)
+            .map_or_else(|| vec![0; 4], |t| [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat());
         let mut behind = Vec::new();
         for (index, v) in st.viewers.get_mut(&id).into_iter().flatten().enumerate().filter(|_| !scrolling) {
             if v.repaint_pending {
                 continue;
             }
-            let bytes = if v.recovering {
-                let Some(paint) = &recovered else { continue };
+            if v.recovering {
+                let Some((paint, tail)) = &recovered else { continue };
                 v.recovering = false;
-                paint
+                v.conn.with(|ob| {
+                    if v.paint_boundaries {
+                        ob.resize(v.channel, &size);
+                        if !ob.data(v.channel, paint) {
+                            behind.push(index);
+                            return;
+                        }
+                        ob.paint_end(v.channel);
+                        if !tail.is_empty() && !ob.data(v.channel, tail) {
+                            behind.push(index);
+                        }
+                    } else {
+                        let mut combined = paint.clone();
+                        combined.extend_from_slice(tail);
+                        if !ob.data(v.channel, &combined) {
+                            behind.push(index);
+                        }
+                    }
+                });
             } else {
-                &out
-            };
-            v.conn.with(|ob| {
-                if !ob.data(v.channel, bytes) {
-                    behind.push(index);
-                }
-            });
+                v.conn.with(|ob| {
+                    if !ob.data(v.channel, &out) {
+                        behind.push(index);
+                    }
+                });
+            }
         }
         if !behind.is_empty() {
             let paint = first_paint(st, id, 0);
@@ -216,7 +241,12 @@ impl Core {
                 let v = &mut viewers[index];
                 v.recovering = recovering;
                 v.conn.with(|ob| {
-                    ob.data(v.channel, &paint);
+                    if v.paint_boundaries {
+                        ob.resize(v.channel, &size);
+                    }
+                    if ob.data(v.channel, &paint) && v.paint_boundaries {
+                        ob.paint_end(v.channel);
+                    }
                 });
             }
         }
@@ -431,8 +461,11 @@ impl Core {
         let paint = first_paint(st, id, 0);
         let recovering = st.screens[&id].continuation().is_none();
         for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| ready(v)) {
+            let paint_boundaries = v.paint_boundaries;
             v.conn.with(|out| {
-                out.data(v.channel, &paint);
+                if out.data(v.channel, &paint) && paint_boundaries {
+                    out.paint_end(v.channel);
+                }
             });
             v.repaint_pending = false;
             v.recovering = recovering;
