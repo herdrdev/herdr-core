@@ -105,6 +105,10 @@ impl Viewer {
                 }
             }
             wire::CLOSE => self.closed = Some(serde_json::from_slice(&payload).unwrap_or(Value::Null)),
+            wire::RESIZE if payload.len() == 4 => {
+                let side = |at: usize| u16::from_le_bytes([payload[at], payload[at + 1]]);
+                self.screen.resize(side(0), side(2));
+            }
             _ => {}
         }
     }
