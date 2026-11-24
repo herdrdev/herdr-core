@@ -33,6 +33,7 @@ pub struct Viewer {
     pub channel: u32,
     pub observe: bool,
     resize_notifications: bool,
+    keep_size_on_detach: bool,
     repaint_pending: bool,
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
@@ -59,6 +60,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 pub struct AttachRequest {
     pub observe: bool,
     pub resize_notifications: bool,
+    pub keep_size_on_detach: bool,
     pub history: usize,
     pub size: (u16, u16),
     pub display: Display,
@@ -86,6 +88,7 @@ impl Core {
             channel,
             observe: req.observe,
             resize_notifications: req.observe && req.resize_notifications,
+            keep_size_on_detach: !req.observe && req.keep_size_on_detach,
             repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
@@ -94,7 +97,7 @@ impl Core {
             answers: Default::default(),
         });
         if !req.observe {
-            self.apply_size(&mut st, id);
+            self.apply_size(&mut st, id, false);
         }
         let paint = first_paint(&st, id, req.history);
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
@@ -291,7 +294,7 @@ impl Core {
             return None;
         }
         v.active_at = Some(Instant::now());
-        self.apply_size(st, id);
+        self.apply_size(st, id, false);
         Some(id)
     }
 
@@ -366,6 +369,8 @@ impl Core {
         self.unsubscribe(&mut st, conn, channel);
         let mut touched = Vec::new();
         for (id, vs) in st.viewers.iter_mut() {
+            let leader_kept =
+                vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at).is_some_and(|v| v.keep_size_on_detach);
             let mut typing_left = false;
             vs.retain(|v| {
                 let leaves = Arc::ptr_eq(&v.conn, conn) && channel.is_none_or(|c| c == v.channel);
@@ -373,25 +378,31 @@ impl Core {
                 !leaves
             });
             if typing_left {
-                touched.push(*id);
+                touched.push((*id, leader_kept));
             }
         }
         st.viewers.retain(|_, vs| !vs.is_empty());
-        for id in touched {
-            self.apply_size(&mut st, id);
+        for (id, keep_size) in touched {
+            self.apply_size(&mut st, id, keep_size);
         }
     }
 
     /// The most recently active typing viewer sets size and display facts;
-    /// with none, the terminal runs headless.
-    fn apply_size(&self, st: &mut State, id: u32) {
+    /// with none, the terminal runs headless unless the departing leader opted
+    /// into keeping its current dimensions (`keep_size_on_detach`).
+    fn apply_size(&self, st: &mut State, id: u32, keep_if_headless: bool) {
         let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
-        let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
+        let leader_size = leader.map(|v| v.size);
         let display = leader.map(|v| v.display.clone());
         if !st.screens.contains_key(&id) {
             return;
         }
         self.apply_display(st, id, display.as_ref());
+        let (cols, rows) = match leader_size {
+            Some(sz) => sz,
+            None if keep_if_headless => return,
+            None => self.headless(),
+        };
         let rec = st.reg.terminals.get_mut(&id).expect("live terminal");
         if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
             return;

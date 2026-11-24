@@ -549,3 +549,23 @@ fn hc_attach_relays_both_ways_and_detaches_on_ctrl_backslash() {
     assert_eq!(rec["state"], "live");
     wait_until("headless after detach", || size(&s, &inner) == (200, 120));
 }
+
+#[test]
+fn keep_size_on_detach_leaves_last_size_on_detach() {
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "echo ready; sleep 100"]);
+    let mut kept = Viewer::attach(&s, &t, 110, 32, json!({"keep_size_on_detach": true}));
+    kept.shows("ready");
+    wait_until("initial attach size", || size(&s, &t) == (110, 32));
+    kept.conn.send(kept.channel, wire::RESIZE, &[118, 0, 28, 0]);
+    wait_until("resized size", || size(&s, &t) == (118, 28));
+    kept.conn.send(kept.channel, wire::CLOSE, b"");
+    kept.until("close ack", |v| v.closed.is_some());
+    assert_eq!(size(&s, &t), (118, 28));
+
+    let mut default_viewer = Viewer::attach(&s, &t, 90, 25, json!({}));
+    default_viewer.drain(Duration::from_millis(50));
+    wait_until("default viewer resize", || size(&s, &t) == (90, 25));
+    drop(default_viewer);
+    wait_until("headless after default detach", || size(&s, &t) == (200, 120));
+}

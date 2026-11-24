@@ -2504,6 +2504,16 @@
           }
         },
         {
+          "description": "Keep the terminal's current size instead of reverting to headless when\nthis control viewer detaches and no other active viewer remains.",
+          "name": "keep_size_on_detach",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Keep the terminal's current size instead of reverting to headless when\nthis control viewer detaches and no other active viewer remains.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Watch only: never type or resize.",
           "name": "observe",
           "required": false,

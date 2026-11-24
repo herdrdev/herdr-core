@@ -422,6 +422,11 @@ pub struct AttachParams {
     #[arg(skip)]
     #[serde(default)]
     pub resumed: bool,
+    /// Keep the terminal's current size instead of reverting to headless when
+    /// this control viewer detaches and no other active viewer remains.
+    #[arg(skip)]
+    #[serde(default)]
+    pub keep_size_on_detach: bool,
     /// Who is calling (`HC_TERMINAL_ID` inside a terminal): never itself.
     #[arg(skip)]
     #[serde(default)]
