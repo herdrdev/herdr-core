@@ -119,6 +119,111 @@ else:
 }
 
 #[test]
+fn kill_wakes_stopped_foreground_job_after_foreground_poll() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "10".into()));
+    let helper = s.root.join("stopped_fg_poll.py");
+    let pid_file = s.root.join("stopped-fg-poll");
+    std::fs::write(
+        &helper,
+        r#"import os, signal, sys, time
+
+pid_file = sys.argv[1]
+r_fd, w_fd = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(w_fd)
+    os.setpgid(0, 0)
+    os.read(r_fd, 1)
+    os.close(r_fd)
+    signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+    got_hup = []
+    signal.signal(signal.SIGHUP, lambda *_: got_hup.append(1))
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    while not got_hup:
+        time.sleep(0.01)
+    time.sleep(0.15)
+    os.kill(os.getpid(), signal.SIGTTOU)
+    os._exit(0)
+else:
+    os.close(r_fd)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    try:
+        os.setpgid(child, child)
+    except OSError:
+        pass
+    os.tcsetpgrp(0, child)
+    os.close(w_fd)
+    def on_hup(*_):
+        try:
+            os.tcsetpgrp(0, os.getpid())
+        except OSError:
+            pass
+        time.sleep(0.1)
+        os._exit(0)
+    signal.signal(signal.SIGHUP, on_hup)
+    os.waitpid(child, 0)
+"#,
+    )
+    .unwrap();
+    let t = run(&s, &format!("exec python3 {helper:?} {pid_file:?}"));
+    let pids = started(&s, &["stopped-fg-poll"]);
+    let _cleanup = Survivors(pids.clone());
+    s.json(&["kill", &t]);
+    gone(&pids);
+}
+
+#[test]
+fn kill_escalation_spares_former_foreground_job_ignoring_hangup() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "60000".into()));
+    let helper = s.root.join("turnover_fg.py");
+    let pid_file = s.root.join("turnover-fg");
+    std::fs::write(
+        &helper,
+        r#"import os, signal, sys, time
+
+pid_file = sys.argv[1]
+r_fd, w_fd = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(w_fd)
+    os.setpgid(0, 0)
+    os.read(r_fd, 1)
+    os.close(r_fd)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    time.sleep(300)
+else:
+    os.close(r_fd)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    try:
+        os.setpgid(child, child)
+    except OSError:
+        pass
+    os.tcsetpgrp(0, child)
+    os.close(w_fd)
+    def on_hup(*_):
+        try:
+            os.tcsetpgrp(0, os.getpid())
+        except OSError:
+            pass
+        time.sleep(300)
+    signal.signal(signal.SIGHUP, on_hup)
+    os.waitpid(child, 0)
+"#,
+    )
+    .unwrap();
+    let t = run(&s, &format!("exec python3 {helper:?} {pid_file:?}"));
+    let pids = started(&s, &["turnover-fg"]);
+    let survivors = Survivors(pids);
+    s.json(&["kill", &t]);
+    assert!(survivors.0.iter().all(|p| running(*p)), "escalation killed a former foreground job that ignores hangup");
+}
+
+#[test]
 fn detached_programs_survive_a_normal_exit() {
     let s = Session::new();
     let script = format!("{} {} sleep 0.3", stubborn(&s, "same", false), stubborn(&s, "detached", true));
