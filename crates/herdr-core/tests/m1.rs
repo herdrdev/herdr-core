@@ -73,6 +73,31 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 }
 
 #[test]
+fn ls_table_overrides_piped_output_without_changing_json_defaults() {
+    let s = Session::new();
+    run(&s, &["--name", "table-probe", "--label", "where=workspace / terminal", "sleep", "100"]);
+
+    let table = s.hc(&["ls", "--table", "--label", "where=workspace / terminal"]);
+    assert!(table.status.success(), "hc ls --table: {}", String::from_utf8_lossy(&table.stderr));
+    let text = String::from_utf8(table.stdout).unwrap();
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(text.contains("NAME") && text.contains("table-probe") && text.contains("workspace / terminal"), "{text}");
+
+    for args in [["ls"].as_slice(), &["ls", "--json"]] {
+        let output = s.hc(args);
+        assert!(output.status.success());
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["terminals"][0]["name"], "table-probe");
+    }
+
+    for args in [["--json", "ls", "--table"], ["ls", "--table", "--json"]] {
+        let (code, error) = s.err(&args);
+        assert_eq!(code, 2);
+        assert_eq!(error["error"]["kind"], "usage");
+    }
+}
+
+#[test]
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));

@@ -11,6 +11,7 @@ It does not arrange windows; use `herdr-app --skill` for that.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
+Use `hc ls --table` for a plain-text table in captured or piped output.
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 ## Delegate a task
