@@ -12,6 +12,35 @@ fn config(s: &Session, toml: &str) {
 }
 
 #[test]
+fn first_viewer_keeps_the_pty_size_until_it_leaves() {
+    use common::framed::Viewer;
+    use herdr_core::wire;
+    use serde_json::json;
+
+    let s = Session::new();
+    config(&s, "first_viewer_size = true\n");
+    let t = run(&s, &["sh", "-c", "while read -r tag; do printf '%s:' \"$tag\"; stty size; done"]);
+    let _observer = Viewer::attach(&s, &t, 30, 10, json!({"observe": true}));
+    let mut desktop = Viewer::attach(&s, &t, 120, 40, json!({}));
+    let mut phone = Viewer::attach(&s, &t, 40, 20, json!({}));
+    assert_eq!(get(&s, &t)["cols"], 120);
+    phone.conn.send(phone.channel, wire::FOCUS, &[1]);
+    phone.conn.send(phone.channel, wire::RESIZE, &[42, 0, 21, 0]);
+    phone.typed(b"first\r");
+    desktop.shows("first:40 120");
+
+    desktop.conn.send(desktop.channel, wire::RESIZE, &[110, 0, 35, 0]);
+    wait_until("owner resized", || get(&s, &t)["cols"] == 110);
+    phone.typed(b"second\r");
+    desktop.shows("second:35 110");
+
+    drop(desktop);
+    wait_until("phone takes over", || get(&s, &t)["cols"] == 42);
+    phone.typed(b"last\r");
+    phone.shows("last:21 42");
+}
+
+#[test]
 fn headless_size_and_history_come_from_config() {
     let s = Session::new();
     config(&s, "headless = \"100x30\"\nhistory_mb = 0.05\n");

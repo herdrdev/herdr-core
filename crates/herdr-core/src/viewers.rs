@@ -284,7 +284,7 @@ impl Core {
         })
     }
 
-    /// Typing, resizing or focusing makes a viewer the one whose size and colors count.
+    /// Record activity even when another viewer owns the grid.
     fn touch(&self, st: &mut State, conn: &Arc<Conn>, channel: u32, f: impl FnOnce(&mut Viewer)) -> Option<u32> {
         let (id, v) = Self::viewer(st, conn, channel)?;
         f(v);
@@ -384,11 +384,12 @@ impl Core {
         }
     }
 
-    /// The most recently active typing viewer sets size and display facts;
-    /// with none, the terminal runs headless.
+    /// Display facts follow activity even when the first typing viewer keeps the grid.
     fn apply_size(&self, st: &mut State, id: u32) {
-        let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
-        let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
+        let mut typing = st.viewers.get(&id).into_iter().flatten().filter(|v| !v.observe);
+        let leader = typing.clone().max_by_key(|v| v.active_at);
+        let size_owner = if self.first_viewer_size { typing.next() } else { leader };
+        let (cols, rows) = size_owner.map_or_else(|| self.headless(), |v| v.size);
         let display = leader.map(|v| v.display.clone());
         if !st.screens.contains_key(&id) {
             return;

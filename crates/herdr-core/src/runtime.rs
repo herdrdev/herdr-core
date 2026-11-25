@@ -28,6 +28,7 @@ pub struct Core {
     /// Set by `server.restart`: on stop, hand over instead of ending programs.
     pub restart: std::sync::atomic::AtomicBool,
     pub paths: Paths,
+    pub(crate) first_viewer_size: bool,
     pub state: Mutex<State>,
     /// Woken on every lifecycle change; waiters re-check what they need.
     pub changed: Notify,
@@ -191,6 +192,7 @@ impl Core {
             stop: Notify::new(),
             restart: Default::default(),
             registry_writer: RegistryWriter::new(paths.state.join("terminals.json"))?,
+            first_viewer_size: crate::config::load(&paths.config).unwrap_or_default().first_viewer_size,
             paths,
             state: Mutex::new(State { reg, docs, machines, peers, ..Default::default() }),
             changed: Notify::new(),

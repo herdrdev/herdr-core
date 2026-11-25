@@ -70,8 +70,10 @@ as Windows' ConPTY does when it starts), then the program's raw output,
 minus terminal queries the core already answered. The core never encodes
 keys: a viewer that honors 9001 sends key events in that format itself.
 The viewer sends keys as DATA on the same channel, and RESIZE,
-FOCUS and FACTS as it changes. The last active viewer sets the size
-(active: it attached, typed, resized or gained focus); `observe` viewers never type or resize.
+FOCUS and FACTS as it changes. By default, the last active viewer sets the size
+(active: it attached, typed, resized or gained focus). With `first_viewer_size`
+enabled on the host, the earliest still-attached typing viewer sets the size instead.
+`observe` viewers never type or set the size.
 Automatic query answers (including mode 2048 reports, kitty graphics and XTGETTCAP
 replies) use AUTOMATIC_INPUT, not DATA. Their bytes reach the program unchanged,
 including duplicates from multiple viewers, but do not take size/display ownership

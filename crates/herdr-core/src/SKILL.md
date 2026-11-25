@@ -140,6 +140,11 @@ still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
 `terminal.attach`) likewise answers the program's color and cell-size queries
 from its start, before any viewer attaches.
 
+To keep the desktop grid while typing from a phone, set `first_viewer_size = true`
+in the host's `~/.config/herdr-core/config.toml` before starting the core and
+attach the desktop first. When it disconnects, the next attached typing viewer
+takes over. By default the grid follows the last active typing viewer.
+
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
 hc run "cd app && bun test"        # one quoted string is a shell command

@@ -25,6 +25,9 @@ pub struct Config {
     pub draft_wait: Option<Duration>,
     /// Size of a terminal nobody is typing in, `COLSxROWS` (default 200x120).
     pub headless: Option<String>,
+    /// Keep the first attached typing viewer's grid until it leaves (default off).
+    #[serde(default)]
+    pub first_viewer_size: bool,
     /// Scrollback kept per live terminal, in MB (default 5).
     pub history_mb: Option<f64>,
     /// After a kept program is lost, show its last saved screen above the new shell (default off).
