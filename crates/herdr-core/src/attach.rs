@@ -32,7 +32,18 @@ const RESET: &[u8] = b"\x1b[?2026l\x1b[?1049h\x1b[=0;1u\x1b[?1049l\x1b[?1047l\x1
 /// `CSI 27;M;code~`.
 fn find_detach(input: &[u8], key: DetachKey) -> Option<usize> {
     let code = key.code.to_string();
-    let ctrl_only = |mods: &str| mods.parse::<u32>().is_ok_and(|m| m >= 1 && (m - 1) & !(64 | 128) == 4);
+    // Ctrl, plus whatever a layout needed to reach the key: AltGr arrives as
+    // ctrl+alt, and a chord typed with shift+altgr carries that shift too. The
+    // control byte erases both, so shift and alt are accepted here to make the
+    // two strict encodings agree with the byte one. The lock keys (64, 128) are
+    // ignored; Cmd/Win (8) and wider modifiers are not ours.
+    let ctrl_chord = |mods: &str| match mods.parse::<u32>().map(|m| m.checked_sub(1)) {
+        Ok(Some(m)) => {
+            let bits = m & !(64 | 128);
+            bits & 4 != 0 && bits & !(1 | 2 | 4) == 0
+        }
+        _ => false,
+    };
     (0..input.len()).find(|&i| {
         if input[i] == key.byte {
             return true;
@@ -44,9 +55,9 @@ fn find_detach(input: &[u8], key: DetachKey) -> Option<usize> {
         match (rest[end], fields.as_slice()) {
             (b'u', [key, mods, ..]) => {
                 let (mods, event) = mods.split_once(':').unwrap_or((mods, "1"));
-                key.split(':').next() == Some(code.as_str()) && ctrl_only(mods) && event != "3"
+                key.split(':').next() == Some(code.as_str()) && ctrl_chord(mods) && event != "3"
             }
-            (b'~', ["27", mods, key]) => *key == code && ctrl_only(mods),
+            (b'~', ["27", mods, key]) => *key == code && ctrl_chord(mods),
             _ => false,
         }
     })
@@ -426,10 +437,22 @@ mod tests {
             b"ab\x1b[92;69u",
             b"ab\x1b[92;133:2u",
             b"ab\x1b[27;5;92~",
+            // ALTGR: `\` is AltGr+8 on a French layout and Option+Shift+7 on a German Mac.
+            // AltGr arrives as ctrl+alt, and the shift a layout needed comes along.
+            b"ab\x1b[92;7u",
+            b"ab\x1b[92;8u",
+            b"ab\x1b[27;7;92~",
         ] {
             assert_eq!(find_detach(input, BACKSLASH), Some(2), "{:?}", String::from_utf8_lossy(input));
         }
-        for input in [&b"\x1b[92;5:3u"[..], b"\x1b[92;7u", b"\x1b[93;5u", b"\x1b[92u", b"\\"] {
+        for input in [
+            &b"\x1b[92;5:3u"[..],
+            b"\x1b[93;5u",  // another key
+            b"\x1b[92u",    // no modifiers: the plain character, not the chord
+            b"\x1b[92;3u",  // alt without ctrl: AltGr alone types the layout's character
+            b"\x1b[92;13u", // ctrl+cmd belongs to the desktop, not a terminal chord
+            b"\\",
+        ] {
             assert_eq!(find_detach(input, BACKSLASH), None, "{:?}", String::from_utf8_lossy(input));
         }
     }

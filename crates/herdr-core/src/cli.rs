@@ -65,7 +65,7 @@ enum Cmd {
     Keys(KeysParams),
     /// Press the stop key and report what happened.
     Interrupt(InterruptParams),
-    /// Put this terminal on a core terminal (detach: ctrl+\).
+    /// Put this terminal on a core terminal (detach: ctrl+\, or the config's detach_key).
     Attach(AttachParams),
     /// Print a terminal's screen and history.
     Read(ReadParams),
