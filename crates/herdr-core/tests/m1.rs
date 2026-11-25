@@ -613,6 +613,28 @@ fn an_exit_never_overtakes_its_output_while_the_core_is_behind() {
     assert!(printed.ends_with(b"END"), "exit after {} bytes of output", printed.len());
 }
 
+/// The backlog is shared by every terminal: a quiet one's output waits behind little of a busy one's.
+#[test]
+fn a_busy_terminal_holds_back_another_ones_output_by_little() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "busy");
+    let (mut core, _) = raw_hello(&socket);
+    raw_spawn(&mut core, 1, &["yes"]);
+    // Not read yet: the busy terminal fills the backlog.
+    std::thread::sleep(Duration::from_millis(1000));
+    raw_spawn(&mut core, 2, &["printf", "QUIET"]);
+    let mut ahead = 0;
+    loop {
+        let (kind, id, payload) = proto::read(&mut core).expect("the quiet output").unwrap();
+        match (kind, id) {
+            (proto::OUTPUT, 1) => ahead += payload.len(),
+            (proto::OUTPUT, 2) if payload.ends_with(b"QUIET") => break,
+            _ => {}
+        }
+    }
+    assert!(ahead < 1 << 20, "{ahead} bytes of the busy terminal came first");
+}
+
 /// A late goodbye from a core that was replaced leaves the new one connected.
 #[test]
 fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {
