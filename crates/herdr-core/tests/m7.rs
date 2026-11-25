@@ -436,3 +436,109 @@ fn a_template_can_override_how_messages_are_submitted() {
     assert_eq!((code, err["error"]["kind"].as_str()), (1, Some("spawn_failed")));
     let _: Value = s.json(&["templates"]);
 }
+
+/// A pi-like full-screen agent: alt screen and bracketed paste up front, then
+/// 1.2s of silent startup, then its capability negotiation (kitty keyboard,
+/// OSC 7501 status support, device attributes). Like pi, it reports status
+/// only if the 7501 reply arrives before any input does; working and done
+/// wrap each line it reads.
+const NEGOTIATING_AGENT: &str = r#"#!/usr/bin/env python3
+import os, re, select, sys, termios, time, tty
+
+def out(s):
+    os.write(1, s if isinstance(s, bytes) else s.encode())
+
+fd = sys.stdin.fileno()
+saved = termios.tcgetattr(fd)
+tty.setraw(fd)
+out("\x1b[?1049h\x1b[?2004h\x1b[2J\x1b[Hstarting...")
+time.sleep(1.2)
+out("\x1b[>7u\x1b[?u\x1b]7501;?\x1b\\\x1b[c")
+
+buf = b""
+supported = None
+end = time.monotonic() + 10
+while supported is None and time.monotonic() < end:
+    r, _, _ = select.select([fd], [], [], 0.01)
+    if not r:
+        continue
+    buf += os.read(fd, 4096)
+    while buf:
+        m = re.match(rb"\x1b\]7501;\?[^\x07\x1b]*(?:\x07|\x1b\\)", buf)
+        if m:
+            supported = True
+            buf = buf[m.end():]
+            break
+        if re.match(rb"\x1b\[", buf):
+            m = re.match(rb"\x1b\[[0-9;?<>=]*[A-Za-z]", buf)
+            if not m:
+                break
+            buf = buf[m.end():]
+            continue
+        supported = False
+        break
+out("\x1b]7501;state=idle:app=fakepi\x1b\\" if supported else b"")
+out("\x1b[2J\x1b[H" + ("negotiated" if supported else "unnegotiated"))
+
+pending = b""
+try:
+    while True:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            continue
+        pending += os.read(fd, 4096)
+        lines = []
+        text = b""
+        while pending:
+            m = re.match(rb"\x1b\[200~(.*?)(\x1b\[201~|$)", pending, re.S)
+            if m:
+                text += m.group(1)
+                pending = pending[m.end():]
+                if m.group(2):
+                    continue
+                break
+            if pending.startswith(b"\x1b"):
+                m = re.match(rb"\x1b\[[0-9;?<>=]*[A-Za-z]", pending)
+                if m:
+                    pending = pending[m.end():]
+                    continue
+                pending = pending[1:]
+                continue
+            ch, pending = pending[:1], pending[1:]
+            if ch == b"\r":
+                if text:
+                    lines.append(text)
+                    text = b""
+            elif ch == b"q":
+                raise SystemExit
+            else:
+                text += ch
+        if text:
+            lines.append(text)
+        for line in lines:
+            if supported:
+                out("\x1b]7501;state=working:app=fakepi\x1b\\")
+            out("got:" + line.decode(errors="replace") + "\r\n")
+            if supported:
+                out("\x1b]7501;state=done:app=fakepi\x1b\\")
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+"#;
+
+#[test]
+fn a_send_into_a_starting_full_screen_agent_waits_out_its_negotiation() {
+    let s = session();
+    let agent = executable(&s, NEGOTIATING_AGENT);
+    let t = run(&s, &[&agent]);
+    // The prompt goes out after the agent's splash (quiet) but during its
+    // silent startup, before the negotiation: exactly when desktop delivery
+    // lands on a pane that is still loading.
+    std::thread::sleep(Duration::from_millis(600));
+    let sent = s.json(&["send", &t, "first prompt"]);
+    assert_eq!(sent["started"], Value::Bool(true), "the turn started after the negotiation: {sent}");
+    wait_until("the agent negotiated", || text(&s, &t).contains("negotiated"));
+    let turn = get(&s, &t)["turn"].as_u64().unwrap_or(0);
+    assert!(turn >= 1, "negotiated agent took the prompt as a turn: turn {turn}");
+    assert_eq!(get(&s, &t)["status"]["state"], "done", "the turn was reported");
+    assert!(text(&s, &t).contains("got:first prompt"), "the prompt was submitted");
+}
