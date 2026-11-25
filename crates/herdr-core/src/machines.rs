@@ -5,6 +5,7 @@ use crate::rpc::RpcError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -100,7 +101,7 @@ pub fn unknown(machines: &[Machine], name: &str) -> crate::rpc::RpcError {
 pub fn save(state: &Path, machines: &[Machine]) {
     let bytes = serde_json::to_vec_pretty(machines).expect("machines serialize");
     if let Err(e) = crate::paths::write_atomic(&state.join("machines.json"), &bytes) {
-        eprintln!("core: cannot save machines: {e}");
+        let _ = writeln!(io::stderr(), "core: cannot save machines: {e}");
     }
 }
 

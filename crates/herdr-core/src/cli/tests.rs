@@ -146,3 +146,21 @@ fn labels_need_a_key() {
     let Cmd::Label(p) = parsed(&["label", "t1", "gone="]) else { panic!() };
     assert_eq!(to(&p)["labels"], json!({"gone": ""}), "an empty value removes it");
 }
+
+#[test]
+fn connect_counts_the_plain_lines_the_core_answers() {
+    for (line, answered, last) in [
+        (r#"{"jsonrpc":"2.0","id":1,"method":"doc.get"}"#, true, false),
+        (r#"{"jsonrpc":"2.0","id":null,"method":"doc.get"}"#, true, false),
+        (r#"{"jsonrpc":"2.0","method":"doc.get"}"#, false, false),
+        (r#"{"foo":1}"#, true, false),
+        ("[1,2]", true, false),
+        ("not json", true, false),
+        (" \r", false, false),
+        (r#"{"id":1,"method":"events.subscribe","params":{}}"#, true, true),
+        (r#"{"id":1,"method":"hello","params":{"framed":true}}"#, true, true),
+        (r#"{"id":1,"method":"hello","params":{"framed":false}}"#, true, false),
+    ] {
+        assert_eq!(plain_line(format!("{line}\n").as_bytes()), (answered, last), "{line}");
+    }
+}

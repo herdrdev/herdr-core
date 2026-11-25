@@ -2,6 +2,7 @@
 
 use crate::rpc::RpcError;
 use serde::Deserialize;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -90,7 +91,9 @@ pub fn load(path: &Path) -> Result<Config, RpcError> {
 pub fn delivery(path: &Path) -> Config {
     load(path).unwrap_or_else(|error| {
         static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| eprintln!("core: {}; using delivery defaults", error.message));
+        WARNED.call_once(|| {
+            let _ = writeln!(io::stderr(), "core: {}; using delivery defaults", error.message);
+        });
         Config::default()
     })
 }

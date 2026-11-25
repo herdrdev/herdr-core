@@ -149,6 +149,9 @@ Write replaces the whole file and creates parent folders.
 Edit requires the old text exactly once. Add context if it is missing or repeated.
 Repeat old/new pairs for several edits; all succeed or none do.
 `hc put box/build ./report.txt` sends a local file beside that terminal and prints where it landed.
+It travels in small pieces, so typing and other calls to that machine keep going on a slow link,
+and it takes as long as the link needs. A machine with an hc older than this one gets the file in one piece,
+which holds up everything else on its connection and gives up after `machine_timeout`.
 
 ## When something goes wrong
 

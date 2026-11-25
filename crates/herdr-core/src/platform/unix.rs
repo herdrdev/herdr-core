@@ -6,6 +6,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 pub fn check_via(_target: &str) -> io::Result<()> {
     Ok(())
@@ -146,6 +147,31 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 pub fn private_file(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
+}
+
+pub fn is_link(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    #[cfg(not(target_os = "macos"))]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 /// Takes the lock on `file` unless someone else holds it.
@@ -621,6 +647,7 @@ pub struct Pty {
     master: File,
     stop: Stream,
     _stop_sender: Stream,
+    signaled_foreground: AtomicI32,
 }
 
 /// Cancels blocked IO when the holder releases the terminal, even if a
@@ -724,7 +751,11 @@ pub fn spawn_pty(
         });
     }
     let child = cmd.spawn()?;
-    Ok((Pty { master, stop, _stop_sender: stop_sender }, child))
+    Ok((Pty { master, stop, _stop_sender: stop_sender, signaled_foreground: AtomicI32::new(0) }, child))
+}
+
+fn same_session(pgid: i32, sid: i32) -> bool {
+    pgid > 0 && unsafe { libc::getsid(pgid) == sid }
 }
 
 impl Pty {
@@ -749,18 +780,51 @@ impl Pty {
 
     /// The program's group, plus whatever group is in the foreground.
     pub fn signal(&self, pid: u32, signal: i32) {
+        let sid = pid as i32;
+        // Read the foreground group before signaling the session leader: an
+        // interactive shell handling SIGHUP reclaims the PTY via TIOCSPGRP
+        // before exiting. Only the current foreground group is escalated.
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        if fg > 0 && fg != sid {
+            self.signaled_foreground.store(fg, Ordering::Relaxed);
+        }
         unsafe {
-            libc::killpg(pid as i32, signal);
-            let fg = libc::tcgetpgrp(self.master.as_raw_fd());
-            if fg > 0 && fg != pid as i32 {
+            libc::killpg(sid, signal);
+            if fg > 0 && fg != sid {
                 libc::killpg(fg, signal);
             }
         }
     }
 
-    /// Its program is gone: hang up what still holds the terminal.
-    pub fn hang_up(&self, pid: u32) {
-        unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
+    /// Its program is gone: hang up what still holds the terminal, and wake
+    /// any foreground job signaled before the leader exited.
+    pub fn hang_up(&self, pid: u32, still_open: bool) {
+        let sid = pid as i32;
+        let signaled_fg = self.signaled_foreground.swap(0, Ordering::Relaxed);
+        // Send SIGHUP + SIGCONT to both the shell's group and its signaled
+        // foreground job group: a TUI job stopped by SIGTTOU during shell
+        // teardown (e.g. restoring termios right after the shell ran TIOCSPGRP)
+        // stays frozen in T state if the shell exited before the stop settled.
+        // On macOS, XNU revokes the PTY when the session leader exits, so the
+        // master reader sees EOF (`!still_open`) even while that stopped job
+        // is still alive; still wake the foreground group we signaled.
+        let candidates = if still_open {
+            [sid, unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }, signaled_fg]
+        } else {
+            [0, 0, signaled_fg]
+        };
+        let mut signaled = [0i32; 3];
+        let mut count = 0;
+        for pgid in candidates {
+            if pgid > 0 && !signaled[..count].contains(&pgid) && (pgid == sid || same_session(pgid, sid)) {
+                signaled[count] = pgid;
+                count += 1;
+                unsafe {
+                    libc::killpg(pgid, libc::SIGHUP);
+                    libc::killpg(pgid, libc::SIGCONT);
+                }
+            }
+        }
     }
 }
 
