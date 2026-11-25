@@ -11,6 +11,7 @@ It does not arrange windows; use `herdr-app --skill` for that.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
+Use `hc ls --table` for a plain-text table in captured or piped output.
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 ## Delegate a task
@@ -147,6 +148,8 @@ hc wait web --output ready         # match output printed AFTER this wait starts
 hc read web --lines 100
 ```
 
+If `hc run` reports a registry save failure, the program may already have run. Check `hc ls --all` (it shows finished terminals too) before retrying; if its record is gone (`--rm`), check what the command did.
+
 ### Slow commands: don't block yourself
 
 Your own shell tool holds you until its command ends: no messages, no
@@ -173,6 +176,8 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Use the returned address to wait/read it; don't launch a duplicate.
 `hc attach <t>` lets a person interact directly; Ctrl+\ detaches.
 `hc put <t> <file>` sends a file beside a terminal and prints its destination.
+A direct link with chunk support times out per piece. On a multi-hop route,
+a core sending the whole file to a relay applies its machine timeout to that call.
 `hc label <t> key=value` adds labels.
 
 ## Other machines and files
@@ -198,6 +203,9 @@ On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
 no shell), with the remote line appended as one argument, no console window;
 Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
 
+A machine whose SSH login fails shows `needs_login` and retries slowly (up to
+every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
+
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
 machine or run `hc server start` in a normal desktop terminal, then reconnect.
@@ -213,6 +221,8 @@ hc file edit --on vps /srv/app/src/x.rs --old 'exact text' --new 'replacement'
 hc file write --on vps /srv/app/src/y.rs < content.txt
 ```
 
+`exec` ends the command and everything it started after 60 s by default
+(`--timeout S`, at most 600); use `run` for anything longer.
 `exec -i` feeds piped input to the command. File writes replace the whole
 file and create parent folders. Edits require the old text exactly once;
 `edit_failed` means add enough context to make it unique. Repeat `--old` and
@@ -262,7 +272,13 @@ paths start at your current folder. Prefer explicit paths for remote work.
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
   on Linux, systemd stops the core before its holders. Ordinary exits and
-  explicit kills remain final. Streams end on loss; reattach after the
+  explicit kills remain final. Set `restore_screen = true` in
+  `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
+  to show the lost program's last saved screen above the new shell, separated
+  by a divider. It defaults to false and applies at the next recovery. On Windows,
+  the old screen is in history. `hc read` includes restored text, so scripts
+  reading it can match old output. Saved screens are consumed or discarded once; a power cut
+  that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.

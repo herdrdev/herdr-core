@@ -2,6 +2,7 @@
 
 use crate::rpc::RpcError;
 use serde::Deserialize;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -26,6 +27,8 @@ pub struct Config {
     pub headless: Option<String>,
     /// Scrollback kept per live terminal, in MB (default 5).
     pub history_mb: Option<f64>,
+    /// After a kept program is lost, show its last saved screen above the new shell (default off).
+    pub restore_screen: Option<bool>,
     /// Where the core listens (default under $XDG_RUNTIME_DIR). `HC_SOCKET` wins.
     pub socket: Option<String>,
     /// Seconds another machine gets to answer a call (a wait gets its own
@@ -88,7 +91,9 @@ pub fn load(path: &Path) -> Result<Config, RpcError> {
 pub fn delivery(path: &Path) -> Config {
     load(path).unwrap_or_else(|error| {
         static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| eprintln!("core: {}; using delivery defaults", error.message));
+        WARNED.call_once(|| {
+            let _ = writeln!(io::stderr(), "core: {}; using delivery defaults", error.message);
+        });
         Config::default()
     })
 }

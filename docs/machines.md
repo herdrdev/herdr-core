@@ -149,6 +149,9 @@ Write replaces the whole file and creates parent folders.
 Edit requires the old text exactly once. Add context if it is missing or repeated.
 Repeat old/new pairs for several edits; all succeed or none do.
 `hc put box/build ./report.txt` sends a local file beside that terminal and prints where it landed.
+It travels in small pieces, so typing and other calls to that machine keep going on a slow link,
+and it takes as long as the link needs. A machine with an hc older than this one gets the file in one piece,
+which holds up everything else on its connection and gives up after `machine_timeout`.
 
 ## When something goes wrong
 
@@ -159,5 +162,8 @@ Repeat old/new pairs for several edits; all succeed or none do.
 - With a custom connection, check that it passes bytes unchanged and does not prompt. Do not request a remote PTY.
 - If a socket path is too long, use a shorter session name or socket path. See [state and endpoints](security.md#state-and-endpoints).
 
-Once a machine is added, core retries a lost connection. Reattach after it returns.
+Once a machine is added, core retries a lost connection. If SSH authentication fails,
+it shows `needs_login` and retries after 2 minutes, then 5 minutes, then every 10 minutes.
+Run `hc machine login box` in a terminal to log in and reconnect immediately.
+A successful connection resets these delays. Reattach after it returns.
 To forget the connection here, use `hc machine rm box`. That does not stop its remote terminals.

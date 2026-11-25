@@ -338,7 +338,6 @@ pub struct ListResult {
     pub hidden_finished: usize,
     /// Machines added here and their lines: one that is not connected is
     /// listed here, not waited on.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<crate::remote::MachineView>,
 }
 
@@ -455,6 +454,11 @@ pub struct SubscribeParams {
     #[serde(default, with = "label_map")]
     #[schemars(with = "BTreeMap<String, String>")]
     pub labels: Vec<Label>,
+    /// Documents by name (repeatable); a name ending in `*` is a prefix. Naming
+    /// narrows, so documents alone hear only them — name a terminal for both.
+    #[arg(long = "doc", value_name = "NAME")]
+    #[serde(default)]
+    pub docs: Vec<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -600,6 +604,44 @@ pub struct PutResult {
     /// Where it landed, as the terminal's machine sees it.
     pub path: String,
     pub bytes: usize,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBeginParams {
+    /// The terminal: `t7` or a name, on this core.
+    pub terminal: String,
+    /// The file's name, as for terminal.put.
+    pub name: String,
+    /// Its whole size in raw bytes; at most 8 MB.
+    pub bytes: usize,
+    /// Names this transfer in its pieces: 16 to 64 hex digits the sender picks.
+    pub transfer: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutBeginResult {
+    /// The transfer, as begun.
+    pub transfer: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutPieceParams {
+    pub transfer: String,
+    /// Where these bytes start: exactly the bytes received so far.
+    pub offset: usize,
+    /// The bytes, base64; at most 1 MB raw.
+    pub data: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct PutPieceResult {
+    /// Bytes received so far.
+    pub bytes: usize,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct PutTransferParams {
+    pub transfer: String,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]

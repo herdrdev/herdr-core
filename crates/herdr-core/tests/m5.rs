@@ -106,6 +106,18 @@ fn a_program_that_never_reports_status_is_working_until_it_exits() {
 }
 
 #[test]
+fn a_working_program_that_exits_ends_the_wait_with_exit() {
+    let s = session();
+    let t = agent(&s, "r state=working; w a; exit 4");
+    wait_until("working", || state(&s, &t) == "working");
+    let waiting = wait_bg(&s, &[&t]);
+    assert!(!waiting.is_finished(), "still working");
+    touch(&s, "a");
+    let r = waiting.join().unwrap();
+    assert_eq!((r["reason"].as_str(), r["exit_code"].as_i64()), (Some("exit"), Some(4)));
+}
+
+#[test]
 fn exits_and_output_end_waits() {
     let s = session();
     let t = agent(&s, "r state=working; echo READY-early; w a; r state=idle; w a2; echo READY-now; w b; exit 4");

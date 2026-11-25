@@ -72,8 +72,16 @@ pub fn members(_: &[String]) -> Vec<i32> {
 /// remain or KILL had its time.
 #[cfg(unix)]
 pub fn sweep(tokens: &[String]) {
+    if tokens.is_empty() {
+        return;
+    }
     for (signal, wait) in [(libc::SIGHUP, 500), (libc::SIGTERM, 500), (libc::SIGKILL, 2000)] {
-        let pids = members(tokens);
+        let mut pids = members(tokens);
+        if signal == libc::SIGHUP && pids.is_empty() {
+            // A process's environment can be temporarily unreadable during exec.
+            std::thread::sleep(Duration::from_millis(50));
+            pids = members(tokens);
+        }
         if pids.is_empty() {
             return;
         }
@@ -186,8 +194,7 @@ mod tests {
     fn finds_only_processes_carrying_the_token() {
         let tokens = [token()];
         // Not macOS's own `sleep`: it hides its environment.
-        let sleeper = |scope: &str| python("import time; time.sleep(30)").env(VAR, scope).spawn().unwrap();
-        let (mut ours, mut other) = (sleeper(&tokens[0]), sleeper("someone-else"));
+        let (mut ours, mut other) = (spawn_sleeper(&tokens[0]), spawn_sleeper("someone-else"));
         assert_eq!(members_settled(&tokens, 1), [ours.id() as i32]);
         sweep(&tokens);
         assert!(ours.wait().unwrap().signal().is_some(), "it was ended");
@@ -213,8 +220,8 @@ mod tests {
         // A process older than the token cannot carry it, so its environment need not be read.
         let later = now() * 2 + 1_000_000;
         let (tokens, found) = ([format!("{later}-{}", crate::platform::random_hex())], [token()]);
-        let mut sleeper = python("import time; time.sleep(30)").env(VAR, &tokens[0]).spawn().unwrap();
-        let mut seen = python("import time; time.sleep(30)").env(VAR, &found[0]).spawn().unwrap();
+        let mut sleeper = spawn_sleeper(&tokens[0]);
+        let mut seen = spawn_sleeper(&found[0]);
         assert_eq!(members_settled(&found, 1), [seen.id() as i32], "a fresh token finds its own");
         assert!(members(&tokens).is_empty(), "a token from far ahead is newer than every process");
         for child in [&mut sleeper, &mut seen] {
@@ -247,10 +254,24 @@ mod tests {
     #[ignore = "run by the test above, inside a time namespace"]
     fn a_fresh_token_finds_its_own() {
         let tokens = [token()];
-        let mut ours = python("import time; time.sleep(30)").env(VAR, &tokens[0]).spawn().unwrap();
+        let mut ours = spawn_sleeper(&tokens[0]);
         assert_eq!(members_settled(&tokens, 1), [ours.id() as i32]);
         ours.kill().unwrap();
         ours.wait().unwrap();
+    }
+
+    // On macOS, wait for the real interpreter to replace the launcher stub.
+    fn spawn_sleeper(scope: &str) -> std::process::Child {
+        use std::io::BufRead;
+        let mut child = python("import time; print('ready', flush=True); time.sleep(30)")
+            .env(VAR, scope)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "ready");
+        child
     }
 
     /// `members` once it finds `n` (5 s at most): macOS's python3 is a stub

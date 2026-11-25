@@ -11,7 +11,7 @@ use crate::terminals::Registry;
 use crate::viewers::Viewer;
 use ghostty_vt::Terminal as Screen;
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant, SystemTime};
@@ -94,6 +94,8 @@ pub struct State {
     pub peer_lines: HashMap<String, (usize, Arc<crate::remote::Line>)>,
     /// Notes from other machines for parents here, until typed.
     pub afar_notes: HashMap<u32, Vec<String>>,
+    /// Provisional callback grants: (parent, machine) -> (runs pending, keep after failure).
+    pub afar_runs: HashMap<(u32, String), (usize, bool)>,
     /// What a machine must hear once its line is back (a parent here finished).
     pub machine_outbox: HashMap<String, Vec<serde_json::Value>>,
     /// When each holder was last reconnected to after our reading of it failed.
@@ -103,6 +105,8 @@ pub struct State {
     /// Each connected machine's terminals as seen from here, kept current by
     /// its events: machine id -> address (`rohan/t7`) -> record.
     pub mirrors: HashMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Puts arriving in pieces from other cores, by transfer handle.
+    pub puts: HashMap<String, crate::put::Transfer>,
 }
 
 pub struct Link {
@@ -170,9 +174,9 @@ impl Core {
         let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
-            eprintln!("core: cannot load documents, starting empty: {e}");
+            let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
             if let Err(e) = std::fs::rename(&docs_path, paths.state.join("docs.json.bad")) {
-                eprintln!("core: cannot quarantine documents: {e}");
+                let _ = writeln!(io::stderr(), "core: cannot quarantine documents: {e}");
             }
             Default::default()
         });
@@ -220,8 +224,16 @@ impl Core {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn snapshot_path(&self, id: u32) -> PathBuf {
+    pub(crate) fn snapshot_path(&self, id: u32) -> PathBuf {
         self.paths.state.join("screens").join(format!("{}.snap", crate::terminals::address(id)))
+    }
+
+    /// A live terminal's saved screen, read once: a later loss must not bring back an older one.
+    pub(crate) fn take_saved_screen(&self, id: u32) -> Option<Screen> {
+        let path = self.snapshot_path(id);
+        let bytes = std::fs::read(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        Screen::restore(&bytes?, self.history_bytes())
     }
 
     pub fn save(&self, st: &State) {
@@ -232,18 +244,30 @@ impl Core {
 
     /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
     /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
-    /// Completed write failures are logged, as before; a stuck disk still times out.
+    /// A failed write is reported here and retried in the background.
     pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
-        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
-            .await
-            .map_err(|_| {
-                crate::rpc::RpcError::new(
-                    "unavailable",
-                    "registry persistence timed out; the operation may already have completed",
-                    "check the terminal and disk before retrying",
-                )
-            })?
-            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
+        self.wait_for_save().await?.map_err(|e| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                format!("cannot save terminals: {e}; the operation may already have completed"),
+                "check the terminal and disk before retrying",
+            )
+        })
+    }
+
+    /// Return the action's observed result even when a registry write failed.
+    pub async fn flush_observed(&self) -> Result<(), crate::rpc::RpcError> {
+        self.wait_for_save().await.map(drop)
+    }
+
+    async fn wait_for_save(&self) -> Result<io::Result<()>, crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush()).await.map_err(|_| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                "registry persistence timed out; the operation may already have completed",
+                "check the terminal and disk before retrying",
+            )
+        })
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -343,6 +367,7 @@ impl Core {
             .filter(|t| matches!(t.reason.as_deref(), Some("holder_lost" | "stopped_by_restart")));
         self.sweep_in_background(leftovers.filter_map(|t| t.scope.clone()).collect());
         crate::exec::sweep_leftovers(&self.paths.state);
+        crate::put::sweep(&self.paths.state);
         self.prune(&mut st);
         self.save(&st);
         Ok(())
@@ -359,7 +384,7 @@ impl Core {
     ) -> io::Result<Vec<u32>> {
         std::io::Write::write_all(
             &mut stream,
-            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }),
+            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION, tail_offsets: true }),
         )?;
         let welcome: proto::Welcome = match proto::read(&mut stream)? {
             Some((proto::WELCOME, _, payload)) => proto::parse(&payload)?,
@@ -383,7 +408,11 @@ impl Core {
             welcome.login_session,
         );
         if welcome.build == build && self.login_session.is_some() && welcome.login_session.is_none() {
-            eprintln!("core: holder {} login identity unavailable; retaining build eligibility", welcome.pid);
+            let _ = writeln!(
+                io::stderr(),
+                "core: holder {} login identity unavailable; retaining build eligibility",
+                welcome.pid
+            );
         }
         if require_current && !current {
             io::Write::write_all(&mut stream, &proto::frame(proto::DRAIN, 0, &[]))?;
@@ -468,15 +497,19 @@ impl Core {
                 }
             }
             let tail = tails.remove(&id).unwrap_or_default();
-            let saved = handover
-                .then(|| std::fs::read(self.snapshot_path(id)).ok())
-                .flatten()
-                .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()));
+            let saved = if handover {
+                self.take_saved_screen(id)
+            } else {
+                let _ = std::fs::remove_file(self.snapshot_path(id));
+                None
+            };
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            let replay_from =
+                if exact { h.saved_offset.saturating_sub(h.raw_offset).min(tail.len() as u64) as usize } else { 0 };
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
-            relay.feed(&mut screen, &tail);
+            relay.feed(&mut screen, &tail[replay_from..]);
             relay.flush(&mut screen);
             // After a handover the tail is new output nobody answered yet; after a
             // crash it was answered long ago and replies would be typed as garbage.
@@ -509,6 +542,8 @@ impl Core {
                 // A crash tail repeats reports we already counted: take its final word,
                 // but count at most the one turn that may have ended while we were down.
                 let (turn, was, since) = (rec.turn, rec.status.as_ref().map(|s| s.state.clone()), rec.status_ms);
+                let facts = |t: &crate::terminals::Terminal| (t.status.clone(), t.records.clone(), t.reported);
+                let heard = facts(rec);
                 for r in &reports {
                     crate::status::apply(rec, r);
                 }
@@ -520,7 +555,9 @@ impl Core {
                 // Only a changed final word/turn proves new activity in a crash replay.
                 // A repeated done, or done -> idle, entirely during downtime can remain unobservable.
                 let root_report = rec.turn != turn || now != was;
-                self.status_changed(st, id, crate::status::Change { root_report, ..Default::default() });
+                // Subscribers hear the final facts once, and only if the replay changed them.
+                let status = facts(rec) != heard;
+                self.status_changed(st, id, crate::status::Change { status, root_report, ..Default::default() });
             }
             if spawning {
                 self.spawn_result(st, instance, id, Ok(h.pid));
@@ -633,10 +670,13 @@ impl Core {
                 Ok(Ok(_))
             );
         if taken {
-            eprintln!("core: lost the link to holder {instance}, reconnected");
+            let _ = writeln!(io::stderr(), "core: lost the link to holder {instance}, reconnected");
             return;
         }
-        eprintln!("core: lost the link to holder {instance} for good; its terminals wait for the next core start");
+        let _ = writeln!(
+            io::stderr(),
+            "core: lost the link to holder {instance} for good; its terminals wait for the next core start"
+        );
         // Closed, so the holder sees us leave instead of waiting on a link nobody reads.
         if let Ok(ours) = ours {
             let _ = ours.shutdown(std::net::Shutdown::Both);
@@ -773,7 +813,7 @@ impl Core {
         if let Some(snapshot) = st.screens.remove(&id).and_then(|s| s.snapshot())
             && let Err(e) = write_atomic(&self.snapshot_path(id), &snapshot)
         {
-            eprintln!("core: cannot save screen of {}: {e}", crate::terminals::address(id));
+            let _ = writeln!(io::stderr(), "core: cannot save screen of {}: {e}", crate::terminals::address(id));
         }
         // `--rm`: gone now, unless its parent is waiting for the exit code.
         let rm = st.reg.terminals.get(&id).is_some_and(|t| {
@@ -810,6 +850,7 @@ impl Core {
         let Some(was) = st.reg.terminals.remove(&id) else { return };
         self.emit_from(st, "removed", id, serde_json::json!({}), Some(&was));
         let _ = std::fs::remove_file(self.snapshot_path(id));
+        crate::api::forget_puts(st, |t| t.terminal == id);
         let _ = std::fs::remove_dir_all(crate::put::dir(&self.paths.state, id));
         self.save(st);
     }
@@ -899,7 +940,11 @@ impl Core {
                     });
                     // The welcome may be unreadable (the reason relink failed).
                     // Shutdown needs no inventory: the holder ends its own programs.
-                    let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
+                    let hello = proto::json_frame(
+                        proto::HELLO,
+                        0,
+                        &proto::Hello { version: proto::VERSION, tail_offsets: true },
+                    );
                     if io::Write::write_all(&mut stream, &hello).is_ok()
                         && io::Write::write_all(&mut stream, &proto::json_frame(proto::GOODBYE, 0, &mode)).is_ok()
                     {

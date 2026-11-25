@@ -8,7 +8,7 @@ thread_local! {
 
 #[test]
 fn resize_drags_serialize_nothing_without_observers_and_only_latest_when_stalled() {
-    let root = std::path::PathBuf::from(format!("/var/tmp/hc-resize-{}", crate::platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-resize-{}", crate::platform::random_hex()));
     let paths = crate::paths::Paths {
         socket: root.join("core.sock"),
         holder_socket: root.join("holder.sock"),
@@ -90,4 +90,32 @@ fn resize_drags_serialize_nothing_without_observers_and_only_latest_when_stalled
     });
     drop(core);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_writer_with_no_repaint_waiting_does_not_wait_for_the_state_lock() {
+    let root = crate::test_tmp().join(format!("hc-repaint-lock-{}", crate::platform::random_hex()));
+    let paths = crate::paths::Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+    let viewer = Arc::new(Conn::default());
+    // Stands in for output being parsed.
+    let parsing = core.lock();
+    let (done, prepared) = std::sync::mpsc::channel();
+    let c = core.clone();
+    let writer = std::thread::spawn(move || {
+        c.prepare_repaints(&viewer);
+        done.send(()).unwrap();
+    });
+    let waited = prepared.recv_timeout(std::time::Duration::from_secs(2));
+    drop(parsing);
+    writer.join().unwrap();
+    assert_eq!(waited, Ok(()));
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
 }

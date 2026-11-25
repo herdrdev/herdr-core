@@ -73,6 +73,31 @@ fn piped_ls_says_what_runs_where_so_agents_find_each_other() {
 }
 
 #[test]
+fn ls_table_overrides_piped_output_without_changing_json_defaults() {
+    let s = Session::new();
+    run(&s, &["--name", "table-probe", "--label", "where=workspace / terminal", "sleep", "100"]);
+
+    let table = s.hc(&["ls", "--table", "--label", "where=workspace / terminal"]);
+    assert!(table.status.success(), "hc ls --table: {}", String::from_utf8_lossy(&table.stderr));
+    let text = String::from_utf8(table.stdout).unwrap();
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(text.contains("NAME") && text.contains("table-probe") && text.contains("workspace / terminal"), "{text}");
+
+    for args in [["ls"].as_slice(), &["ls", "--json"]] {
+        let output = s.hc(args);
+        assert!(output.status.success());
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["terminals"][0]["name"], "table-probe");
+    }
+
+    for args in [["--json", "ls", "--table"], ["ls", "--table", "--json"]] {
+        let (code, error) = s.err(&args);
+        assert_eq!(code, 2);
+        assert_eq!(error["error"]["kind"], "usage");
+    }
+}
+
+#[test]
 fn finished_terminals_expire_even_when_nothing_else_happens() {
     let mut s = Session::new();
     s.env.push(("HC_RETAIN_MS".into(), "300".into()));
@@ -166,17 +191,18 @@ fn runs_a_program_and_keeps_its_result_after_exit() {
 fn child_gets_core_env_terminal_identity_cwd_and_its_own_address() {
     let s = Session::new();
     s.json(&["server", "start"]);
+    let here = test_tmp();
     let out = s
         .cmd()
         .args(["run", "--bg", "sh", "-c", "echo id=$HC_TERMINAL_ID foo=$FOO tp=$TERM_PROGRAM pwd=$PWD; sleep 100"])
         .env("FOO", "bar")
         .env("TERM_PROGRAM", "WezTerm")
-        .current_dir("/var/tmp")
-        .env("PWD", "/var/tmp") // as a shell sets it (on macOS the real path is /private/var/tmp)
+        .current_dir(&here)
+        .env("PWD", &here) // as a shell sets it (on macOS the real path is /private/var/tmp)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    wait_text(&s, "t1", "id=t1 foo= tp=ghostty pwd=/var/tmp");
+    wait_text(&s, "t1", &format!("id=t1 foo= tp=ghostty pwd={}", here.display()));
 
     // Never herdr: a program started from inside Herdr sees plain ghostty.
     let out = s
@@ -326,6 +352,31 @@ fn planned_restart_restores_the_exact_screen() {
 }
 
 #[test]
+fn a_crash_after_a_planned_restart_still_recovers_the_screen() {
+    let s = Session::new();
+    let go = s.root.join("go");
+    let script = format!("echo before; while [ ! -e {} ]; do sleep 0.02; done; echo after; sleep 100", go.display());
+    let t = run(&s, &["sh", "-c", &script]);
+    wait_text(&s, &t, "before");
+    let old = status(&s)["pid"].as_i64().unwrap();
+
+    let new = s.json(&["server", "restart"])["pid"].as_i64().unwrap();
+    wait_until("old core exit", || !pid_alive(old));
+    wait_until("planned restart restored the screen", || {
+        let text = text(&s, &t);
+        get(&s, &t)["screen"] == "exact" && text.matches("before").count() == 1
+    });
+
+    kill9(new);
+    std::fs::write(&go, "").unwrap();
+    wait_text(&s, &t, "after");
+
+    let text = text(&s, &t);
+    assert_eq!(text.matches("before").count(), 1, "snapshot prefix lost or replayed twice: {text:?}");
+    assert_eq!(text.matches("after").count(), 1, "tail suffix lost or replayed twice: {text:?}");
+}
+
+#[test]
 fn restarting_waits_for_the_old_cores_lock_after_its_connection_closes() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
@@ -376,21 +427,34 @@ fn finished_terminals_and_ids_survive_server_stop() {
 }
 
 #[test]
-fn a_failed_registry_write_does_not_break_get_or_stop() {
-    let s = Session::new();
-    let terminal = run(&s, &["sleep", "100"]);
+fn a_failed_registry_write_does_not_hide_command_results() {
+    let mut s = Session::new();
+    s.env.push(("HC_QUIET_MS".into(), "0".into()));
+    let terminal = run(&s, &["sh", "-c", "trap '' INT; echo ready; exec cat"]);
+    wait_text(&s, &terminal, "ready");
     let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
     let core = status(&s)["pid"].as_i64().unwrap();
-    // A directory in place of the temporary file fails even when tests run as root.
-    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
-    std::fs::create_dir(&tmp).unwrap();
-    let label = s.hc(&["label", &terminal, "disk=failed"]);
-    let get = s.hc(&["get", &terminal]);
-    let stop = s.hc(&["server", "stop"]);
-    std::fs::remove_dir(tmp).unwrap();
-    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
-        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
-    }
+    // The final rename fails even when tests run as root.
+    let snapshot = s.root.join("state/herdr-core/test/terminals.json");
+    let block_save = || {
+        std::fs::remove_file(&snapshot).unwrap();
+        std::fs::create_dir(&snapshot).unwrap();
+    };
+    block_save();
+    let (_, label) = s.err(&["--json", "label", &terminal, "disk=failed"]);
+    assert_eq!(label["error"]["kind"], "unavailable", "{label}");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "failed");
+    s.json(&["send", &terminal, "written while saves fail"]);
+    s.json(&["keys", &terminal, "enter"]);
+    assert_eq!(s.json(&["wait", &terminal, "--timeout", "0.1"])["reason"], "timeout");
+    assert_eq!(s.json(&["interrupt", &terminal, "--timeout", "0.1"])["outcome"], "unknown");
+    wait_text(&s, &terminal, "written while saves fail");
+
+    std::fs::remove_dir(&snapshot).unwrap();
+    assert_eq!(s.json(&["label", &terminal, "disk=restored"])["labels"]["disk"], "restored");
+    assert_eq!(get(&s, &terminal)["labels"]["disk"], "restored");
+    block_save();
+    assert_eq!(s.json(&["server", "stop"])["stopped"], true);
     assert!(!pid_alive(pid), "stop left the program running");
     wait_until("core stops after a failed disk write", || !pid_alive(core));
 }
@@ -617,7 +681,10 @@ fn a_replaced_cores_late_goodbye_does_not_end_the_new_one() {
         let (mut old, _) = raw_hello(&socket);
         let mut new = std::os::unix::net::UnixStream::connect(&socket).unwrap();
         std::thread::sleep(Duration::from_millis(10));
-        raw_send(&mut new, proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }));
+        raw_send(
+            &mut new,
+            proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION, tail_offsets: true }),
+        );
         // Fails when the holder already cut the old core off: then there is nothing to read late.
         let goodbye = proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Handover);
         let _ = std::io::Write::write_all(&mut old, &goodbye);
@@ -654,6 +721,68 @@ fn a_draining_holder_keeps_its_programs_and_refuses_new_work_after_reconnect() {
     assert_eq!(proto::read(&mut next).unwrap().unwrap().0, proto::BYE);
 }
 
+#[test]
+fn legacy_handover_still_sends_only_the_unsaved_tail() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "offsets");
+    let (mut core, _) = raw_hello_mode(&socket, false);
+    raw_spawn(&mut core, 1, &["sh", "-c", "printf saved; sleep 100"]);
+    let mut output = Vec::new();
+    while !output.ends_with(b"saved") {
+        let (kind, _, payload) = proto::read(&mut core).unwrap().unwrap();
+        if kind == proto::OUTPUT {
+            output.extend(payload);
+        }
+    }
+    raw_send(&mut core, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Handover));
+    assert_eq!(proto::read(&mut core).unwrap().unwrap().0, proto::BYE);
+
+    let (mut legacy, welcome) = raw_hello_mode(&socket, false);
+    assert_eq!(welcome.previous, "handover");
+    assert_eq!(welcome.terminals[0].raw_offset, 5);
+    assert_eq!(welcome.terminals[0].saved_offset, 5);
+    let (kind, _, tail) = proto::read(&mut legacy).unwrap().unwrap();
+    assert_eq!((kind, tail.as_slice()), (proto::TAIL, b"".as_slice()));
+    drop(legacy);
+
+    let (mut crashed, welcome) = raw_hello(&socket);
+    assert_eq!(welcome.previous, "crash");
+    assert_eq!(welcome.terminals[0].raw_offset, 0);
+    assert_eq!(welcome.terminals[0].saved_offset, 5);
+    let (kind, _, tail) = proto::read(&mut crashed).unwrap().unwrap();
+    assert_eq!((kind, tail.as_slice()), (proto::TAIL, b"saved".as_slice()));
+    raw_send(&mut crashed, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Shutdown));
+    assert_eq!(proto::read(&mut crashed).unwrap().unwrap().0, proto::BYE);
+}
+
+#[test]
+fn handover_offsets_follow_tail_trimming() {
+    let s = Session::new();
+    let (_holder, socket) = raw_holder(&s, "trimmed-offsets");
+    let (mut core, _) = raw_hello(&socket);
+    let total = (1 << 20) + 5;
+    raw_spawn(&mut core, 1, &["sh", "-c", &format!("head -c {total} /dev/zero | tr '\\0' x; sleep 100")]);
+    let mut received = 0;
+    while received < total {
+        let (kind, _, payload) = proto::read(&mut core).unwrap().unwrap();
+        if kind == proto::OUTPUT {
+            received += payload.len();
+        }
+    }
+    raw_send(&mut core, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Handover));
+    assert_eq!(proto::read(&mut core).unwrap().unwrap().0, proto::BYE);
+
+    let (mut next, welcome) = raw_hello(&socket);
+    let held = &welcome.terminals[0];
+    assert_eq!((held.raw_offset, held.saved_offset), (5, total as u64));
+    let (kind, _, tail) = proto::read(&mut next).unwrap().unwrap();
+    assert_eq!(kind, proto::TAIL);
+    assert_eq!(tail.len(), 1 << 20);
+    assert_eq!(held.saved_offset - held.raw_offset, tail.len() as u64);
+    raw_send(&mut next, proto::json_frame(proto::GOODBYE, 0, &proto::Goodbye::Shutdown));
+    assert_eq!(proto::read(&mut next).unwrap().unwrap().0, proto::BYE);
+}
+
 /// A holder on its own, driven by the test as its core; killed when dropped.
 struct RawHolder(std::process::Child);
 
@@ -672,9 +801,18 @@ fn raw_holder(s: &Session, name: &str) -> (RawHolder, std::path::PathBuf) {
 }
 
 fn raw_hello(socket: &std::path::Path) -> (std::os::unix::net::UnixStream, proto::Welcome) {
+    raw_hello_mode(socket, true)
+}
+
+fn raw_hello_mode(socket: &std::path::Path, tail_offsets: bool) -> (std::os::unix::net::UnixStream, proto::Welcome) {
     let mut core = std::os::unix::net::UnixStream::connect(socket).unwrap();
     core.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-    raw_send(&mut core, proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }));
+    let hello = if tail_offsets {
+        proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION, tail_offsets })
+    } else {
+        proto::json_frame(proto::HELLO, 0, &serde_json::json!({ "version": proto::VERSION }))
+    };
+    raw_send(&mut core, hello);
     let (kind, _, payload) = proto::read(&mut core).expect("a welcome within a second").unwrap();
     assert_eq!(kind, proto::WELCOME);
     (core, proto::parse(&payload).unwrap())

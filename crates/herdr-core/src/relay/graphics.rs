@@ -4,6 +4,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn non_kitty_apcs_do_not_affect_answer_correlation() {
+        let mut answers = Answers::default();
+        answers.expect(key(b"\x1b_Gi=31;OK\x1b\\").unwrap(), 1);
+        assert!(answers.feed(b"\x1b_;OK\x1b\\").is_empty());
+        assert!(answers.feed(b"\x1b_;ERROR:bad\x1b\\").is_empty());
+        assert_eq!(answers.feed(b"\x1b_Gi=31;OK\x1b\\"), [(12, 1)]);
+    }
+
+    #[test]
     fn number_answers_can_include_an_allocated_id_and_silent_viewers_use_bounded_memory() {
         assert!(expects_answer(b"\x1b_Ga=T,i=31,U=1;AAAA\x1b\\"));
         assert!(!expects_answer(b"\x1b_Ga=q,i=31,U=1\x1b\\"));
@@ -166,7 +175,7 @@ impl Answers {
             if body != b"OK" && !error {
                 continue;
             }
-            let header = &sequence[3..sequence.iter().position(|b| *b == b';').unwrap()];
+            let Some(header) = header(&sequence) else { continue };
             if header.split(|b| *b == b',').any(|f| !matches!(f.first(), Some(b'i' | b'I' | b'p'))) {
                 continue;
             }

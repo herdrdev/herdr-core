@@ -30,9 +30,9 @@ pub fn about(pid: i32) -> Option<Foreground> {
     Some(Foreground { pid, name, argv, cwd })
 }
 
-/// A pseudo console has no foreground group: this is the terminal's first
-/// process, with the folder and command line Windows keeps in its memory.
-/// None for a 32-bit process, whose own copy of them lives elsewhere.
+/// A pseudo console has no foreground group: this is the program the
+/// platform put in front, with the folder and command line Windows keeps in
+/// its memory. None for a 32-bit process, whose own copy of them lives elsewhere.
 #[cfg(windows)]
 pub fn about(pid: i32) -> Option<Foreground> {
     use std::ffi::c_void;

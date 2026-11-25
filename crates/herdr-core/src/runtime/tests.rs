@@ -1,5 +1,20 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
+
+#[tokio::test(start_paused = true)]
+async fn expiring_an_ended_terminals_image_wait_does_not_recreate_its_gate() {
+    let (core, root) = test_core();
+    core.lock().image_deadlines.insert(1, (1, tokio::time::Instant::now()));
+    let timer = tokio::spawn(core.clone().expire_image_answers());
+    tokio::task::yield_now().await;
+    assert!(core.lock().image_deadlines.is_empty());
+    let gate_recreated = core.lock().gates.contains_key(&1);
+    timer.abort();
+    let _ = timer.await;
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(!gate_recreated);
+}
 
 #[tokio::test(start_paused = true)]
 async fn image_streams_share_one_timer_task_and_keep_the_latest_deadline() {
@@ -186,7 +201,15 @@ async fn handover_carries_held_replies_and_answers_including_final_holder_output
             login_session: None,
             draining: false,
             previous: "handover".into(),
-            terminals: vec![proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None }],
+            terminals: vec![proto::HeldTerminal {
+                id,
+                pid: 0,
+                cols: 80,
+                rows: 24,
+                exit: None,
+                raw_offset: 0,
+                saved_offset: 0,
+            }],
         };
         successor.adopt(&mut st, &welcome, HashMap::new());
         assert!(st.reg.replies.is_empty());
@@ -386,7 +409,7 @@ async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
 #[test]
 fn a_blocked_registry_write_does_not_hold_the_core_lock() {
     use std::os::unix::ffi::OsStrExt;
-    let root = PathBuf::from(format!("/var/tmp/hc-save-lock-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-save-lock-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
@@ -466,7 +489,7 @@ fn host_shutdown_is_lost_without_overriding_explicit_actions() {
 #[cfg(unix)]
 #[test]
 fn a_new_holder_of_another_build_reports_both_identities() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-build-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-build-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
@@ -524,7 +547,7 @@ fn on_fake_holder(root: &std::path::Path, answers: &[&str]) -> (Arc<Core>, u32, 
         st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
         id
     };
-    let held = proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None };
+    let held = proto::HeldTerminal { id, pid: 0, cols: 80, rows: 24, exit: None, raw_offset: 0, saved_offset: 0 };
     let welcome = proto::Welcome {
         version: proto::VERSION,
         instance: "fake".into(),
@@ -585,7 +608,7 @@ fn still_live(core: &Core, id: u32) -> bool {
 #[cfg(unix)]
 #[test]
 fn a_link_whose_reading_fails_reconnects_but_not_twice_in_a_row() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "welcome garbage", ""]);
     assert_eq!(
         reported(&reports, 5),
@@ -601,7 +624,7 @@ fn a_link_whose_reading_fails_reconnects_but_not_twice_in_a_row() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_the_holder_never_answers_gives_up_and_frees_holder_start() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", ""]);
     assert_eq!(reported(&reports, 4), ["0 closed", "0 hello", "1 closed", "1 hello"]);
     let start = Instant::now();
@@ -617,7 +640,7 @@ fn a_reconnect_the_holder_never_answers_gives_up_and_frees_holder_start() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "welcome"]);
     while reports.recv_timeout(Duration::from_secs(5)).unwrap() != "1 hello" {}
     // Adopting waits for this lock: slow, but after the welcome came in time.
@@ -639,7 +662,7 @@ fn a_reconnect_whose_handshake_is_done_is_not_cut_however_slow_the_rest() {
 #[cfg(unix)]
 #[test]
 fn a_reconnect_that_fails_leaves_the_holders_terminals_live() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-relink-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-relink-{}", platform::random_hex()));
     let (core, id, reports) = on_fake_holder(&root, &["welcome garbage", "garbage"]);
     assert_eq!(reported(&reports, 4), ["0 closed", "0 hello", "1 closed", "1 hello"]);
     assert!(core.lock().holders.is_empty());
@@ -651,7 +674,7 @@ fn a_reconnect_that_fails_leaves_the_holders_terminals_live() {
 #[cfg(unix)]
 #[tokio::test]
 async fn waiting_for_holder_start_does_not_block_the_core_executor() {
-    let root = PathBuf::from(format!("/var/tmp/hc-holder-start-{}", platform::random_hex()));
+    let root = crate::test_tmp().join(format!("hc-holder-start-{}", platform::random_hex()));
     let paths = Paths {
         state: root.join("state"),
         config: root.join("config.toml"),
@@ -695,4 +718,74 @@ fn remove_root(root: impl AsRef<std::path::Path>) {
             Err(e) => panic!("removing {}: {e}", root.as_ref().display()),
         }
     }
+}
+
+/// What a subscriber hears when a holder whose program reported `tail` while
+/// unwatched is adopted after a crash or a failed read (not a handover).
+fn status_events_on_crash_adoption(tail: &[u8]) -> Vec<Value> {
+    use crate::events::{Filter, Sink};
+    use std::sync::atomic::AtomicBool;
+    let (core, root) = test_core();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let id = {
+        let mut st = core.lock();
+        let new = crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() };
+        let id = st.reg.create(new, now_ms()).unwrap();
+        let t = st.reg.terminals.get_mut(&id).unwrap();
+        t.holder = Some("fake".into());
+        t.reported = true;
+        t.status = Some(crate::status::Status {
+            state: "working".into(),
+            kind: None,
+            progress: None,
+            app: String::new(),
+            title: String::new(),
+            msg: String::new(),
+        });
+        core.subscribe(&mut st, Filter::default(), Sink::Plain { tx, behind: Arc::new(AtomicBool::new(false)) });
+        id
+    };
+    let welcome = proto::Welcome {
+        version: proto::VERSION,
+        instance: "fake".into(),
+        pid: 0,
+        build: crate::client::build_id(),
+        login_session: None,
+        draining: false,
+        previous: "crash".into(),
+        terminals: vec![proto::HeldTerminal {
+            id,
+            pid: 1,
+            cols: 80,
+            rows: 24,
+            exit: None,
+            raw_offset: 0,
+            saved_offset: 0,
+        }],
+    };
+    {
+        let mut st = core.lock();
+        core.adopt(&mut st, &welcome, HashMap::from([(id, tail.to_vec())]));
+    }
+    let mut events = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        events.push(msg["params"].clone());
+    }
+    drop(core);
+    remove_root(&root);
+    events.into_iter().filter(|e| e["type"] == "status").collect()
+}
+
+#[test]
+fn adopting_a_holder_announces_a_status_its_tail_changed() {
+    let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
+    assert_eq!(events.len(), 1, "one status event for the final word, not one per replayed report: {events:?}");
+    assert_eq!(events[0]["data"]["status"]["state"], "idle");
+}
+
+#[test]
+fn adopting_a_holder_whose_tail_repeats_the_status_announces_nothing() {
+    let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\");
+    assert!(events.is_empty(), "a replay of what subscribers already heard: {events:?}");
 }

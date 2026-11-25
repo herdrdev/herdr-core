@@ -5,6 +5,8 @@ use crate::holder_proto as proto;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
 use crate::terminals::Terminal;
+use crate::wire::Conn;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 /// Pause between the paste and Enter, so the program sees them apart.
@@ -18,6 +20,20 @@ const STARTUP_MS: u64 = 10_000;
 /// The longest a send waits for a starting agent to settle.
 const SETTLE_MAX: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy)]
+enum ReplyKind {
+    StOnly,
+    OscStart,
+    OscCode,
+    OscBody,
+}
+
+struct ReplyStart {
+    kind: ReplyKind,
+    draft: usize,
+    draft_ended: bool,
+}
+
 /// A person's typing, as it affects agent input to one terminal.
 #[derive(Default)]
 pub struct Gate {
@@ -30,6 +46,10 @@ pub struct Gate {
     pasting: bool,
     sequence: Vec<u8>,
     draft_ended: bool,
+    // A reply can undo provisional typing only within one viewer stream.
+    // The reply and its source expire when the core restarts.
+    reply: Option<ReplyStart>,
+    viewer: Option<(Weak<Conn>, u32)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -168,8 +188,37 @@ impl Gate {
         self.draft_ended = false;
     }
 
-    fn track(&mut self, bytes: &[u8]) {
+    fn track(&mut self, bytes: &[u8], viewer: Option<(&Arc<Conn>, u32)>) {
+        let same_viewer = match (&self.viewer, viewer) {
+            (None, None) => true,
+            (Some((last, old)), Some((conn, channel))) => *old == channel && last.as_ptr() == Arc::as_ptr(conn),
+            _ => false,
+        };
+        if !same_viewer {
+            self.reply = None;
+            self.viewer = viewer.map(|(conn, channel)| (Arc::downgrade(conn), channel));
+        }
+
         for (index, &b) in bytes.iter().enumerate() {
+            if let Some(reply) = &mut self.reply {
+                let after_esc = self.sequence == b"\x1b";
+                match (reply.kind, after_esc, b) {
+                    (ReplyKind::OscStart | ReplyKind::OscCode, _, b'0'..=b'9') => reply.kind = ReplyKind::OscCode,
+                    (ReplyKind::OscCode, _, b';') => reply.kind = ReplyKind::OscBody,
+                    (ReplyKind::OscStart | ReplyKind::OscCode, _, _) => self.reply = None,
+                    (_, true, b'\\') | (ReplyKind::OscBody, false, 0x07) => {
+                        self.draft = reply.draft;
+                        self.draft_ended = reply.draft_ended;
+                        self.sequence.clear();
+                        self.reply = None;
+                        continue;
+                    }
+                    (_, true, _) => self.reply = None,
+                    (_, false, 0x1b) => {}
+                    (_, false, b) if b.is_ascii_control() => self.reply = None,
+                    _ => {}
+                }
+            }
             if self.pasting {
                 if b == 0x1b || !self.sequence.is_empty() {
                     self.sequence.push(b);
@@ -203,6 +252,17 @@ impl Gate {
                 let seq = &self.sequence;
                 let complete = match seq.as_slice() {
                     [0x1b] | [0x1b, b'[' | b'O'] => false,
+                    [0x1b, opener @ (b'P' | b'X' | b']' | b'^' | b'_')] if index != 0 || same_viewer => {
+                        // A legacy Alt key sends the same two bytes. Count
+                        // subsequent keys normally until a terminator
+                        // completes the sequence.
+                        self.reply = Some(ReplyStart {
+                            kind: if *opener == b']' { ReplyKind::OscStart } else { ReplyKind::StOnly },
+                            draft: self.draft,
+                            draft_ended: self.draft_ended,
+                        });
+                        true
+                    }
                     [0x1b, b'[', b'M', ..] => seq.len() >= 6, // X10 mouse coordinates
                     [0x1b, b'[', ..] => (0x40..=0x7e).contains(&b),
                     _ => true,
@@ -238,9 +298,13 @@ impl Gate {
     /// Viewer bytes: straight through, or held while an agent types.
     /// Only human input resets the quiet period.
     pub fn viewer(&mut self, bytes: &[u8], human: bool) -> Vec<u8> {
+        self.viewer_from(bytes, human, None)
+    }
+
+    pub(crate) fn viewer_from(&mut self, bytes: &[u8], human: bool, viewer: Option<(&Arc<Conn>, u32)>) -> Vec<u8> {
         if human {
             self.last_human = Some(Instant::now());
-            self.track(bytes);
+            self.track(bytes, viewer);
         }
         if self.busy {
             self.held_human |= human && !bytes.is_empty();
@@ -358,6 +422,7 @@ impl Core {
                         let ends_draft = prepared.1.iter().any(|step| matches!(step, Step::EndDraft(_)));
                         if submits || ends_draft {
                             gate.draft = 0;
+                            gate.reply = None;
                         }
                         if ends_draft {
                             gate.draft_ended = true;
@@ -520,7 +585,7 @@ impl Core {
             for name in names {
                 let bytes = crate::keys::encode(screen, name)?;
                 let mut key = Gate::default();
-                key.track(&bytes);
+                key.track(&bytes, None);
                 steps.push(if key.draft_ended { Step::EndDraft(bytes) } else { Step::Write(bytes) });
                 steps.push(Step::Pause(KEY_GAP));
             }
@@ -662,6 +727,69 @@ mod tests {
             g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(),
             "a draft expires after the last key"
         );
+    }
+
+    #[test]
+    fn terminal_reply_strings_sent_as_typing_leave_no_draft() {
+        let draft = |chunks: &[&[u8]]| {
+            let mut g = Gate::default();
+            for chunk in chunks {
+                g.viewer(chunk, true);
+            }
+            g.draft
+        };
+        let mut g = Gate::default();
+        g.viewer(b"\x1b_Gi=31;OK\x1b\\", true);
+        g.last_human = Some(Instant::now() - Duration::from_secs(3));
+        assert!(g.wait(Duration::from_secs(3), true, Duration::from_secs(60)).is_zero(), "a reply holds no send");
+        for reply in [
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07".as_slice(),
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\",
+            b"\x1bP1+r544e=78\x1b\\",
+        ] {
+            assert_eq!(draft(&[reply]), 0, "{reply:?}");
+        }
+        assert_eq!(draft(&[b"\x1b_Gi=3", b"1;OK\x1b", b"\\hi"]), 2, "a fragmented reply, then typing");
+        assert_eq!(draft(&[&[b"\x1b]52;c;".as_slice(), &[b'A'; 300], b"\x07"].concat()]), 0, "a long reply");
+        assert_eq!(draft(&[b"\x1b]0;x\x1b[97u"]), 4, "another escape leaves ordinary typing counted");
+        assert_eq!(draft(&[b"\x1b]", b"hi"]), 2, "alone it is Alt+]: what follows is typing");
+    }
+
+    #[test]
+    fn incomplete_reply_strings_keep_draft_protection() {
+        let mut g = Gate::default();
+        g.viewer(b"\x1b]hi", true);
+        g.viewer(b"there", true);
+        g.viewer(b"\x07", true);
+        assert_eq!(g.draft, 7);
+        g.viewer(b"\x15", true);
+        assert_eq!(g.draft, 0);
+        assert!(g.draft_ended);
+    }
+
+    #[test]
+    fn a_reply_can_be_split_after_the_opener() {
+        let mut g = Gate::default();
+        g.viewer(b"hi", true);
+        for byte in b"\x1b_Gi=31;OK\x1b\\" {
+            g.viewer(std::slice::from_ref(byte), true);
+        }
+        assert_eq!(g.draft, 2);
+    }
+
+    #[test]
+    fn a_different_viewer_cannot_finish_a_reply_string() {
+        let first = Arc::new(Conn::default());
+        let second = Arc::new(Conn::default());
+        let mut g = Gate::default();
+        g.viewer_from(b"\x1b]11;hi", true, Some((&first, 1)));
+        g.viewer_from(b"there\x1b\\", true, Some((&second, 1)));
+        assert_eq!(g.draft, 10);
+
+        let mut g = Gate::default();
+        g.viewer_from(b"\x1b", true, Some((&first, 1)));
+        g.viewer_from(b"]11;hi\x07", true, Some((&second, 1)));
+        assert_eq!(g.draft, 5);
     }
 
     #[test]

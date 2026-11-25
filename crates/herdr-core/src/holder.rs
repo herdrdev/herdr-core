@@ -47,6 +47,8 @@ struct Term {
     cols: u16,
     rows: u16,
     tail: VecDeque<u8>,
+    raw_offset: u64,
+    saved_offset: u64,
     exit: Option<Exit>,
     reader_done: bool,
     /// Since when its output could drain; None while its reader waits for a
@@ -186,7 +188,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
         let stream = stream?;
         std::thread::spawn(move || {
             if let Err(e) = holder.serve(stream) {
-                eprintln!("holder: core connection: {e}");
+                let _ = writeln!(io::stderr(), "holder: core connection: {e}");
             }
         });
     }
@@ -246,7 +248,7 @@ impl Holder {
     }
 
     fn serve(self: &Arc<Self>, mut stream: Stream) -> io::Result<()> {
-        match proto::read(&mut stream)? {
+        let hello = match proto::read(&mut stream)? {
             Some((proto::HELLO, _, payload)) => proto::parse::<proto::Hello>(&payload)?,
             _ => return Ok(()),
         };
@@ -258,6 +260,14 @@ impl Holder {
             st.generation += 1;
             let mut ids: Vec<u32> = st.terms.keys().copied().collect();
             ids.sort();
+            let legacy_handover = !hello.tail_offsets && st.previous == "handover";
+            let tail_start = |t: &Term| {
+                if legacy_handover {
+                    t.saved_offset.saturating_sub(t.raw_offset).min(t.tail.len() as u64) as usize
+                } else {
+                    0
+                }
+            };
             let welcome = proto::Welcome {
                 version: proto::VERSION,
                 instance: self.instance.clone(),
@@ -270,14 +280,23 @@ impl Holder {
                     .iter()
                     .map(|id| {
                         let t = &st.terms[id];
-                        HeldTerminal { id: *id, pid: t.pid, cols: t.cols, rows: t.rows, exit: t.exit }
+                        HeldTerminal {
+                            id: *id,
+                            pid: t.pid,
+                            cols: t.cols,
+                            rows: t.rows,
+                            exit: t.exit,
+                            raw_offset: t.raw_offset + tail_start(t) as u64,
+                            saved_offset: t.saved_offset,
+                        }
                     })
                     .collect(),
             };
             let mut out = proto::json_frame(proto::WELCOME, 0, &welcome);
             for id in &ids {
-                let (a, b) = st.terms[id].tail.as_slices();
-                out.extend(proto::frame(proto::TAIL, *id, &[a, b].concat()));
+                let t = &st.terms[id];
+                let (a, b) = t.tail.as_slices();
+                out.extend(proto::frame(proto::TAIL, *id, &[a, b].concat()[tail_start(t)..]));
             }
             let (frames, queued) = std::sync::mpsc::channel();
             let backlog = Arc::new(Backlog { bytes: Mutex::new(Some(0)), changed: Condvar::new() });
@@ -329,11 +348,10 @@ impl Holder {
                     self.to_core(&mut st, proto::json_frame(proto::FOREGROUND_IS, id, &proto::Foreground { pgid }));
                 }
                 proto::RELEASE => {
-                    if let Some(t) = self.lock().terms.remove(&id)
-                        && !t.reader_done
-                    {
-                        // Leftover background jobs still hold the PTY: hang them up.
-                        t.pty.hang_up(t.pid);
+                    if let Some(t) = self.lock().terms.remove(&id) {
+                        // Leftover jobs may still hold the PTY (or, on macOS,
+                        // survive after XNU revokes the PTY on leader exit).
+                        t.pty.hang_up(t.pid, !t.reader_done);
                     }
                     self.exit_if_drained();
                 }
@@ -349,8 +367,9 @@ impl Holder {
                         return Ok(());
                     }
                     if mode == Goodbye::Handover {
-                        // The core saved screens up to here; the next one replays only what follows.
-                        st.terms.values_mut().for_each(|t| t.tail.clear());
+                        // The core saves screens up to here. Keep the covered bytes too:
+                        // a crash before the next snapshot still needs them for recovery.
+                        st.terms.values_mut().for_each(|t| t.saved_offset = t.raw_offset + t.tail.len() as u64);
                     }
                     if mode == Goodbye::Shutdown {
                         // A spawn may have completed after the core gave up waiting.
@@ -395,7 +414,7 @@ impl Holder {
         let frame = match started {
             Err(e) => {
                 let error = format!("cannot start {:?}: {e}", spec.argv.first().map_or("", |s| s.as_str()));
-                eprintln!("holder: {}: {error}", crate::terminals::address(id));
+                let _ = writeln!(io::stderr(), "holder: {}: {error}", crate::terminals::address(id));
                 proto::json_frame(proto::SPAWN_FAILED, id, &proto::SpawnFailed { error })
             }
             Ok((reader, mut writer, pty, child)) => {
@@ -417,6 +436,8 @@ impl Holder {
                         cols: spec.cols,
                         rows: spec.rows,
                         tail: VecDeque::new(),
+                        raw_offset: 0,
+                        saved_offset: 0,
                         exit: None,
                         reader_done: false,
                         drains_since: Some(Instant::now()),
@@ -447,6 +468,7 @@ impl Holder {
             t.tail.extend(&buf[..n]);
             let excess = t.tail.len().saturating_sub(TAIL_BYTES);
             t.tail.drain(..excess);
+            t.raw_offset += excess as u64;
             self.to_core(&mut st, proto::frame(proto::OUTPUT, id, &buf[..n]));
             // A core that falls behind slows its programs, as a PTY nobody reads would.
             let Some(backlog) = st.core.as_ref().map(|c| c.backlog.clone()).filter(|b| b.over(BACKLOG_BYTES)) else {
@@ -471,7 +493,7 @@ impl Holder {
         let (code, signal) = match platform::wait(&mut child) {
             Ok(ended) => ended,
             Err(e) => {
-                eprintln!("holder: wait {}: {e}", crate::terminals::address(id));
+                let _ = writeln!(io::stderr(), "holder: wait {}: {e}", crate::terminals::address(id));
                 return;
             }
         };
@@ -518,11 +540,11 @@ impl Holder {
             st.core_left = now;
             drop(st);
             if !platform::holder_can_start_core(self.login_session) {
-                eprintln!("holder: original GUI login unavailable; waiting for a fresh launcher");
+                let _ = writeln!(io::stderr(), "holder: original GUI login unavailable; waiting for a fresh launcher");
                 continue;
             }
             if let Err(e) = crate::client::spawn_core(&self.paths) {
-                eprintln!("holder: cannot start core: {e:?}");
+                let _ = writeln!(io::stderr(), "holder: cannot start core: {e:?}");
             }
         }
     }

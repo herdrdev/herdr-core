@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn the_last_repair_is_observed_after_interrupted_handshakes() {
-        let root = std::path::PathBuf::from(format!("/var/tmp/hc-login-{}", super::super::random_hex()));
+        let root = crate::test_tmp().join(format!("hc-login-{}", super::super::random_hex()));
         let paths = Paths {
             state: root.join("state"),
             config: root.join("config.toml"),

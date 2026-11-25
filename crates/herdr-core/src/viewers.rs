@@ -10,6 +10,7 @@ use ghostty_vt::Rgb;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -93,7 +94,9 @@ impl Core {
             recovering,
             answers: Default::default(),
         });
-        self.apply_size(&mut st, id);
+        if !req.observe {
+            self.apply_size(&mut st, id);
+        }
         let paint = first_paint(&st, id, req.history);
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
@@ -123,7 +126,8 @@ impl Core {
                 for (id, wait) in due {
                     st.image_deadlines.remove(&id);
                     let late = st.relays.get_mut(&id).map(|r| r.expire(wait)).unwrap_or_default();
-                    let late = st.gates.entry(id).or_default().viewer(&late, false);
+                    let Some(gate) = st.gates.get_mut(&id) else { continue };
+                    let late = gate.viewer(&late, false);
                     if let Some(link) = st.link(id) {
                         link.input(id, &late);
                     }
@@ -303,15 +307,16 @@ impl Core {
             let answered = Self::viewer(&mut st, conn, channel).unwrap().1.answers.feed(bytes);
             let mut now = Vec::new();
             let mut from = 0;
+            let viewer = Some((conn, channel));
             // Insert at the complete answer, before any trailing unfinished APC.
             // Queue both through the gate so expiry cannot overtake them.
             for (end, query) in answered {
-                now.extend(st.gates.entry(id).or_default().viewer(&bytes[from..end], !automatic));
+                now.extend(st.gates.entry(id).or_default().viewer_from(&bytes[from..end], !automatic, viewer));
                 let waited = st.relays.get_mut(&id).map(|r| r.answered(&[(end, query)])).unwrap_or_default();
                 now.extend(st.gates.entry(id).or_default().viewer(&waited, false));
                 from = end;
             }
-            now.extend(st.gates.entry(id).or_default().viewer(&bytes[from..], !automatic));
+            now.extend(st.gates.entry(id).or_default().viewer_from(&bytes[from..], !automatic, viewer));
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
@@ -363,9 +368,13 @@ impl Core {
         self.unsubscribe(&mut st, conn, channel);
         let mut touched = Vec::new();
         for (id, vs) in st.viewers.iter_mut() {
-            let before = vs.len();
-            vs.retain(|v| !(Arc::ptr_eq(&v.conn, conn) && channel.is_none_or(|c| c == v.channel)));
-            if vs.len() != before {
+            let mut typing_left = false;
+            vs.retain(|v| {
+                let leaves = Arc::ptr_eq(&v.conn, conn) && channel.is_none_or(|c| c == v.channel);
+                typing_left |= leaves && !v.observe;
+                !leaves
+            });
+            if typing_left {
                 touched.push(*id);
             }
         }
@@ -398,6 +407,7 @@ impl Core {
         let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
         for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
             v.repaint_pending = true;
+            v.conn.repaints.store(true, Ordering::SeqCst);
             v.conn.with(|out| out.resize(v.channel, &size));
         }
         self.save_soon();
@@ -406,11 +416,18 @@ impl Core {
 
     /// Serialize only the latest grid, when a viewer has credit to receive it.
     pub fn prepare_repaints(&self, conn: &Arc<Conn>) {
+        // Most wakes have nothing to repaint: they must not wait while output is parsed.
+        if !conn.repaints.load(Ordering::SeqCst) {
+            return;
+        }
         let mut st = self.lock();
         let ids: Vec<u32> = st.viewers.keys().copied().collect();
         for id in ids {
             self.queue_resize_paints(&mut st, id, Some(conn));
         }
+        // Still set for a viewer without credit: its paint goes when credit wakes the writer.
+        let waiting = st.viewers.values().flatten().any(|v| v.repaint_pending && Arc::ptr_eq(&v.conn, conn));
+        conn.repaints.store(waiting, Ordering::SeqCst);
     }
 
     /// On exit there will be no later writer pass over this screen.

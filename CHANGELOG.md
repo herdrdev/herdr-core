@@ -1,6 +1,39 @@
 # herdr-core changelog
 
-## Unreleased
+## [0.1.22] - 2026-11-22
+
+### New
+- **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer gets every document change on the machines it watches, and no longer has to filter them out itself. An unfiltered subscriber still hears every document, and existing terminal filters keep their behavior; a subscriber that selects a terminal and also names documents hears both. (#273, thanks @felixzsh)
+
+### Fixed
+- **A full disk no longer leaves the core unable to start terminals.** Before, new terminals could fail with "registry writer stopped" until the core restarted. Now saving resumes once there is space again, and send, wait and keys keep working meanwhile. While a save fails, `hc run` reports an error even if the program already started: check `hc ls --all` before running it again. Stopping and restarting the core also work on a full disk. (#249, #270, thanks @sundarshahi)
+- **Pasting a big file or screenshot into a terminal on another machine no longer freezes it.** Between updated cores files now travel in pieces, so the terminal and the machine link stay responsive while it sends. Machines on older cores, and pastes relayed through another machine, still send the file in one go.
+- A second core with another state folder no longer takes over a core that is already running on the same socket and ends its programs. (#200, thanks @deepcoldy)
+- After a reconnect, a remote terminal keeps the size of the window you last used, even when you resize or switch windows while it reconnects. (#271, thanks @tiago-peixoto)
+- On Windows, `hc connect` waits for the replies to its requests before it exits when its input ends. (#274, thanks @sundarshahi)
+- A program started on another machine can reach the terminal that started it while its first foreground run is still going. (#264, thanks @JinJieBeWater)
+- The manual says that `hc exec` ends commands after 60 seconds by default. (#262)
+
+## [0.1.21] - 2026-11-12
+
+### New
+- **Remote Linux machines warn when their programs would stop at logout.** Where the machine's login settings end your programs once your last SSH login closes, `hc machine add`, `hc server status` and Herdr's machine list say so, with the one command that fixes it.
+- After a reboot, a kept terminal can show its program's last screen above the new shell, so you can see where you were. Turn it on with `restore_screen = true` in config.toml; it's off by default. (#260, thanks @sundarshahi)
+
+### Fixed
+- **On Windows, Herdr sees the program running in a PowerShell or cmd terminal,** so agents started from a shell show their name and status, and Ctrl+C on a plain program reports that it stopped. (#70, #72, thanks @yetone)
+- **On Windows, terminals start when PowerShell 7 is installed but its folder isn't on PATH.** Before, every new terminal failed. (herdr-app#967)
+- **A machine whose SSH login fails, like a passphrase key that isn't in an agent, no longer retries every few seconds.** It shows that it needs a login and retries after 2, 5, then every 10 minutes, so servers with fail2ban or CrowdSec don't ban you. A locked ssh-agent that unlocks later still reconnects by itself, and `hc machine login` reconnects at once.
+- Remote Linux cores started over SSH get your login profile's environment, so tools in `~/.local/bin` and the like are found in terminals there. (herdr-app#873)
+- Programs that ask whether the terminal can show images get the answer from the Herdr window showing them. (#241, thanks @factory-ain3sh)
+- After restarting Herdr while vim or less is open, the pane shows the right screen when the program exits.
+- `hc wait` on an agent that crashes or exits says `exit` with its code, as documented. (#221, thanks @connorburgess)
+- Calling `hc wait` many times no longer grows the core's memory. (#230, thanks @CMU02)
+- Watching a terminal with `hc attach --observe` no longer resizes it. (#199, thanks @deepcoldy)
+- After a core crash, apps see each agent's current status. (#183, thanks @abhijit-s)
+- The install script works on servers whose temp folder can't run programs, for installs and updates. (#116, thanks @y2hhbw)
+- The "line lost; reconnecting" notice shows even when the line drops in the middle of an image. (#236, thanks @aldanor)
+- `terminal.list` always includes `machines`, as the schema says. (#235, thanks @CMU02)
 
 ## [0.1.20] - 2026-11-10
 

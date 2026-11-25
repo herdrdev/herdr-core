@@ -749,6 +749,26 @@ impl Terminal {
         out
     }
 
+    /// The active screen and its scrollback with their colors, but no modes,
+    /// cursor or title: what a program left, to show above whatever runs next.
+    pub fn replay(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        // A full-screen program's last frame goes below the primary screen and scrollback it hid.
+        if self.alt_screen()
+            && let Some(snapshot) = self.snapshot()
+            && let Some(mut primary) = Self::restore(&snapshot, usize::MAX)
+        {
+            primary.write(b"\x18\x1b[?1049l");
+            out = primary.replay();
+            out.extend(b"\x1b[0m\r\n");
+        }
+        out.extend(self.format(ffi::FORMAT_VT, None, false));
+        while out.last().is_some_and(|b| b" \r\n".contains(b)) {
+            out.pop();
+        }
+        out
+    }
+
     /// Complete binary snapshot, including any half-received escape sequence.
     pub fn snapshot(&self) -> Option<Vec<u8>> {
         alloc_call(|out, len| unsafe { ffi::ghostty_snapshot_encode_alloc(self.raw, ptr::null(), out, len) })
