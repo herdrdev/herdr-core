@@ -619,10 +619,10 @@ fn a_busy_terminal_holds_back_another_ones_output_by_little() {
     let s = Session::new();
     let (_holder, socket) = raw_holder(&s, "busy");
     let (mut core, _) = raw_hello(&socket);
+    // Queued while nothing is read yet, however slowly it starts.
+    raw_spawn(&mut core, 2, &["sh", "-c", "sleep 0.2; printf QUIET"]);
     raw_spawn(&mut core, 1, &["yes"]);
-    // Not read yet: the busy terminal fills the backlog.
     std::thread::sleep(Duration::from_millis(1000));
-    raw_spawn(&mut core, 2, &["printf", "QUIET"]);
     let mut ahead = 0;
     loop {
         let (kind, id, payload) = proto::read(&mut core).expect("the quiet output").unwrap();
