@@ -18,6 +18,48 @@ struct AuditInfo {
 
 unsafe extern "C" {
     fn getaudit_addr(info: *mut AuditInfo, size: libc::c_int) -> libc::c_int;
+    static bootstrap_port: libc::mach_port_t;
+    static mach_task_self_: libc::mach_port_t;
+    fn task_set_special_port(task: libc::mach_port_t, which: libc::c_int, port: libc::mach_port_t) -> libc::c_int;
+    fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::c_int;
+}
+
+const TASK_BOOTSTRAP_PORT: libc::c_int = 4;
+type GetRoot = unsafe extern "C" fn(libc::mach_port_t, *mut libc::mach_port_t) -> libc::c_int;
+type LookUpPerUser =
+    unsafe extern "C" fn(libc::mach_port_t, *const libc::c_char, libc::uid_t, *mut libc::mach_port_t) -> libc::c_int;
+
+/// Programs reach macOS services (user lookup, keychain, certificate checks) through the bootstrap
+/// port they inherit. A login's own port dies at logout while the holder lives on, so terminals get
+/// launchd's per-user port instead, as tmux does. The holder itself keeps the login's for AppKit.
+pub fn outlive_logout() -> io::Result<()> {
+    let per_user = per_user_bootstrap()?;
+    let set = unsafe { task_set_special_port(mach_task_self_, TASK_BOOTSTRAP_PORT, per_user) };
+    unsafe { mach_port_deallocate(mach_task_self_, per_user) };
+    kern(set, "task_set_special_port")
+}
+
+fn per_user_bootstrap() -> io::Result<libc::mach_port_t> {
+    // Private launchd calls: a release without them keeps the inherited port.
+    let symbol = |name: &std::ffi::CStr| {
+        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+        (!symbol.is_null()).then_some(symbol).ok_or_else(|| io::Error::other(format!("{name:?} unavailable")))
+    };
+    let get_root: GetRoot = unsafe { std::mem::transmute(symbol(c"bootstrap_get_root")?) };
+    let look_up: LookUpPerUser = unsafe { std::mem::transmute(symbol(c"bootstrap_look_up_per_user")?) };
+    let mut root = 0;
+    kern(unsafe { get_root(bootstrap_port, &mut root) }, "bootstrap_get_root")?;
+    let mut per_user = 0;
+    // A null name selects the user's bootstrap itself. tmux passes uid -1, which current macOS
+    // refuses without an entitlement (launchd error 144); the caller's own uid needs none.
+    let found = unsafe { look_up(root, std::ptr::null(), libc::geteuid(), &mut per_user) };
+    unsafe { mach_port_deallocate(mach_task_self_, root) };
+    kern(found, "bootstrap_look_up_per_user")?;
+    Ok(per_user)
+}
+
+fn kern(code: libc::c_int, call: &str) -> io::Result<()> {
+    if code == 0 { Ok(()) } else { Err(io::Error::other(format!("{call} failed: {code:#x}"))) }
 }
 
 pub fn graphic_session() -> io::Result<Option<u32>> {
@@ -117,6 +159,37 @@ fn connection_error(error: io::Error) -> RpcError {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    unsafe extern "C" {
+        fn task_get_special_port(
+            task: libc::mach_port_t,
+            which: libc::c_int,
+            port: *mut libc::mach_port_t,
+        ) -> libc::c_int;
+    }
+
+    #[test]
+    fn terminals_inherit_the_per_user_bootstrap_and_still_find_their_user() {
+        let special = || {
+            let mut port = 0;
+            assert_eq!(unsafe { task_get_special_port(mach_task_self_, TASK_BOOTSTRAP_PORT, &mut port) }, 0);
+            port
+        };
+        let login = special();
+        let per_user = per_user_bootstrap().unwrap();
+        outlive_logout().unwrap();
+        let inherited = special();
+        // whoami prints the bare uid when the user lookup service is unreachable (#294).
+        let whoami = std::process::Command::new("/usr/bin/whoami").output().unwrap();
+        unsafe { task_set_special_port(mach_task_self_, TASK_BOOTSTRAP_PORT, login) };
+        for port in [login, inherited, per_user] {
+            unsafe { mach_port_deallocate(mach_task_self_, port) };
+        }
+        assert_eq!(inherited, per_user);
+        assert!(whoami.status.success(), "{whoami:?}");
+        let name = String::from_utf8_lossy(&whoami.stdout);
+        assert_ne!(name.trim(), unsafe { libc::geteuid() }.to_string());
+    }
 
     #[test]
     fn audit_identity_is_readable_without_privileged_process_inspection() {
