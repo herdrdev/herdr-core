@@ -492,6 +492,22 @@ fn a_login_banner_does_not_get_in_the_way() {
 }
 
 #[test]
+fn a_slow_dial_gets_dial_timeout_to_answer() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    s.env.push(("HC_TEST_SSH_DELAY".into(), "1".into()));
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "dial_timeout = 0.5\n").unwrap();
+    let (_, slow) = s.err(&["--json", "machine", "add", "rohan"]);
+    assert_eq!(slow["error"]["kind"], "unreachable");
+    assert!(slow["error"]["message"].as_str().unwrap().contains("no answer within 0.5 s"), "{slow}");
+    std::fs::write(&config, "dial_timeout = 5\n").unwrap();
+    s.json(&["machine", "add", "rohan"]);
+}
+
+#[test]
 fn adding_says_what_went_wrong_and_saves_nothing() {
     let rohan = Session::new();
     let mut s = Session::new();

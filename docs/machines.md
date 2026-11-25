@@ -160,6 +160,7 @@ which holds up everything else on its connection and gives up after `machine_tim
 - If hc is missing or incompatible, use `hc machine update box` to copy this hc there and restart that core. Its terminals keep running.
 - If the connection closes at once, check that the remote login prints no extra text to stdout. The connection carries a byte protocol, not a terminal session.
 - With a custom connection, check that it passes bytes unchanged and does not prompt. Do not request a remote PTY.
+- If a slow connection, like a sandbox CLI or a jump host, fails with `no answer within 20 s`, give it longer with `dial_timeout = 60` in `~/.config/herdr-core/config.toml`: the seconds a machine gets to answer when it is dialed, its login included (default 20).
 - If a socket path is too long, use a shorter session name or socket path. See [state and endpoints](security.md#state-and-endpoints).
 
 Once a machine is added, core retries a lost connection. If SSH authentication fails,

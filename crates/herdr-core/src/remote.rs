@@ -880,9 +880,11 @@ pub fn route(core: &Core, method: &str, params: &Value) -> Result<Option<(To, Va
     Ok(Some((to, params)))
 }
 
-/// Returns once the machine's line is past dialing (or `machine_timeout` passed).
+/// Returns once the machine's line is past dialing (or the longer of
+/// `machine_timeout` and `dial_timeout` passed).
 pub async fn dialed(core: &Core, id: &str) {
-    let wait = crate::config::load(&core.paths.config).unwrap_or_default().machine_timeout();
+    let config = crate::config::load(&core.paths.config).unwrap_or_default();
+    let wait = config.machine_timeout().max(config.dial_timeout());
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let changed = core.changed.notified();
