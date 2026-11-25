@@ -273,6 +273,28 @@ pub fn parent_pid() -> u32 {
     std::os::unix::process::parent_id()
 }
 
+/// Whether a child of `leader` runs in its process group, as a program an
+/// interactive shell starts from its rc file does, before job control is on.
+pub fn group_has_child(leader: u32) -> bool {
+    children(leader).into_iter().any(|child| unsafe { libc::getpgid(child) } == leader as libc::pid_t)
+}
+
+#[cfg(target_os = "linux")]
+fn children(pid: u32) -> Vec<libc::pid_t> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .map(|list| list.split_whitespace().filter_map(|child| child.parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn children(pid: u32) -> Vec<libc::pid_t> {
+    let mut pids = vec![0 as libc::pid_t; 256];
+    let size = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    let count = unsafe { libc::proc_listchildpids(pid as libc::pid_t, pids.as_mut_ptr().cast(), size) };
+    pids.truncate(count.max(0) as usize);
+    pids
+}
+
 pub fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
     status.signal()
 }
