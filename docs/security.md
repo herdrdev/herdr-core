@@ -11,6 +11,7 @@ The CLI starts a background core when it needs one.
 Holder processes own the terminals so a core restart or update can leave programs running.
 Programs run as the account that runs core, with its filesystem and network access.
 Templates are shell commands and opening instructions, not isolation rules.
+On Linux with systemd, each core and holder user service is capped at 4096 tasks and (systemd 249+) half of physical memory, so a runaway under the holder cannot exhaust the machine; KillMode stays process so terminals still survive a holder restart.
 
 Do not run core as root or as an administrator unless you intend to give its clients that access.
 A status of blocked can prevent a normal send, but it is not an access boundary against another client.

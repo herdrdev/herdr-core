@@ -240,7 +240,10 @@ pub(super) fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String,
 /// No ManagedOOMPreference: systemd rewrites its cgroup xattr on every property
 /// change, and uresourced < 0.5.5 answers each rewrite with another change,
 /// flooding the user manager until it starts nothing. KillMode: when the core
-/// or holder exits, nothing else goes with it.
+/// or holder exits, nothing else goes with it. TasksMax and MemoryMax: a
+/// runaway under that KillMode (fork storms, instrumented builds) must not
+/// exhaust the machine and take the desktop with it; keep KillMode so
+/// terminals survive a holder restart.
 fn unit_args(name: &str, environment: &Path, unset: &[&str], log: &Path, here: &Path, version: u32) -> Vec<OsString> {
     let mut unset_environment_names = unset.to_vec();
     unset_environment_names.sort_unstable();
@@ -256,6 +259,10 @@ fn unit_args(name: &str, environment: &Path, unset: &[&str], log: &Path, here: &
     if version >= 243 {
         out.extend([OsString::from("-p"), OsString::from("OOMPolicy=continue")]);
     }
+    // Percentage memory limits need systemd 249+; older hosts keep TasksMax only.
+    if version >= 249 {
+        out.extend([OsString::from("-p"), OsString::from("MemoryMax=50%")]);
+    }
     for p in [
         format!("--unit={name}"),
         format!("EnvironmentFile={}", environment.display()),
@@ -264,6 +271,7 @@ fn unit_args(name: &str, environment: &Path, unset: &[&str], log: &Path, here: &
         "RuntimeDirectoryPreserve=restart".into(),
         format!("WorkingDirectory={}", here.display()),
         "KillMode=process".into(),
+        "TasksMax=4096".into(),
         "StandardOutput=null".into(),
         stderr_destination,
         format!("UnsetEnvironment={}", unset_environment_names.join(" ")),
@@ -693,6 +701,9 @@ mod tests {
             "RuntimeDirectoryPreserve=restart",
             "UnsetEnvironment=HC_SCOPE",
             "OOMPolicy=continue",
+            "KillMode=process",
+            "TasksMax=4096",
+            "MemoryMax=50%",
             "WorkingDirectory=/",
             "--service-type=exec",
             "StandardError=append:/s/x.log",
@@ -701,6 +712,22 @@ mod tests {
         }
         assert_eq!(super::literal(socket), "/run/$${USER}.sock");
         assert!(!args.iter().any(|a| a.starts_with("ManagedOOM")), "uresourced loops on oomd's xattr: {args:?}");
+    }
+
+    #[test]
+    fn el8_services_cap_tasks_without_percentage_memory() {
+        let args = super::unit_args(
+            "hc-hold-1",
+            Path::new("/run/user/1/hc-hold-1/environment"),
+            &[],
+            Path::new("/s/x.log"),
+            Path::new("/"),
+            239,
+        );
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.iter().any(|a| a == "TasksMax=4096"), "{args:?}");
+        assert!(!args.iter().any(|a| a.starts_with("MemoryMax=")), "percentage MemoryMax needs systemd 249+: {args:?}");
+        assert!(args.iter().any(|a| a == "KillMode=process"), "{args:?}");
     }
 
     #[test]
