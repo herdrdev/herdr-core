@@ -10,20 +10,25 @@ use crate::runtime::{Core, State};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::{self, Write};
 
 pub(crate) const TOKEN: &str = "OSC7577_TOKEN";
 const EXIT_GRACE_MS: u64 = 2000;
 const RAPID_LOSS_MS: u64 = 10_000;
 
 pub(crate) fn prepare_state(state: &std::path::Path, registry: &mut crate::terminals::Registry) {
-    if platform::secure_state_dir(state).is_ok() {
-        launch::remove_abandoned(state, |name| {
-            registry.terminals.values().any(|t| t.resume.as_ref().and_then(|r| r.launch.as_deref()) == Some(name))
-        });
-    } else {
+    let unavailable = platform::secure_state_dir(state)
+        .err()
+        .or_else(|| platform::resume_user().is_none().then(|| io::Error::other("core must run as an unelevated user")));
+    if let Some(error) = unavailable {
+        let _ = writeln!(io::stderr(), "core: OSC 7577 resume disabled: {error}");
         for terminal in registry.terminals.values_mut() {
             terminal.resume = None;
         }
+    } else {
+        launch::remove_abandoned(state, |name| {
+            registry.terminals.values().any(|t| t.resume.as_ref().and_then(|r| r.launch.as_deref()) == Some(name))
+        });
     }
 }
 
@@ -161,10 +166,10 @@ impl Resume {
         true
     }
 
-    pub(crate) fn lost(&mut self, started: Option<u64>, now: u64, root_signaled: bool) {
+    pub(crate) fn lost(&mut self, started: Option<u64>, now: u64, drop_root: bool) {
         if self.rearmed && started.is_some_and(|ms| now.saturating_sub(ms) < RAPID_LOSS_MS) {
             self.words.clear();
-        } else if root_signaled && let Some(root) = self.root {
+        } else if drop_root && let Some(root) = self.root {
             self.words.remove(&root.pid);
         }
     }
@@ -188,6 +193,9 @@ impl Resume {
             return None;
         }
         let record = self.choice()?;
+        if matches!(platform::resume_process(record.owner.pid), ProcessState::Alive(p) if p.identity == record.owner) {
+            return None;
+        }
         launch::prepare(state, id, shell, cwd, record).ok()
     }
 
@@ -218,6 +226,12 @@ impl Core {
         let mut changed = false;
         for (offset, bytes) in resume.stream.feed(bytes) {
             if let Some(report) = protocol::authenticate(&bytes, resume.token(), seconds) {
+                if platform::secure_state_dir(&self.paths.state).is_err() {
+                    let launch = t.resume.take().and_then(|resume| resume.launch);
+                    remove_launch(&self.paths.state, launch.as_deref());
+                    self.save(st);
+                    return;
+                }
                 changed |= resume.apply(offset, report, seconds, Resume::owner);
             }
         }

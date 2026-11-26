@@ -32,10 +32,7 @@ pub(super) fn prepare(
     };
     let name = format!("resume-{id}-{}.json", platform::random_hex());
     let path = std::path::absolute(state)?.join(&name);
-    let helper = std::env::current_exe()?;
-    if !helper.is_file() {
-        return Err(io::ErrorKind::NotFound.into());
-    }
+    let helper = platform::resume_executable()?;
     let argv =
         platform::resume_shell(shell, &helper, &path, record.ancestors.is_empty()).ok_or(io::ErrorKind::Unsupported)?;
     let launch = Launch { argv: record.argv.clone(), cwd: cwd.into(), shell: shell.to_vec() };
@@ -134,7 +131,11 @@ mod tests {
 
     #[test]
     fn a_launch_file_can_only_be_claimed_once() {
-        let dir = std::env::temp_dir().join(format!("hc-resume-{}", platform::random_hex()));
+        #[cfg(unix)]
+        let base = std::env::temp_dir();
+        #[cfg(windows)]
+        let base = platform::resume_profile().unwrap();
+        let dir = base.join(format!("hc-resume-{}", platform::random_hex()));
         platform::private_dir(&dir).unwrap();
         let path = dir.join(format!("resume-1-{}.json", platform::random_hex()));
         let contents = Launch { argv: vec!["example".into()], cwd: String::new(), shell: Vec::new() };

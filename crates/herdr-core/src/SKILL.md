@@ -269,9 +269,12 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `hc keep <t>` (or `run --keep`) brings back a lost terminal in place.
   It uses the running program's OSC 7577 resume command when available,
   and starts a shell otherwise. Windows resume requires PowerShell.
+  Resume requires an unelevated core and a private state directory. On Windows the state directory must be inside the user profile.
+  Windows passes the resolved program path as `argv[0]`.
+  On Windows a program started as the terminal's first process comes back inside PowerShell from its second resume on.
   `hc keep <t> --off` disables recovery. Signal death
-  without an exit code is loss too. A signal that ends the terminal's first
-  process while its holder is healthy clears that process's resume command.
+  without an exit code is loss too. When a signal ends the terminal's first process while its holder is healthy,
+  SIGHUP and SIGTERM keep that process's resume command. Other signals clear it.
   After a grace delay, recovery runs on
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
@@ -284,7 +287,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
   reading it can match old output. Saved screens are consumed or discarded once; a power cut
   that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
-  After reconnecting, repeat any resume update or clear sent while the core was down.
+  A resume update or clear sent while the core was down for more than a minute is missed. The program's next report fixes it.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary

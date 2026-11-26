@@ -1,9 +1,11 @@
 use super::{ProcessState, ResumeProcess, windows_exec::PROMPT_HOOK};
 use crate::resume::Identity;
+use std::ffi::OsString;
 use std::io;
 use std::mem::{size_of, zeroed};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, FILETIME, HANDLE, LocalFree};
@@ -11,15 +13,22 @@ use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 use windows_sys::Win32::System::Threading::*;
+use windows_sys::Win32::UI::Shell::GetUserProfileDirectoryW;
 
-fn account(process: HANDLE, unelevated: bool) -> Option<String> {
+fn query_token(process: HANDLE) -> io::Result<OwnedHandle> {
     unsafe {
         let mut token = null_mut();
         if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
-            return None;
+            return Err(io::Error::last_os_error());
         }
-        let token = OwnedHandle::from_raw_handle(token);
-        let token = token.as_raw_handle();
+        Ok(OwnedHandle::from_raw_handle(token))
+    }
+}
+
+fn account(process: HANDLE, unelevated: bool) -> Option<String> {
+    let token = query_token(process).ok()?;
+    let token = token.as_raw_handle();
+    unsafe {
         let mut n = 0;
         if unelevated {
             let mut elevation: TOKEN_ELEVATION = zeroed();
@@ -90,13 +99,38 @@ pub(crate) fn resume_process(pid: u32) -> ProcessState {
     }
 }
 
+pub(crate) fn resume_profile() -> io::Result<PathBuf> {
+    let token = query_token(unsafe { GetCurrentProcess() })?;
+    let mut len = 0;
+    unsafe { GetUserProfileDirectoryW(token.as_raw_handle(), null_mut(), &mut len) };
+    if len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut profile = vec![0; len as usize];
+    if unsafe { GetUserProfileDirectoryW(token.as_raw_handle(), profile.as_mut_ptr(), &mut len) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let profile = profile.split(|&c| c == 0).next().unwrap_or_default();
+    Ok(OsString::from_wide(profile).into())
+}
+
 // State inherits the user's profile ACL.
 pub(crate) fn secure_state_dir(path: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() || super::is_link(&meta) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must be a directory"));
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must not be a reparse point"));
     }
-    Ok(())
+    let profile = std::fs::canonicalize(resume_profile()?)?;
+    let state = std::fs::canonicalize(path)?;
+    if state.starts_with(&profile) && state != profile {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must be inside the account profile"))
+    }
+}
+
+pub(crate) fn resume_shutdown_signal(_: i32) -> bool {
+    false
 }
 
 pub(crate) fn private_launch_file(meta: &std::fs::Metadata) -> bool {

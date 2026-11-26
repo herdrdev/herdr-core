@@ -149,6 +149,37 @@ pub fn private_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
 }
 
+pub(crate) fn open_state_temp(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).custom_flags(libc::O_NOFOLLOW);
+    let replace = match options.open(path) {
+        Ok(file) => {
+            let meta = file.metadata()?;
+            if meta.is_file() && meta.uid() == unsafe { libc::geteuid() } && meta.nlink() == 1 {
+                file.set_len(0)?;
+                if meta.mode() & 0o7777 != 0o600 {
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                }
+                return Ok(file);
+            }
+            true
+        }
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    };
+    if replace
+        && let Err(error) = std::fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(error);
+    }
+    let file = options.create_new(true).mode(0o600).open(path)?;
+    if file.metadata()?.mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 pub fn is_link(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
