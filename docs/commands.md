@@ -23,7 +23,7 @@ Terminals
   kill <t>                    end its program
   rm <t>                      remove a finished terminal
   label <t> k=v...            set labels
-  keep <t> [--off]            replace lost programs with a shell (also run --keep)
+  keep <t> [--off]            recover lost terminals in place (also run --keep)
                               signal death recovers too; streams end on loss, reattach
 
 Talk to programs
@@ -45,7 +45,7 @@ More
   templates                   list templates
   events                      follow changes live
   server start|stop|status|restart
-                              stop parks kept terminals; next core start gives them shells
+                              stop parks kept terminals; next start resumes them or opens shells
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')
@@ -502,7 +502,7 @@ Options:
       --no-notify          Don't type notes about it into its parent
       --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
       --rm                 Remove it right after it exits (once a waiting parent has the exit code)
-      --keep               Replace lost programs with a shell in place, never re-run the original command
+      --keep               Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell
       --bg                 Start it and come back at once (a server, several workers)
       --timeout <TIMEOUT>  Seconds before a wait checks in, leaving it running (default: config `wait_timeout`, else 180)
   -h, --help               Print help

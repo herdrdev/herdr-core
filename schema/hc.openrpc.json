@@ -844,7 +844,7 @@
           },
           "keep": {
             "default": false,
-            "description": "Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.",
+            "description": "Recover a lost terminal in place using its OSC 7577 resume command or a shell. Ordinary exits and kills are final.",
             "type": "boolean"
           },
           "labels": {
@@ -1332,7 +1332,7 @@
           },
           "keep": {
             "default": false,
-            "description": "Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.",
+            "description": "Recover a lost terminal in place using its OSC 7577 resume command or a shell. Ordinary exits and kills are final.",
             "type": "boolean"
           },
           "labels": {
@@ -1853,12 +1853,12 @@
           }
         },
         {
-          "description": "Replace lost programs with a shell in place, never re-run the original command.",
+          "description": "Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell.",
           "name": "keep",
           "required": false,
           "schema": {
             "default": false,
-            "description": "Replace lost programs with a shell in place, never re-run the original command.",
+            "description": "Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell.",
             "type": "boolean"
           }
         },

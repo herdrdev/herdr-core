@@ -51,6 +51,7 @@ impl Paths {
     pub fn create_dirs(&self) -> std::io::Result<()> {
         use crate::platform::private_dir;
         private_dir(&self.state)?;
+        let _ = crate::platform::secure_state_dir(&self.state);
         private_dir(self.socket.parent().expect("socket has a parent"))?;
         private_dir(self.holder_socket.parent().expect("socket has a parent"))
     }

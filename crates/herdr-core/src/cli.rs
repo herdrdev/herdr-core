@@ -154,6 +154,10 @@ pub fn main() -> i32 {
             print!("{}", include_str!("../THIRD-PARTY-NOTICES"));
             return 0;
         }
+        [Some("__resume"), Some(file)] => return crate::resume::helper(std::path::Path::new(file), false),
+        [Some("__resume"), Some(file), Some("--first")] => {
+            return crate::resume::helper(std::path::Path::new(file), true);
+        }
         _ => {}
     }
     // Before parsing we can only guess (for how to print a parse error).

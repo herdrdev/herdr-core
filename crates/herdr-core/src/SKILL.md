@@ -266,20 +266,25 @@ paths start at your current folder. Prefer explicit paths for remote work.
   A local `DISPLAY` or `WAYLAND_DISPLAY` is left out only when its socket is
   missing or refuses connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
-- `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
-  never reruns a task. `hc keep <t> --off` disables recovery. Signal death
-  without an exit code is loss too. After a grace delay, recovery runs on
+- `hc keep <t>` (or `run --keep`) brings back a lost terminal in place.
+  It uses the running program's OSC 7577 resume command when available,
+  and starts a shell otherwise. Windows resume requires PowerShell.
+  `hc keep <t> --off` disables recovery. Signal death
+  without an exit code is loss too. A signal that ends the terminal's first
+  process while its holder is healthy clears that process's resume command.
+  After a grace delay, recovery runs on
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
   on Linux, systemd stops the core before its holders. Ordinary exits and
   explicit kills remain final. Set `restore_screen = true` in
   `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
-  to show the lost program's last saved screen above the new shell, separated
+  to show the lost program's last saved screen above its replacement, separated
   by a divider. It defaults to false and applies at the next recovery. On Windows,
   the old screen is in history. `hc read` includes restored text, so scripts
   reading it can match old output. Saved screens are consumed or discarded once; a power cut
   that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
+  After reconnecting, repeat any resume update or clear sent while the core was down.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary

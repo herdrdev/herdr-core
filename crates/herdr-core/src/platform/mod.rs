@@ -10,6 +10,31 @@ mod unix;
 #[cfg(unix)]
 pub use unix::*;
 
+#[cfg(unix)]
+mod unix_resume;
+#[cfg(unix)]
+pub(crate) use unix_resume::*;
+#[cfg(windows)]
+mod windows_resume;
+#[cfg(windows)]
+pub(crate) use windows_resume::*;
+
+pub(crate) struct ResumeProcess {
+    pub identity: crate::resume::Identity,
+    pub parent: u32,
+    pub user: String,
+}
+
+pub(crate) enum ProcessState {
+    Alive(ResumeProcess),
+    Gone,
+    Unknown,
+}
+
+pub(crate) fn resume_env(key: &std::ffi::OsStr) -> bool {
+    environment_key_eq(key, crate::resume::TOKEN)
+}
+
 #[cfg(target_os = "linux")]
 mod linux_login;
 #[cfg(target_os = "linux")]
