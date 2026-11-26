@@ -700,14 +700,23 @@ impl Terminal {
 
     /// Bytes that repaint this terminal on a fresh viewer: up to `history`
     /// scrollback lines (main screen only), then the screen with its modes,
-    /// cursor and title.
+    /// cursor and title, as one synchronized update, so a viewer draws it once
+    /// it is whole instead of scrolling through the history as it arrives.
     pub fn paint(&self, history: usize) -> Vec<u8> {
+        let mut out = b"\x1b[?2026h".to_vec();
+        out.extend(self.painted(history));
+        out.extend(b"\x1b[?2026l");
+        out
+    }
+
+    fn painted(&self, history: usize) -> Vec<u8> {
         let (cols, rows) = self.size();
         let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
         // A soft reset leaves mouse, focus, paste, sync and key modes alone: turn
         // them off too, so a viewer that missed their "off" (a dropped backlog)
-        // ends up with exactly the screen's own modes, replayed below.
-        let mut out = b"\x1b[!p\x1b[?2026l\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\
+        // ends up with exactly the screen's own modes, replayed below. Sync is
+        // left on: it brackets the paint, and paint() turns it off at the end.
+        let mut out = b"\x1b[!p\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\
 \x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J"
             .to_vec();
@@ -719,7 +728,7 @@ impl Terminal {
             && let Some(mut primary) = Self::restore(&snapshot, usize::MAX)
         {
             primary.write(b"\x18\x1b[?1049l");
-            out = primary.paint(history);
+            out = primary.painted(history);
         }
         let available = self.history_rows();
         if history > 0 && available > 0 && !self.alt_screen() {
