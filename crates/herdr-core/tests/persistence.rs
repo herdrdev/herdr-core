@@ -4,7 +4,21 @@ mod common;
 
 use common::*;
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
+
+#[test]
+fn the_registry_is_private_even_with_a_leftover_temp_file() {
+    let s = Session::new();
+    let state = s.root.join("state/herdr-core/test");
+    run(&s, &["sleep", "600"]);
+    let registry = state.join("terminals.json");
+    assert_eq!(fs::metadata(&registry).unwrap().permissions().mode() & 0o777, 0o600);
+    let tmp = state.join("terminals.tmp");
+    fs::write(&tmp, b"leftover").unwrap();
+    fs::set_permissions(tmp, fs::Permissions::from_mode(0o644)).unwrap();
+    run(&s, &["sleep", "600"]);
+    assert_eq!(fs::metadata(registry).unwrap().permissions().mode() & 0o777, 0o600);
+}
 
 #[test]
 fn failed_registry_and_stderr_writes_do_not_stop_persistence() {
@@ -14,7 +28,7 @@ fn failed_registry_and_stderr_writes_do_not_stop_persistence() {
     symlink("/dev/full", state.join("core.log")).unwrap();
     let before = run(&s, &["sleep", "600"]);
     let tmp = state.join("terminals.tmp");
-    // Both the registry snapshot and its error diagnostic return ENOSPC, without root or a full disk.
+    // Both the registry snapshot and its error diagnostic fail without needing a full disk.
     symlink("/dev/full", &tmp).unwrap();
     let (_, error) = s.err(&["--json", "run", "--bg", "--name", "during", "sleep", "600"]);
     fs::remove_file(&tmp).unwrap();

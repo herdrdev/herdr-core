@@ -3,7 +3,7 @@ use crate::resume::Identity;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 
@@ -17,8 +17,8 @@ pub(crate) fn secure_state_dir(path: &Path) -> io::Result<()> {
     if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must belong to this user"));
     }
-    if meta.mode() & 0o7777 != 0o700 {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    if meta.mode() & 0o077 != 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must be private"));
     }
     Ok(())
 }
@@ -154,9 +154,14 @@ pub(crate) fn run_resume(argv: &[String], cwd: &str) -> io::Result<i32> {
     // The helper runs before the CLI starts any threads.
     unsafe {
         std::env::set_var("PWD", cwd);
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
         libc::execv(path.as_ptr(), pointers.as_ptr());
     }
     Err(io::Error::last_os_error())
+}
+
+pub(crate) fn resume_shutdown_signal(signal: i32) -> bool {
+    matches!(signal, libc::SIGTERM | libc::SIGHUP)
 }
 
 pub(crate) fn resume_fallback(shell: &[String]) -> i32 {

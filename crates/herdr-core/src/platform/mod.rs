@@ -35,6 +35,24 @@ pub(crate) fn resume_env(key: &std::ffi::OsStr) -> bool {
     environment_key_eq(key, crate::resume::TOKEN)
 }
 
+pub(crate) fn resume_executable() -> std::io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    if exe.is_file() {
+        return Ok(exe);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if let Some(path) = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(path));
+            if path.is_file() {
+                return Ok(path.to_path_buf());
+            }
+        }
+    }
+    Err(std::io::ErrorKind::NotFound.into())
+}
+
 #[cfg(target_os = "linux")]
 mod linux_login;
 #[cfg(target_os = "linux")]
@@ -345,9 +363,16 @@ pub(crate) fn restored_environment(
         if named(key, "XPC_FLAGS") {
             return true;
         }
-        [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
-            .iter()
-            .any(|name| named(key, name))
+        [
+            crate::sweep::VAR,
+            crate::sweep::RUNTIME,
+            "HC_LAUNCHD_DIRECT",
+            "HC_LAUNCHD_DETACH",
+            "_HC_RESPONSIBLE_PID",
+            crate::resume::TOKEN,
+        ]
+        .iter()
+        .any(|name| named(key, name))
     };
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();

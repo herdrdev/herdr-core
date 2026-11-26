@@ -94,9 +94,22 @@ pub(crate) fn resume_process(pid: u32) -> ProcessState {
 pub(crate) fn secure_state_dir(path: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() || super::is_link(&meta) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must be a directory"));
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must not be a reparse point"));
     }
-    Ok(())
+    let profile = std::env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "USERPROFILE is unset"))?;
+    let profile = std::fs::canonicalize(profile)?;
+    let state = std::fs::canonicalize(path)?;
+    if state.starts_with(&profile) && state != profile {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must be inside USERPROFILE"))
+    }
+}
+
+pub(crate) fn resume_shutdown_signal(_: i32) -> bool {
+    false
 }
 
 pub(crate) fn private_launch_file(meta: &std::fs::Metadata) -> bool {

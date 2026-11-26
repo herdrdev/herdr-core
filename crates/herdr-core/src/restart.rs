@@ -74,7 +74,8 @@ pub(crate) fn prepare_start(paths: &Paths, environment: BTreeMap<String, String>
     save(paths, vars, true)
 }
 
-fn save(paths: &Paths, vars: Vec<(OsString, OsString)>, fresh: bool) -> io::Result<()> {
+fn save(paths: &Paths, mut vars: Vec<(OsString, OsString)>, fresh: bool) -> io::Result<()> {
+    vars.retain(|(key, _)| !crate::platform::resume_env(key));
     let env = Environment {
         machine_id: crate::platform::machine_id(),
         boot_id: crate::platform::boot_id()?,

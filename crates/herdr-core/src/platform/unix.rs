@@ -149,6 +149,22 @@ pub fn private_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
 }
 
+pub(crate) fn open_state_temp(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if meta.is_file() && meta.permissions().mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 pub fn is_link(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }

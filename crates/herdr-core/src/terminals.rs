@@ -351,7 +351,9 @@ impl Registry {
             }
             if pending {
                 if let Some(resume) = &mut t.resume {
-                    resume.lost(t.program_started_ms, now_ms, reason == "signaled");
+                    let drop_root = reason == "signaled"
+                        && signal.is_some_and(|signal| !crate::platform::resume_shutdown_signal(signal));
+                    resume.lost(t.program_started_ms, now_ms, drop_root);
                 }
                 t.schedule_restart(now_ms);
                 t.pid = None;
