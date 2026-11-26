@@ -229,6 +229,18 @@ pub struct RunParams {
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<String>,
+    /// Override a template's model for this run.
+    #[arg(long, value_name = "MODEL", allow_hyphen_values = true)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Override a template's shell command for this run.
+    #[arg(long, value_name = "CMD")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Parse trailing model and command flags from argv if the destination finds a template.
+    #[arg(skip)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parse_overrides: bool,
     /// Initial size before the program starts. Omitted: the configured
     /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
     #[arg(skip)]

@@ -15,6 +15,7 @@ Usage: hc <command> [options]
 
 Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
+                              --model MODEL and --command CMD override a template
   ls                          list live terminals (--all: finished too)
                               --table prints a table even when piped
   get <t>                     show one terminal
@@ -493,6 +494,8 @@ Arguments:
 
 Options:
       --json               JSON output even in a terminal
+      --model <MODEL>      Override a template's model for this run
+      --command <CMD>      Override a template's shell command for this run
       --name <NAME>        Name, unique among live terminals: 1-32 of a-z 0-9 - _ 
       --cwd <CWD>          Working directory (default: where hc runs; through the API, the core's; with --on, that machine's home)
       --on <MACHINE>       Run it on another machine (see `hc machine ls`); its address is `machine/t7`

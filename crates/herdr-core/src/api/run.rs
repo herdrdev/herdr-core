@@ -8,10 +8,26 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
         Some(name) => crate::templates::load(&core.paths, name)?,
         None => None,
     };
+    if template.is_none() {
+        for (flag, value) in [("--model", &p.model), ("--command", &p.command)] {
+            if value.is_some() {
+                return Err(RpcError::invalid_params(format!("{flag} requires a template")));
+            }
+        }
+    } else if p.parse_overrides {
+        crate::cli::apply_trailing_overrides(&mut p)?;
+    }
     let first = template.as_ref().map(|t| crate::templates::first_message(t, &p.argv[1..].join(" ")));
     match (&template, p.line.take(), p.argv.is_empty()) {
         // A shell line (VAR=value prefixes, quotes, ~); sh replaces itself with a single command.
-        (Some(t), None, _) => p.argv = vec!["sh".into(), "-c".into(), t.command.clone()],
+        (Some(t), None, _) => {
+            let mut command = p.command.take().unwrap_or_else(|| t.command.clone());
+            if let Some(model) = p.model.take() {
+                command = crate::templates::with_model(command, &model)?;
+                p.env.insert("HC_MODEL".into(), model);
+            }
+            p.argv = vec!["sh".into(), "-c".into(), command];
+        }
         // The shell is this machine's: the caller may be on another kind.
         (None, Some(line), true) => p.argv = crate::platform::shell_line(&line),
         (None, None, true) => p.argv = crate::config::load(&core.paths.config)?.shell()?,

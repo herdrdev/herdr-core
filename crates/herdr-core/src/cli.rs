@@ -21,6 +21,7 @@ mod update;
 use file::*;
 use machine::*;
 use output::*;
+pub(crate) use run::apply_trailing_overrides;
 use run::*;
 use server::*;
 use update::*;
@@ -38,7 +39,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Start a program, or a template by name with its task: hc run reviewer "review src/x.rs".
-    Run(RunParams),
+    Run(Box<RunParams>),
     /// List live terminals.
     Ls {
         #[command(flatten)]

@@ -308,6 +308,130 @@ fn a_template_starts_its_command_and_sends_body_and_prompt_first() {
 }
 
 #[test]
+fn run_model_is_passed_to_a_wrapper() {
+    let s = session();
+    template(&s, "worker", "---\ncommand: sh -c 'echo model:$HC_MODEL; echo args:$*' worker --model original\n---\n");
+    let r = s.json(&["run", "worker", "--model=provider/model:v2"]);
+    let output = r["output"].as_str().unwrap();
+    assert!(output.contains("model:provider/model:v2"), "{r}");
+    assert!(output.contains("args:--model original"), "{r}");
+}
+
+#[test]
+fn run_model_replaces_a_direct_commands_model_argument() {
+    let s = session();
+    for (args, expected) in [
+        ("-m 'old model'", "<-m>\n<new/model>"),
+        ("--model \"old\"", "<--model>\n<new/model>"),
+        ("--model='old'", "<--model=new/model>"),
+    ] {
+        template(&s, "worker", &format!("---\ncommand: printf '<%s>\\n' {args} --other\n---\n"));
+        let r = s.json(&["run", "--model", "new/model", "worker"]);
+        let output = r["output"].as_str().unwrap();
+        assert!(output.contains(&format!("{expected}\n<--other>")), "{r}");
+    }
+}
+
+#[test]
+fn run_model_supports_expanding_here_documents_and_pipelines() {
+    let s = session();
+    template(&s, "worker", "---\ncommand: exit 7\n---\n");
+    for (command, expected) in [
+        ("cat <<END\nmodel: $HC_MODEL\nEND", "model: new"),
+        ("printf '<%s>\\n' --model old | cat", "<--model>\n<new>"),
+        ("printf '<%s>\\n' --model old | (cat)", "<--model>\n<new>"),
+        (
+            "printf 'setup:%s\\n' --model early <<E\"OF\"\nignored\nEOF\nprintf 'launch:%s\\n' --model old",
+            "setup:--model\nsetup:early\nlaunch:--model\nlaunch:new",
+        ),
+        (
+            "cat <<EOF\n$(printf '%s' '$HC_MODEL')\nEOF\nprintf 'launch:%s\\n' --model old",
+            "$HC_MODEL\nlaunch:--model\nlaunch:new",
+        ),
+    ] {
+        let r = s.json(&["run", "--model", "new", "--command", command, "worker"]);
+        assert!(r["output"].as_str().unwrap().contains(expected), "{r}");
+    }
+    let (_, err) = s.err(&["run", "--model", "new", "--command", "cat <<'END'\nmodel: $HC_MODEL\nEND", "worker"]);
+    assert_eq!(err["error"]["kind"], "invalid_params", "{err}");
+}
+
+#[test]
+fn a_remote_only_template_parses_trailing_overrides_where_it_runs() {
+    let far = session();
+    let mut near = session();
+    near.env.push(fake_ssh(&near, &[("far", &far)]));
+    near.json(&["machine", "add", "far"]);
+    template(&far, "worker", "---\ncommand: exit 7\n---\n");
+    let command = "printf '<%s>\\n' --model \\\n  'old' --other";
+    let r = near.json(&["run", "--on", "far", "worker", "--model=new", "--command", command]);
+    assert_eq!(r["template"], "worker", "{r}");
+    assert!(r.get("first_message").is_none(), "{r}");
+    assert!(r["output"].as_str().unwrap().contains("<--model>\n<new>\n<--other>"), "{r}");
+
+    let r = near.json(&["run", "--on", "far", "printf", "<%s>\\n", "--model", "new", "--command", "same"]);
+    assert!(r["output"].as_str().unwrap().contains("<--model>\n<new>\n<--command>\n<same>"), "{r}");
+}
+
+#[test]
+fn trailing_routing_keeps_remote_programs_own_arguments() {
+    let far = session();
+    let mut near = session();
+    near.env.push(fake_ssh(&near, &[("far", &far)]));
+    near.json(&["machine", "add", "far"]);
+    template(&near, "printf", "---\ncommand: exit 7\n---\n");
+    let r = near.json(&["run", "printf", "<%s>\\n", "--on", "far", "--model", "new", "--command", "same"]);
+    assert!(r["template"].is_null(), "{r}");
+    assert!(r["output"].as_str().unwrap().contains("<--model>\n<new>\n<--command>\n<same>"), "{r}");
+}
+
+#[test]
+fn run_overrides_reject_missing_templates_and_unusable_models() {
+    let s = session();
+    template(&s, "wrapper", "---\ncommand: echo $HC_MODEL\n---\n");
+    template(&s, "plain", "---\ncommand: echo hello\n---\n");
+    for (args, explanation) in [
+        (["run", "--model", "new", "echo"], "requires a template"),
+        (["run", "--command", "echo other", "echo"], "requires a template"),
+        (["run", "--model", "new", "plain"], "HC_MODEL"),
+        (["run", "--model", "x;echo injected", "wrapper"], "A-Za-z0-9"),
+    ] {
+        let (_, err) = s.err(&args);
+        assert_eq!(err["error"]["kind"], "invalid_params", "{err}");
+        assert!(err["error"]["message"].as_str().unwrap().contains(explanation), "{err}");
+    }
+    let r = s.connect().call(1, "terminal.run", serde_json::json!({"argv": ["wrapper"], "model": "a\0b"}));
+    assert_eq!(r["error"]["data"]["kind"], "invalid_params", "{r}");
+    assert!(s.json(&["ls", "--all"])["terminals"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn run_command_override_keeps_the_template_body_and_input_settings() {
+    let s = session();
+    template(
+        &s,
+        "worker",
+        "---\ncommand: exit 7\nready: quiet\nsubmit: tab\nstop: ctrl+g\npaste_gap_ms: 50\n---\nRole\n",
+    );
+    let command = format!("echo model:$HC_MODEL; {BYTES}");
+    let r = s.json(&["run", "--bg", "--model", "wrapper/v2", "worker", "task", "--command", &command]);
+    assert_eq!(r["template"], "worker", "{r}");
+    assert_eq!(r["first_message"]["sent"], true, "{r}");
+    let t = r["address"].as_str().unwrap();
+    wait_until("command and submitted first message", || {
+        let output = text(&s, t);
+        let tokens: Vec<_> = output.split_whitespace().collect();
+        tokens.starts_with(&["model:wrapper/v2", "52", "6f", "6c", "65"])
+            && tokens.ends_with(&["74", "61", "73", "6b", "09"])
+    });
+    s.json(&["interrupt", t]);
+    wait_until("template stop key", || text(&s, t).split_whitespace().last() == Some("07"));
+    let r = s.connect().call(1, "terminal.get", serde_json::json!({"terminal": t}));
+    assert_eq!(r["result"]["template"], "worker", "{r}");
+    assert_eq!(r["result"]["paste_gap_ms"], 50, "{r}");
+}
+
+#[test]
 fn an_agent_starting_a_worker_tells_it_who_asked_and_how_to_answer() {
     let s = session();
     template(&s, "reviewer", &format!("---\ndescription: r\ncommand: {ECHO_AGENT}\n---\nYou review code.\n"));

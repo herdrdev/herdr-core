@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
+pub(crate) const TEMPLATE_OVERRIDES: &str = "template_overrides";
 pub const FEATURES: &[&str] = &[
     "framed",
     "attach",
@@ -24,6 +25,7 @@ pub const FEATURES: &[&str] = &[
     "automatic_input",
     "restart_environment",
     "put_chunks",
+    TEMPLATE_OVERRIDES,
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -81,7 +83,7 @@ methods! { Ctx<'_>;
         errors ["invalid_params"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
-        errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
+        errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config", "needs_update"];
     "templates.list" => templates_list, Empty => TemplatesResult,
         "Templates by name and description, so you can pick a role without knowing its command.",
         errors [];

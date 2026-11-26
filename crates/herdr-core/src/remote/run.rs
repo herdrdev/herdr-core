@@ -81,6 +81,33 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
     }
     let deadline = if method == "terminal.send" { Duration::MAX } else { deadline_for(core, method, &params) };
     let line = line(core, m).await?;
+    if method == "terminal.run" && !line.features.iter().any(|f| f == crate::api::TEMPLATE_OVERRIDES) {
+        let needs_update = || {
+            RpcError::new(
+                "needs_update",
+                format!("template overrides require a newer hc on {}", m.name),
+                format!("hc machine update {}", m.name),
+            )
+        };
+        if !params["model"].is_null() || !params["command"].is_null() {
+            return Err(needs_update());
+        }
+        if params["parse_overrides"] == true {
+            // Older cores still accept these words as ordinary program arguments.
+            let method = "templates.list";
+            let empty = json!({});
+            let timeout = deadline_for(core, method, &empty);
+            let listed = line
+                .call(&m.name, method, empty, timeout)
+                .await
+                .map_err(|error| if error.kind == "unknown_method" { needs_update() } else { error })?;
+            let name = &params["argv"][0];
+            if listed["templates"].as_array().is_none_or(|list| list.iter().any(|t| t["name"] == *name)) {
+                return Err(needs_update());
+            }
+            params.as_object_mut().expect("run parameters are an object").remove("parse_overrides");
+        }
+    }
     // An older core would read no program as "nothing to run".
     let own_shell = params["argv"].as_array().is_none_or(Vec::is_empty) || params.get("line").is_some();
     if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {

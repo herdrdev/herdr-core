@@ -5,6 +5,7 @@ Usage: hc <command> [options]
 
 Terminals
   run <cmd|template> [task]   run it and wait like a shell (--bg: don't wait)
+                              --model MODEL and --command CMD override a template
   ls                          list live terminals (--all: finished too)
                               --table prints a table even when piped
   get <t>                     show one terminal

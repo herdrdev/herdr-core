@@ -6,48 +6,72 @@ use super::*;
 /// of the task. A program's arguments stay its own.
 /// Flags given before the program stay; flags after the task are added.
 /// Also says whether those flags asked for --json.
-pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), RpcError> {
-    let Some((q, json)) = trailing_flags(paths, &p.argv)? else { return Ok((p, false)) };
-    let merged = RunParams {
-        argv: q.argv,
-        name: q.name.or(p.name),
-        cwd: q.cwd.or(p.cwd),
-        on: q.on.or(p.on),
-        labels: [p.labels, q.labels].concat(),
-        parent: q.parent.or(p.parent),
-        no_parent: p.no_parent || q.no_parent,
-        no_notify: p.no_notify || q.no_notify,
-        outlive_parent: p.outlive_parent || q.outlive_parent,
-        rm: p.rm || q.rm,
-        keep: p.keep || q.keep,
-        bg: p.bg || q.bg,
-        timeout: q.timeout.or(p.timeout),
-        ..p
-    };
-    if merged.parent.is_some() && merged.no_parent {
-        return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
+pub(super) fn flags_after_task(paths: &Paths, mut p: Box<RunParams>) -> Result<(Box<RunParams>, bool), RpcError> {
+    let mut json = false;
+    if p.argv.len() >= 2
+        && matches!(crate::templates::load(paths, &p.argv[0]), Ok(Some(_)))
+        && let Some((q, asked)) = trailing_flags(&p.argv, |flag| !is_override(flag))?
+    {
+        json = asked;
+        *p = RunParams {
+            argv: q.argv,
+            name: q.name.or(p.name),
+            cwd: q.cwd.or(p.cwd),
+            on: q.on.or(p.on),
+            labels: [p.labels, q.labels].concat(),
+            parent: q.parent.or(p.parent),
+            no_parent: p.no_parent || q.no_parent,
+            no_notify: p.no_notify || q.no_notify,
+            outlive_parent: p.outlive_parent || q.outlive_parent,
+            rm: p.rm || q.rm,
+            keep: p.keep || q.keep,
+            bg: p.bg || q.bg,
+            timeout: q.timeout.or(p.timeout),
+            ..*p
+        };
+        if p.parent.is_some() && p.no_parent {
+            return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
+        }
     }
-    Ok((merged, json))
+    p.parse_overrides = p.argv.iter().skip(1).filter_map(|arg| long_flag(arg)).any(is_override);
+    Ok((p, json))
+}
+
+/// The destination found a template and can distinguish its overrides from program arguments.
+pub(crate) fn apply_trailing_overrides(p: &mut RunParams) -> Result<(), RpcError> {
+    if let Some((q, _)) = trailing_flags(&p.argv, is_override)? {
+        p.argv = q.argv;
+        p.model = q.model.or(p.model.take());
+        p.command = q.command.or(p.command.take());
+    }
+    Ok(())
+}
+
+fn long_flag(arg: &str) -> Option<&str> {
+    arg.strip_prefix("--").map(|flag| flag.split_once('=').map_or(flag, |(name, _)| name))
+}
+
+fn is_override(flag: &str) -> bool {
+    matches!(flag, "model" | "command")
 }
 
 /// The task with hc's flags moved out of it, parsed on their own (behind a
 /// `--`, so a flag missing its value can't take the template's name).
-fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, bool)>, RpcError> {
+fn trailing_flags(argv: &[String], select: impl Fn(&str) -> bool) -> Result<Option<(RunParams, bool)>, RpcError> {
     use clap::CommandFactory;
-    if argv.len() < 2 || !matches!(crate::templates::load(paths, &argv[0]), Ok(Some(_))) {
-        return Ok(None);
-    }
     let cli = Cli::command();
     let Some(run) = cli.find_subcommand("run") else { return Ok(None) };
     let (mut flags, mut task) = (Vec::new(), Vec::new());
     let mut rest = argv[1..].iter();
     while let Some(a) = rest.next() {
-        let long = a.strip_prefix("--").map(|l| l.split('=').next().unwrap_or(l));
-        match long.and_then(|l| run.get_arguments().chain(cli.get_arguments()).find(|arg| arg.get_long() == Some(l))) {
+        match long_flag(a)
+            .and_then(|l| run.get_arguments().chain(cli.get_arguments()).find(|arg| arg.get_long() == Some(l)))
+        {
             Some(arg) => {
-                flags.push(a.clone());
+                let out = if arg.get_long().is_some_and(&select) { &mut flags } else { &mut task };
+                out.push(a.clone());
                 if arg.get_action().takes_values() && !a.contains('=') {
-                    flags.extend(rest.next().cloned());
+                    out.extend(rest.next().cloned());
                 }
             }
             None => task.push(a.clone()),
@@ -59,7 +83,7 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
     let args =
         ["hc".to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
     match Cli::try_parse_from(args) {
-        Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((q, json))),
+        Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((*q, json))),
         Ok(_) => Ok(None),
         Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
     }

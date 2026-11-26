@@ -1,6 +1,68 @@
 use super::*;
 
 #[tokio::test]
+async fn older_peers_do_not_launch_when_template_overrides_are_requested() {
+    let root = crate::test_tmp().join(format!("hc-run-features-{}", crate::platform::random_hex()));
+    let paths = crate::paths::Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let machine: Machine = serde_json::from_value(json!({
+        "name": "away", "target": "away", "id": "away", "host": "away", "version": "test"
+    }))
+    .unwrap();
+    let (frames, mut rx) = mpsc::unbounded_channel();
+    let old = Line::new(frames, &json!({"features": ["shell"]}));
+    core.lock().lines.insert("away".into(), LineState::Connected(old.clone()));
+    for extra in [json!({"model": "new"}), json!({"command": "echo new"})] {
+        let mut params = extra;
+        params["argv"] = json!(["worker", "--model", "new"]);
+        let error = tokio::time::timeout(Duration::from_secs(1), forward_once(&core, &machine, "terminal.run", params))
+            .await
+            .expect("refuse before forwarding")
+            .unwrap_err();
+        assert_eq!(error.kind, "needs_update");
+        assert!(rx.try_recv().is_err(), "no launch sent to the peer");
+    }
+    for template in [true, false] {
+        let argv = json!(["worker", "--model", "new"]);
+        let params = json!({"argv": argv, "parse_overrides": true});
+        let peer = async {
+            let bytes = rx.recv().await.unwrap();
+            let request: Value = serde_json::from_slice(&bytes[wire::HEADER..]).unwrap();
+            assert_eq!(request["method"], "templates.list");
+            let templates = if template { vec![json!({"name": "worker"})] } else { vec![] };
+            old.take_reply(json!({"id": request["id"], "result": {"templates": templates}}));
+            if !template {
+                let bytes = rx.recv().await.unwrap();
+                let request: Value = serde_json::from_slice(&bytes[wire::HEADER..]).unwrap();
+                assert_eq!(request["method"], "terminal.run");
+                assert_eq!(request["params"]["argv"], argv);
+                assert!(request["params"].get("parse_overrides").is_none());
+                old.take_reply(json!({"id": request["id"], "result": {"address": "t1"}}));
+            }
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(forward_once(&core, &machine, "terminal.run", params), peer)
+        })
+        .await
+        .expect("the older peer answered");
+        if template {
+            assert_eq!(result.unwrap_err().kind, "needs_update");
+            assert!(rx.try_recv().is_err(), "no launch sent to the peer");
+        } else {
+            assert_eq!(result.unwrap()["address"], "away/t1");
+        }
+    }
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn provisional_grants_survive_only_successful_or_ambiguous_launches() {
     let root = crate::test_tmp().join(format!("hc-run-grants-{}", crate::platform::random_hex()));
     let paths = crate::paths::Paths {

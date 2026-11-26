@@ -25,6 +25,13 @@ files in `~/.config/herdr-core/templates/<name>.md`: frontmatter has `name`,
 hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Read-only; no subagents. Report findings with hc send $HC_TERMINAL_ID when done or stuck."
 ```
 
+Use `hc run --model MODEL <template>` to set `HC_MODEL` for a wrapper or
+replace a single `-m` or `--model` value in the final command or pipeline. Use
+`hc run --command CMD <template>` to replace the shell command while keeping
+the template's opening instructions and input settings. With both flags,
+the model applies to the replacement command. For `--on`, the destination
+core must support these flags.
+
 - Always use `--bg` for agents: without it, their whole screen streams into
   your output. Give each agent a name and an exact scope.
 - Run agents interactively, never `pi -p` or another one-shot print mode.

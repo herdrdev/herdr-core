@@ -1771,6 +1771,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_update"
+          },
+          "message": "needs_update"
         }
       ],
       "name": "terminal.run",
@@ -1795,6 +1802,18 @@
           "required": false,
           "schema": {
             "description": "Who is calling (`HC_TERMINAL_ID` inside a terminal).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Override a template's shell command for this run.",
+          "name": "command",
+          "required": false,
+          "schema": {
+            "description": "Override a template's shell command for this run.",
             "type": [
               "string",
               "null"
@@ -1888,6 +1907,18 @@
           }
         },
         {
+          "description": "Override a template's model for this run.",
+          "name": "model",
+          "required": false,
+          "schema": {
+            "description": "Override a template's model for this run.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
           "description": "Name, unique among live terminals: 1-32 of a-z 0-9 - _ .",
           "name": "name",
           "required": false,
@@ -1951,6 +1982,15 @@
               "string",
               "null"
             ]
+          }
+        },
+        {
+          "description": "Parse trailing model and command flags from argv if the destination finds a template.",
+          "name": "parse_overrides",
+          "required": false,
+          "schema": {
+            "description": "Parse trailing model and command flags from argv if the destination finds a template.",
+            "type": "boolean"
           }
         },
         {
