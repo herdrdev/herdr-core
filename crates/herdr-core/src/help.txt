@@ -13,7 +13,7 @@ Terminals
   kill <t>                    end its program
   rm <t>                      remove a finished terminal
   label <t> k=v...            set labels
-  keep <t> [--off]            replace lost programs with a shell (also run --keep)
+  keep <t> [--off]            recover lost terminals in place (also run --keep)
                               signal death recovers too; streams end on loss, reattach
 
 Talk to programs

@@ -28,10 +28,14 @@ impl Terminal {
 
 /// Under what the lost program left on screen, so it isn't taken for something still running.
 const RESTORED: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; this is a new shell --\x1b[0m\r\n";
+const RESUMING: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; starting it again --\x1b[0m\r\n";
 
 impl Core {
     pub(crate) fn spawn_failed(&self, st: &mut crate::runtime::State, id: u32) {
         let t = st.reg.terminals.get_mut(&id).expect("failed spawn");
+        if let Some(resume) = t.resume.take() {
+            crate::resume::remove_launch(&self.paths.state, resume.launch.as_deref());
+        }
         t.holder = None;
         t.pid = None;
         if st.killing.contains(&id) || !t.keep || t.reason.as_deref().is_none_or(|r| r == "spawn_pending") {
@@ -95,7 +99,20 @@ impl Core {
                 .unwrap_or_else(|| {
                     env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
                 });
-            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
+            let attempt = t.resume.take().and_then(|resume| resume.prepare(&self.paths.state, id, &shell, &cwd));
+            let resuming = attempt.is_some();
+            let (launch, argv, cwd) = match attempt {
+                Some((file, argv, cwd)) => (Some(file), argv, cwd),
+                None => (None, shell.clone(), cwd),
+            };
+            let (env, scope, mut resume) = crate::api::terminal_env(&self, id, &cwd, env);
+            if let Some(resume) = &mut resume {
+                resume.rearmed = resuming;
+                resume.launch = launch;
+            } else {
+                crate::resume::remove_launch(&self.paths.state, launch.as_deref());
+            }
+            t.resume = resume;
             t.scope = Some(scope);
             t.holder = Some(instance);
             t.argv = shell.clone();
@@ -110,7 +127,7 @@ impl Core {
             t.submit = None;
             t.stop = None;
             t.paste_gap_ms = None;
-            let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
+            let spawn = proto::Spawn { argv, env, cwd, cols: t.cols, rows: t.rows };
             let identity = t.identity.clone();
             if !restore_screen {
                 let _ = std::fs::remove_file(self.snapshot_path(id));
@@ -120,7 +137,7 @@ impl Core {
                 let mut screen = ghostty_vt::Terminal::new(spawn.cols, spawn.rows, self.history_bytes());
                 if restore_screen && let Some(old) = self.take_saved_screen(id) {
                     screen.write(&old.replay());
-                    screen.write(RESTORED);
+                    screen.write(if resuming { RESUMING } else { RESTORED });
                     // ConPTY paints a new console from the top left: move what was there into history.
                     if cfg!(windows) {
                         screen.write(&b"\n".repeat(spawn.rows as usize));

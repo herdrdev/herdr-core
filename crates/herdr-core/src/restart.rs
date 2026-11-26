@@ -46,11 +46,17 @@ pub(crate) fn prepare(core: &Core, environment: Option<BTreeMap<String, String>>
 }
 
 fn current_environment() -> Vec<(OsString, OsString)> {
-    std::env::vars_os().filter(|(key, _)| !key.as_encoded_bytes().starts_with(b"=")).collect()
+    std::env::vars_os()
+        .filter(|(key, _)| !key.as_encoded_bytes().starts_with(b"=") && !crate::platform::resume_env(key))
+        .collect()
 }
 
 fn replacement_environment(env: BTreeMap<String, String>) -> io::Result<Vec<(OsString, OsString)>> {
-    let vars: Vec<(OsString, OsString)> = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+    let vars: Vec<(OsString, OsString)> = env
+        .into_iter()
+        .filter(|(key, _)| !crate::platform::resume_env(key.as_ref()))
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
     if !vars.iter().any(|(k, _)| crate::platform::environment_key_eq(k, "PATH")) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "replacement environment must include PATH"));
     }
@@ -99,7 +105,7 @@ fn load(paths: &Paths) -> io::Result<Option<Environment>> {
     let mut env: Environment =
         serde_json::from_slice(&bytes).map_err(|_| io::Error::other("invalid restart environment"))?;
     // cmd.exe's per-drive working directories are not variables set_var can restore.
-    env.vars.retain(|(key, _)| !key.as_encoded_bytes().starts_with(b"="));
+    env.vars.retain(|(key, _)| !key.as_encoded_bytes().starts_with(b"=") && !crate::platform::resume_env(key));
     let age = now_ms()?.checked_sub(env.written_ms);
     if env.machine_id != crate::platform::machine_id()
         || env.boot_id != crate::platform::boot_id()?

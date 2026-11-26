@@ -147,6 +147,7 @@ impl Core {
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
     pub fn output(self: &Arc<Self>, st: &mut State, id: u32, bytes: &[u8]) {
+        self.resume_output(st, id, bytes, crate::runtime::now_ms());
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {

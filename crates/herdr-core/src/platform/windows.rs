@@ -904,7 +904,7 @@ fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
     Ok(line)
 }
 
-fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
+pub(super) fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
     let with_exts = |base: PathBuf| -> Option<PathBuf> {
         if base.extension().is_some() && base.is_file() {
             return Some(base);

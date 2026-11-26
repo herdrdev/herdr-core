@@ -1,5 +1,4 @@
 //! Ordered registry persistence, without disk IO on the core state lock.
-use crate::paths::write_atomic;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
@@ -31,7 +30,20 @@ struct Completion {
 
 impl RegistryWriter {
     pub fn new(path: PathBuf) -> io::Result<Self> {
-        Self::start(move |bytes| write_atomic(&path, bytes))
+        let tmp = path.with_extension("tmp");
+        if std::fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file() && !crate::platform::is_link(&meta)) {
+            std::fs::remove_file(&tmp)?;
+        }
+        Self::start(move |bytes| {
+            let mut file = crate::platform::private_file(&tmp)?;
+            let result = file.write_all(bytes).and_then(|()| file.sync_all());
+            drop(file);
+            let result = result.and_then(|()| std::fs::rename(&tmp, &path));
+            if result.is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            result
+        })
     }
 
     pub(super) fn start(mut write: impl FnMut(&[u8]) -> io::Result<()> + Send + 'static) -> io::Result<Self> {

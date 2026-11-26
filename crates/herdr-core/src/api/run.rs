@@ -110,7 +110,9 @@ pub(super) async fn start(
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
-    let env = child_env(crate::platform::program_env().await, p.env.clone());
+    let mut restart_env = p.env;
+    restart_env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
+    let env = child_env(crate::platform::program_env().await, restart_env.clone());
     let identity = format!(
         "{} {}",
         env.get("TERM_PROGRAM").map_or("", String::as_str),
@@ -166,13 +168,15 @@ pub(super) async fn start(
             display.apply(&mut screen);
         }
         st.screens.insert(id, screen);
-        let (env, scope) = terminal_env(core, id, &cwd, env);
-        st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
+        let (env, scope, resume) = terminal_env(core, id, &cwd, env);
+        let terminal = st.reg.terminals.get_mut(&id).expect("just created");
+        terminal.scope = Some(scope);
+        terminal.resume = resume;
+        terminal.restart_env = restart_env;
+        terminal.holder = Some(instance);
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
-        st.reg.terminals.get_mut(&id).expect("just created").restart_env = p.env;
         let spawn = proto::Spawn { argv: p.argv, env, cwd, cols, rows };
-        st.reg.terminals.get_mut(&id).expect("just created").holder = Some(instance);
         // Queue the snapshot before spawning; the next start kills any unrecorded spawn.
         core.save(&st);
         st.link(id).expect("assigned holder").send(&proto::json_frame(proto::SPAWN, id, &spawn));
@@ -214,14 +218,18 @@ pub(crate) fn terminal_env(
     id: u32,
     cwd: &str,
     mut env: BTreeMap<String, String>,
-) -> (BTreeMap<String, String>, String) {
+) -> (BTreeMap<String, String>, String, Option<crate::resume::Resume>) {
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
     env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
     let scope = crate::sweep::token();
     env.insert(crate::sweep::VAR.into(), scope.clone());
     // Preserve the requested spelling, including symlinks.
     env.insert("PWD".into(), cwd.into());
-    (env, scope)
+    let resume = crate::resume::Resume::new();
+    if let Some(resume) = &resume {
+        env.insert(crate::resume::TOKEN.into(), resume.token().into());
+    }
+    (env, scope, resume)
 }
 
 /// The core's environment with its own terminal identity and explicit client overrides.
@@ -237,6 +245,7 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("TERM_PROGRAM".into(), "ghostty".into());
     crate::platform::merge_env(&mut env, extra);
+    env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
     if let Ok(session) = std::env::var("HC_SESSION") {
         env.insert("HC_SESSION".into(), session);
     }

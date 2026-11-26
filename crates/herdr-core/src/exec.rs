@@ -91,6 +91,7 @@ fn env(
     }
     env.insert("PWD".into(), cwd.into());
     env.extend(extra);
+    env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
     env.insert(crate::sweep::VAR.into(), token.into());
     env
 }
