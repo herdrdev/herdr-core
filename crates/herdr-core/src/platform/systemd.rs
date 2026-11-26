@@ -11,6 +11,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::Bytes;
+use std::time::{Duration, Instant};
 
 /// What the login session decides. Programs get it from the user manager as
 /// it is now; a service takes the caller's only when the caller isn't an ssh
@@ -456,9 +457,29 @@ fn enable_linger(mut command: Command, user: String) -> io::Result<std::thread::
     })
 }
 
-/// The user manager's environment now (a core may have started before the
-/// desktop did). Blocks up to a second: call it off the core's thread.
-pub fn manager_env() -> Option<BTreeMap<String, String>> {
+/// Clients that exec about once a second would otherwise spawn one busctl
+/// apiece. Two seconds collapses a burst, and a desktop change still reaches
+/// new programs almost at once.
+const CACHE_FOR: Duration = Duration::from_secs(2);
+
+/// No manager and a failed read are observations too, but a failure must not
+/// stick for the whole window.
+const RETRY_AFTER: Duration = Duration::from_millis(100);
+
+/// A read of the manager environment, and when it was taken.
+type Read = (Option<BTreeMap<String, String>>, Instant);
+
+/// The last read, shared by every program start.
+static MANAGER_ENV: tokio::sync::Mutex<Option<Read>> = tokio::sync::Mutex::const_new(None);
+
+/// The user manager's environment, read now or within the last two seconds (a
+/// core may have started before the desktop did). Blocks up to a second, off
+/// the core's thread.
+pub async fn manager_env() -> Option<BTreeMap<String, String>> {
+    cached(&MANAGER_ENV, read_manager_env, Instant::now).await
+}
+
+fn read_manager_env() -> Option<BTreeMap<String, String>> {
     let run = manager().ok()?;
     let out = Command::new("busctl")
         .env("XDG_RUNTIME_DIR", run)
@@ -470,6 +491,30 @@ pub fn manager_env() -> Option<BTreeMap<String, String>> {
         .ok()
         .filter(|o| o.status.success())?;
     parse_busctl_environment(&out.stdout)
+}
+
+/// Whether a read still answers at `now`: a value for the whole window, a
+/// failure only long enough to ride out one transient error.
+fn usable(read: &Read, now: Instant) -> bool {
+    let keep = if read.0.is_some() { CACHE_FOR } else { RETRY_AFTER };
+    now.checked_duration_since(read.1).is_some_and(|age| age < keep)
+}
+
+/// The cached read, or one fetch shared by every caller that arrives while it
+/// runs. The mutex is held across the fetch, so the recheck after acquiring it
+/// sees any read another caller finished in the meantime.
+async fn cached(
+    cache: &tokio::sync::Mutex<Option<Read>>,
+    fetch: impl FnOnce() -> Option<BTreeMap<String, String>> + Send + 'static,
+    now: impl Fn() -> Instant + Send,
+) -> Option<BTreeMap<String, String>> {
+    let mut cache = cache.lock().await;
+    if let Some(read) = cache.as_ref().filter(|read| usable(read, now())) {
+        return read.0.clone();
+    }
+    let value = tokio::task::spawn_blocking(fetch).await.ok().flatten();
+    *cache = Some((value.clone(), now()));
+    value
 }
 
 fn parse_busctl_environment(reply_bytes: &[u8]) -> Option<BTreeMap<String, String>> {
@@ -563,6 +608,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::Arc;
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
@@ -872,5 +918,115 @@ mod tests {
         super::apply_session(&mut env, &map(&[("PATH", "/x"), ("SSH_AUTH_SOCK", "/run/user/1/my keys/ssh")]));
         assert_eq!(env["SSH_AUTH_SOCK"], "/run/user/1/my keys/ssh");
         assert_eq!((env["PATH"].as_str(), env["DISPLAY"].as_str()), ("/usr/bin", ":1"), "only what the manager has");
+    }
+
+    /// A clock the test moves by hand, so no test waits for real time.
+    struct TestClock {
+        start: std::time::Instant,
+        elapsed: std::sync::Arc<std::sync::Mutex<std::time::Duration>>,
+    }
+
+    impl TestClock {
+        fn new() -> TestClock {
+            TestClock { start: std::time::Instant::now(), elapsed: Default::default() }
+        }
+
+        fn now(&self) -> std::time::Instant {
+            self.start + *self.elapsed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn advance(&self, by: std::time::Duration) {
+            *self.elapsed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += by;
+        }
+    }
+
+    fn manager() -> BTreeMap<String, String> {
+        map(&[("DISPLAY", ":0")])
+    }
+
+    /// One fetch that counts itself and answers `value`; each call takes a new one.
+    fn fetch(
+        fetches: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        value: impl Fn(usize) -> Option<BTreeMap<String, String>> + Send + 'static,
+    ) -> impl FnOnce() -> Option<BTreeMap<String, String>> + Send + 'static {
+        let fetches = std::sync::Arc::clone(fetches);
+        move || value(fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_program_starts_reads_the_manager_once() {
+        let fetches = Default::default();
+        let cache = tokio::sync::Mutex::new(None);
+        let clock = TestClock::new();
+        for _ in 0..50 {
+            let answer = super::cached(&cache, fetch(&fetches, |_| Some(manager())), || clock.now()).await;
+            assert_eq!(answer, Some(manager()));
+        }
+        clock.advance(super::CACHE_FOR - std::time::Duration::from_millis(1));
+        assert_eq!(super::cached(&cache, fetch(&fetches, |_| Some(manager())), || clock.now()).await, Some(manager()));
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_start_after_the_window_reads_the_manager_again() {
+        let fetches = Default::default();
+        let cache = tokio::sync::Mutex::new(None);
+        let clock = TestClock::new();
+        assert_eq!(super::cached(&cache, fetch(&fetches, |_| Some(manager())), || clock.now()).await, Some(manager()));
+        clock.advance(super::CACHE_FOR);
+        assert_eq!(super::cached(&cache, fetch(&fetches, |_| Some(manager())), || clock.now()).await, Some(manager()));
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_is_retried_soon() {
+        let fetches = Default::default();
+        let cache = tokio::sync::Mutex::new(None);
+        let clock = TestClock::new();
+        let value = |attempt: usize| (attempt > 0).then(manager);
+        assert_eq!(super::cached(&cache, fetch(&fetches, value), || clock.now()).await, None);
+        assert_eq!(
+            super::cached(&cache, fetch(&fetches, value), || clock.now()).await,
+            None,
+            "inside the short retry delay"
+        );
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::SeqCst), 1);
+        clock.advance(super::RETRY_AFTER);
+        assert_eq!(super::cached(&cache, fetch(&fetches, value), || clock.now()).await, Some(manager()));
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_program_starts_share_one_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let cache = Arc::new(tokio::sync::Mutex::new(None));
+        let clock = Arc::new(TestClock::new());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        // Hold the first read open until the second caller has arrived.
+        let first = tokio::spawn({
+            let (fetches, cache, clock) = (Arc::clone(&fetches), Arc::clone(&cache), Arc::clone(&clock));
+            async move {
+                let fetch = move || {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    started_tx.send(()).unwrap();
+                    go_rx.recv().unwrap();
+                    Some(manager())
+                };
+                super::cached(&cache, fetch, || clock.now()).await
+            }
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap()).await.unwrap();
+        let second = tokio::spawn({
+            let (fetches, cache, clock) = (Arc::clone(&fetches), Arc::clone(&cache), Arc::clone(&clock));
+            async move { super::cached(&cache, fetch(&fetches, |_| Some(manager())), || clock.now()).await }
+        });
+        tokio::task::yield_now().await;
+        go_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap(), Some(manager()));
+        assert_eq!(second.await.unwrap(), Some(manager()), "the second caller reuses the shared read");
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
 }
