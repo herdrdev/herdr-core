@@ -93,9 +93,21 @@ export async function ensureBinary({
   codesignBin = "/usr/bin/codesign",
 } = {}) {
   const target = resolveTarget(platform, arch);
-  const versionDir = path.join(cacheRoot, version, target);
+  const versionDir =
+    releasesBaseURL === OFFICIAL_RELEASES_URL
+      ? path.join(cacheRoot, version, target)
+      : path.join(
+          cacheRoot,
+          "mirrors",
+          crypto.createHash("sha256").update(releasesBaseURL).digest("hex").slice(0, 16),
+          version,
+          target
+        );
   const binPath = path.join(versionDir, "herdr-core");
   if (fs.existsSync(binPath)) {
+    if (platform === "darwin" && releasesBaseURL === OFFICIAL_RELEASES_URL) {
+      verifyDarwinSignature(binPath, { codesignBin });
+    }
     return binPath;
   }
 

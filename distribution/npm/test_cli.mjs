@@ -99,7 +99,8 @@ test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered
     assert.equal(downloads, 1);
     const out = execFileSync(binPath, ["--version"], { encoding: "utf8" });
     assert.equal(out.trim(), "hc-mock --version");
-    assert.equal(fs.existsSync(path.join(cacheRoot, version, target, "THIRD-PARTY-NOTICES")), true);
+    assert.match(binPath, /\/mirrors\/[0-9a-f]{16}\//);
+    assert.equal(fs.existsSync(path.join(path.dirname(binPath), "THIRD-PARTY-NOTICES")), true);
 
     // Cached run performs zero additional downloads.
     const cachedPath = await ensureBinary({ version, cacheRoot, releasesBaseURL });
@@ -113,7 +114,7 @@ test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered
       ensureBinary({ version, cacheRoot: badCache, releasesBaseURL }),
       /SHA-256 mismatch/
     );
-    assert.equal(fs.existsSync(path.join(badCache, version, target, "herdr-core")), false);
+    assert.equal(fs.existsSync(binPath.replace(cacheRoot, badCache)), false);
 
     // Official macOS release checks Apple Developer ID signature before publishing to cache.
     const unsignedDarwinArchiveName = "herdr-core-macos-aarch64.tar.gz";
@@ -146,6 +147,39 @@ test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered
       : failingCodesign;
 
     const unsignedCache = path.join(tmp, "unsigned-cache");
+    // Mirror-to-official transition in the SAME cacheRoot must not reuse the unsigned mirror entry.
+    corrupt = false;
+    const mirrorDarwinFetch = async (url) => {
+      if (url === `http://127.0.0.1:${port}/core/${version}/manifest.json`) {
+        const body = Buffer.from(
+          JSON.stringify({
+            version,
+            generation: 1,
+            notes: `herdr-core ${version}`,
+            targets: {
+              "macos-aarch64": {
+                url: `http://127.0.0.1:${port}/core/${version}/${unsignedDarwinArchiveName}`,
+                sha256: sha,
+              },
+            },
+          })
+        );
+        return { ok: true, status: 200, arrayBuffer: async () => body };
+      }
+      if (url === `http://127.0.0.1:${port}/core/${version}/${unsignedDarwinArchiveName}`) {
+        return { ok: true, status: 200, arrayBuffer: async () => tarBytes };
+      }
+      return { ok: false, status: 404, arrayBuffer: async () => Buffer.alloc(0) };
+    };
+    await ensureBinary({
+      version,
+      cacheRoot: unsignedCache,
+      releasesBaseURL,
+      platform: "darwin",
+      arch: "arm64",
+      fetchImpl: mirrorDarwinFetch,
+      codesignBin,
+    });
     await assert.rejects(
       ensureBinary({
         version,
@@ -171,7 +205,8 @@ test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered
 
     // Verify both invoked bin names (herdr-core.js and symlinked hc) forward arguments and fatal signals.
     const pkgVersion = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
-    const cliBinDir = path.join(cacheRoot, pkgVersion, target);
+    const mirrorKey = crypto.createHash("sha256").update(releasesBaseURL).digest("hex").slice(0, 16);
+    const cliBinDir = path.join(cacheRoot, "mirrors", mirrorKey, pkgVersion, target);
     fs.mkdirSync(cliBinDir, { recursive: true });
     fs.writeFileSync(
       path.join(cliBinDir, "herdr-core"),
@@ -187,14 +222,14 @@ test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered
 
     for (const entry of [launcher, hcLink]) {
       const runRes = spawnSync(process.execPath, [entry, "list", "--json"], {
-        env: { ...process.env, HC_NPM_CACHE_DIR: cacheRoot },
+        env: { ...process.env, HC_NPM_CACHE_DIR: cacheRoot, HERDR_RELEASES_URL: releasesBaseURL },
         encoding: "utf8",
       });
       assert.equal(runRes.status, 0);
       assert.equal(runRes.stdout.trim(), "ok:list --json");
 
       const sigRes = spawnSync(process.execPath, [entry, "--sigterm"], {
-        env: { ...process.env, HC_NPM_CACHE_DIR: cacheRoot },
+        env: { ...process.env, HC_NPM_CACHE_DIR: cacheRoot, HERDR_RELEASES_URL: releasesBaseURL },
         encoding: "utf8",
       });
       assert.equal(sigRes.signal, "SIGTERM");
@@ -236,7 +271,13 @@ test("homebrew-formula.sh renders Formula/herdr-core.rb from manifest.json and f
     assert.equal(mismatch.stdout, "");
 
     // Invalid or non-HTTPS URL fails closed with empty stdout.
-    for (const badURL of ["not-a-url", "http://releases.herdr.dev/core/0.1.22/herdr-core.tar.gz", "https://releases.herdr.dev/core/0.1.22/a.tar.gz#frag"]) {
+    for (const badURL of [
+      "not-a-url",
+      "http://releases.herdr.dev/core/0.1.22/herdr-core.tar.gz",
+      "https://:443/actual-name.tar.gz",
+      "https://releases.herdr.dev:bad/actual-name.tar.gz",
+      "https://releases.herdr.dev/core/0.1.22/a.tar.gz#frag",
+    ]) {
       const bad = makeManifest();
       bad.targets["macos-aarch64"].url = badURL;
       fs.writeFileSync(manifestPath, JSON.stringify(bad, null, 2));

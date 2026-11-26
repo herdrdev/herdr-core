@@ -42,8 +42,14 @@ def validate_url(target: str, raw: object) -> str:
     if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
         fail(f"url for {target} contains control characters or whitespace")
     parsed = urllib.parse.urlsplit(raw)
-    if parsed.scheme != "https" or not parsed.netloc or not parsed.path.startswith("/"):
-        fail(f"url for {target} must be an https:// URL with host and path: {raw!r}")
+    try:
+        port = parsed.port
+    except ValueError:
+        fail(f"url for {target} has an invalid port: {raw!r}")
+    if parsed.scheme != "https" or not parsed.hostname or not parsed.path.startswith("/"):
+        fail(f"url for {target} must be an https:// URL with hostname and path: {raw!r}")
+    if port is not None and not (1 <= port <= 65535):
+        fail(f"url for {target} has an out-of-range port: {raw!r}")
     if parsed.username or parsed.password or parsed.fragment:
         fail(f"url for {target} must not contain credentials or fragments: {raw!r}")
     return raw
