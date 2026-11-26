@@ -1,0 +1,46 @@
+{
+  "name": "@herdrdev/core",
+  "version": "0.1.22",
+  "description": "Terminal runtime for coding agents (herdr-core / hc).",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/herdrdev/herdr-core",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/herdrdev/herdr-core.git",
+    "directory": "distribution/npm"
+  },
+  "bugs": {
+    "url": "https://github.com/herdrdev/herdr-core/issues"
+  },
+  "keywords": [
+    "herdr",
+    "herdr-core",
+    "hc",
+    "terminal",
+    "pty",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "gemini"
+  ],
+  "type": "module",
+  "bin": {
+    "herdr-core": "bin/herdr-core.js",
+    "hc": "bin/hc.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
