@@ -270,7 +270,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   It uses the running program's OSC 7577 resume command when available,
   and starts a shell otherwise. Windows resume requires PowerShell.
   `hc keep <t> --off` disables recovery. Signal death
-  without an exit code is loss too. After a grace delay, recovery runs on
+  without an exit code is loss too. A signal that ends the terminal's first
+  process while its holder is healthy clears that process's resume command.
+  After a grace delay, recovery runs on
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
   on Linux, systemd stops the core before its holders. Ordinary exits and
@@ -282,9 +284,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
   reading it can match old output. Saved screens are consumed or discarded once; a power cut
   that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
-  After a core crash, an unprocessed resume report still has a 60-second
-  window. An expired clear can leave the last saved resume command in place
-  if its owner is still alive.
+  After reconnecting, repeat any resume update or clear sent while the core was down.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary

@@ -10,7 +10,6 @@ const MAX_FILE: u64 = 128 << 10;
 struct Launch {
     argv: Vec<String>,
     cwd: String,
-    user: String,
     shell: Vec<String>,
 }
 
@@ -19,9 +18,9 @@ pub(super) fn prepare(
     id: u32,
     shell: &[String],
     fallback_cwd: &str,
-    user: &str,
     record: &Record,
 ) -> io::Result<(String, Vec<String>, String)> {
+    platform::secure_state_dir(state)?;
     let is_dir = |path: &str| Path::new(path).is_dir();
     let cwd = if let Some(dir) = &record.reported_cwd {
         if !is_dir(dir) {
@@ -39,7 +38,7 @@ pub(super) fn prepare(
     }
     let argv =
         platform::resume_shell(shell, &helper, &path, record.ancestors.is_empty()).ok_or(io::ErrorKind::Unsupported)?;
-    let launch = Launch { argv: record.argv.clone(), cwd: cwd.into(), user: user.into(), shell: shell.to_vec() };
+    let launch = Launch { argv: record.argv.clone(), cwd: cwd.into(), shell: shell.to_vec() };
     let contents = serde_json::to_vec(&launch)?;
     let mut file = platform::private_file(&path)?;
     if let Err(error) = file.write_all(&contents) {
@@ -69,7 +68,7 @@ pub(crate) fn remove_launch(state: &Path, name: Option<&str>) {
     }
 }
 
-pub(crate) fn remove_abandoned(state: &Path, active: impl Fn(&str) -> bool) {
+pub(super) fn remove_abandoned(state: &Path, active: impl Fn(&str) -> bool) {
     for item in std::fs::read_dir(state).into_iter().flatten().flatten() {
         let path = item.path();
         let json = path.with_extension("json");
@@ -90,9 +89,6 @@ fn claim(path: &Path) -> io::Result<Launch> {
     let claimed = path.with_extension("claim");
     platform::rename_noreplace(path, &claimed)?;
     let read = || -> io::Result<Launch> {
-        if !platform::private_launch_file(&std::fs::symlink_metadata(&claimed)?) {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
         let file = std::fs::File::open(&claimed)?;
         if !platform::private_launch_file(&file.metadata()?) {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -110,7 +106,7 @@ fn claim(path: &Path) -> io::Result<Launch> {
 }
 
 pub(crate) fn helper(path: &Path, first: bool) -> i32 {
-    let launch = claim(path).ok().filter(|l| platform::resume_user().as_ref() == Some(&l.user));
+    let launch = claim(path).ok();
     if let Some(launch) = &launch
         && !launch.argv.is_empty()
         && std::env::set_current_dir(&launch.cwd).is_ok()
@@ -130,4 +126,21 @@ pub(crate) fn helper(path: &Path, first: bool) -> i32 {
         })
         .unwrap_or_else(platform::own_shell);
     platform::resume_fallback(&shell)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_file_can_only_be_claimed_once() {
+        let dir = std::env::temp_dir().join(format!("hc-resume-{}", platform::random_hex()));
+        platform::private_dir(&dir).unwrap();
+        let path = dir.join(format!("resume-1-{}.json", platform::random_hex()));
+        let contents = Launch { argv: vec!["example".into()], cwd: String::new(), shell: Vec::new() };
+        serde_json::to_writer(platform::private_file(&path).unwrap(), &contents).unwrap();
+        assert_eq!(claim(&path).unwrap().argv, contents.argv);
+        assert!(claim(&path).is_err());
+        std::fs::remove_dir(dir).unwrap();
+    }
 }

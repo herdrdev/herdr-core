@@ -345,16 +345,9 @@ pub(crate) fn restored_environment(
         if named(key, "XPC_FLAGS") {
             return true;
         }
-        [
-            crate::sweep::VAR,
-            crate::sweep::RUNTIME,
-            crate::resume::TOKEN,
-            "HC_LAUNCHD_DIRECT",
-            "HC_LAUNCHD_DETACH",
-            "_HC_RESPONSIBLE_PID",
-        ]
-        .iter()
-        .any(|name| named(key, name))
+        [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
+            .iter()
+            .any(|name| named(key, name))
     };
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();
@@ -392,7 +385,7 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
     }
     #[cfg(target_os = "macos")]
     env.remove("XPC_FLAGS");
-    env.retain(|k, _| !SSH_LOGIN.contains(&k.as_str()) && !resume_env(k.as_ref()));
+    env.retain(|k, _| !SSH_LOGIN.contains(&k.as_str()));
     drop_unreachable_displays(&mut env);
     env
 }

@@ -18,7 +18,7 @@ pub struct Terminal {
     pub labels: BTreeMap<String, String>,
     pub argv: Vec<String>,
     pub cwd: String,
-    /// Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.
+    /// Recover a lost terminal in place using its OSC 7577 resume command or a shell. Ordinary exits and kills are final.
     #[serde(default)]
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,7 +351,7 @@ impl Registry {
             }
             if pending {
                 if let Some(resume) = &mut t.resume {
-                    resume.lost(t.program_started_ms, now_ms);
+                    resume.lost(t.program_started_ms, now_ms, reason == "signaled");
                 }
                 t.schedule_restart(now_ms);
                 t.pid = None;

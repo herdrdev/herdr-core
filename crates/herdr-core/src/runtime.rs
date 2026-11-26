@@ -51,7 +51,6 @@ pub struct State {
     pub docs: std::collections::BTreeMap<String, crate::api::DocGetResult>,
     pub screens: HashMap<u32, Screen>,
     pub relays: HashMap<u32, Relay>,
-    pub(crate) resume_streams: HashMap<u32, crate::resume::Stream>,
     /// One deadline per terminal; image streams replace it instead of spawning timers.
     pub image_deadlines: HashMap<u32, (u64, tokio::time::Instant)>,
     pub viewers: HashMap<u32, Vec<Viewer>>,
@@ -173,12 +172,7 @@ fn finish_reason(killed: bool, stopping: bool, host_shutdown: bool) -> &'static 
 impl Core {
     pub fn start(paths: Paths, info: CoreInfo) -> io::Result<Arc<Core>> {
         let mut reg: Registry = read_state(&paths.state.join("terminals.json"))?;
-        for terminal in reg.terminals.values_mut() {
-            terminal.restart_env.retain(|key, _| !platform::resume_env(key.as_ref()));
-        }
-        crate::resume::remove_abandoned(&paths.state, |name| {
-            reg.terminals.values().any(|t| t.resume.as_ref().and_then(|r| r.launch.as_deref()) == Some(name))
-        });
+        crate::resume::prepare_state(&paths.state, &mut reg);
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
             let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
@@ -508,8 +502,7 @@ impl Core {
             }
             let tail = tails.remove(&id).unwrap_or_default();
             if let Some(resume) = &mut st.reg.terminals.get_mut(&id).expect("adopted").resume {
-                resume.set_root(h.pid);
-                st.resume_streams.insert(id, crate::resume::Stream::at(h.raw_offset));
+                resume.adopt(h.pid, h.raw_offset);
                 self.resume_output(st, id, &tail, now_ms());
             }
             let saved = if handover {
@@ -831,7 +824,6 @@ impl Core {
             v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }
         st.relays.remove(&id);
-        st.resume_streams.remove(&id);
         if let Some(snapshot) = st.screens.remove(&id).and_then(|s| s.snapshot())
             && let Err(e) = write_atomic(&self.snapshot_path(id), &snapshot)
         {
@@ -870,8 +862,6 @@ impl Core {
         // Gone before it is announced: a fresh snapshot for a subscriber that
         // fell behind must not bring it back.
         let Some(was) = st.reg.terminals.remove(&id) else { return };
-        st.resume_streams.remove(&id);
-        crate::resume::remove_launch(&self.paths.state, was.resume.as_ref().and_then(|r| r.launch.as_deref()));
         self.emit_from(st, "removed", id, serde_json::json!({}), Some(&was));
         let _ = std::fs::remove_file(self.snapshot_path(id));
         crate::api::forget_puts(st, |t| t.terminal == id);

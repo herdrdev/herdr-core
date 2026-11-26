@@ -45,7 +45,7 @@ More
   templates                   list templates
   events                      follow changes live
   server start|stop|status|restart
-                              stop parks kept terminals; next core start gives them shells
+                              stop parks kept terminals; next start resumes them or opens shells
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')

@@ -13,7 +13,7 @@ pub(crate) fn resume_user() -> Option<String> {
 }
 
 pub(crate) fn secure_state_dir(path: &Path) -> io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
+    let meta = std::fs::metadata(path)?;
     if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "state directory must belong to this user"));
     }
@@ -85,8 +85,12 @@ pub(crate) fn resume_process(pid: u32) -> ProcessState {
     if info.pbi_status == 5 {
         return ProcessState::Gone; // SZOMB
     }
+    let mut usage: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+    if unsafe { libc::proc_pid_rusage(raw_pid, libc::RUSAGE_INFO_V0, (&raw mut usage).cast()) } != 0 {
+        return ProcessState::Unknown;
+    }
     ProcessState::Alive(ResumeProcess {
-        identity: Identity { pid, start: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec },
+        identity: Identity { pid, start: usage.ri_proc_start_abstime },
         parent: info.pbi_ppid,
         user: info.pbi_uid.to_string(),
     })
@@ -95,47 +99,38 @@ pub(crate) fn resume_process(pid: u32) -> ProcessState {
 pub(crate) fn resume_shell(shell: &[String], helper: &Path, file: &Path, first: bool) -> Option<Vec<String>> {
     let exe = shell.first()?;
     let name = Path::new(exe).file_name()?.to_str()?;
-    let login =
-        cfg!(target_os = "macos") || shell[1..].iter().any(|s| matches!(s.as_str(), "-l" | "-li" | "-il" | "--login"));
     let helper = helper.to_str()?.to_owned();
     let file = file.to_str()?.to_owned();
-    let (startup, interactive) = if login { ("-lic", "-li") } else { ("-ic", "-i") };
-    let mut words = match name {
-        "bash" | "zsh" | "sh" | "dash" => {
-            if !shell[1..].iter().all(|s| matches!(s.as_str(), "-l" | "-i" | "-li" | "-il" | "--login")) {
-                return None;
-            }
-            let script = if first {
-                "exec \"$1\" __resume \"$2\" --first".into()
-            } else {
-                format!("\"$1\" __resume \"$2\"; exec \"$0\" {interactive}")
-            };
-            vec![exe.clone(), startup.into(), script, exe.clone(), helper, file]
+    if !matches!(name, "bash" | "zsh" | "sh" | "dash" | "fish") {
+        let script =
+            if first { "exec \"$1\" __resume \"$2\" --first" } else { "\"$1\" __resume \"$2\"; shift 2; exec \"$@\"" };
+        let mut words = vec!["/bin/sh".into(), "-c".into(), script.into(), "sh".into(), helper, file];
+        if !first {
+            words.extend_from_slice(shell);
         }
-        "fish" => {
-            if !shell[1..].iter().all(|s| matches!(s.as_str(), "-l" | "-i" | "-li" | "-il" | "--login")) {
-                return None;
-            }
-            let script = if first {
-                "exec \"$argv[1]\" __resume \"$argv[2]\" --first".into()
-            } else {
-                format!("\"$argv[1]\" __resume \"$argv[2]\"; exec \"$argv[3]\" {interactive}")
-            };
-            vec![exe.clone(), startup.into(), script, helper, file, exe.clone()]
-        }
-        _ => {
-            let script = if first {
-                "exec \"$1\" __resume \"$2\" --first"
-            } else {
-                "\"$1\" __resume \"$2\"; shift 2; exec \"$@\""
-            };
-            vec!["/bin/sh".into(), "-c".into(), script.into(), "sh".into(), helper, file]
-        }
-    };
-    if !first && !matches!(name, "bash" | "zsh" | "sh" | "dash" | "fish") {
-        words.extend_from_slice(shell);
+        return Some(words);
     }
-    Some(words)
+    if !shell[1..].iter().all(|s| matches!(s.as_str(), "-l" | "-i" | "-li" | "-il" | "--login")) {
+        return None;
+    }
+    let login =
+        cfg!(target_os = "macos") || shell[1..].iter().any(|s| matches!(s.as_str(), "-l" | "-li" | "-il" | "--login"));
+    let (startup, interactive) = if login { ("-lic", "-li") } else { ("-ic", "-i") };
+    Some(if name == "fish" {
+        let script = if first {
+            "exec \"$argv[1]\" __resume \"$argv[2]\" --first".into()
+        } else {
+            format!("\"$argv[1]\" __resume \"$argv[2]\"; exec \"$argv[3]\" {interactive}")
+        };
+        vec![exe.clone(), startup.into(), script, helper, file, exe.clone()]
+    } else {
+        let script = if first {
+            "exec \"$1\" __resume \"$2\" --first".into()
+        } else {
+            format!("\"$1\" __resume \"$2\"; exec \"$0\" {interactive}")
+        };
+        vec![exe.clone(), startup.into(), script, exe.clone(), helper, file]
+    })
 }
 
 pub(crate) fn run_resume(argv: &[String], cwd: &str) -> io::Result<i32> {

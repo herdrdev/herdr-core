@@ -1,4 +1,4 @@
-//! Lost kept records stay live without a holder until a replacement shell starts.
+//! Lost kept terminals stay live without a holder until recovery starts.
 use crate::holder_proto as proto;
 use crate::runtime::{Core, now_ms};
 use crate::terminals::{KEEP_RETRY_MS, Terminal};
@@ -99,18 +99,21 @@ impl Core {
                 .unwrap_or_else(|| {
                     env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
                 });
-            let attempt = t.resume.take().and_then(|resume| resume.prepare(&self.paths.state, id, &shell, &cwd));
-            let resuming = attempt.is_some();
+            let mut resume = crate::resume::Resume::new(&self.paths.state);
+            let attempt = t
+                .resume
+                .take()
+                .filter(|_| resume.is_some())
+                .and_then(|old| old.prepare(&self.paths.state, id, &shell, &cwd));
             let (launch, argv, cwd) = match attempt {
                 Some((file, argv, cwd)) => (Some(file), argv, cwd),
                 None => (None, shell.clone(), cwd),
             };
-            let (env, scope, mut resume) = crate::api::terminal_env(&self, id, &cwd, env);
+            let resuming = launch.is_some();
+            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env, resume.as_ref());
             if let Some(resume) = &mut resume {
                 resume.rearmed = resuming;
                 resume.launch = launch;
-            } else {
-                crate::resume::remove_launch(&self.paths.state, launch.as_deref());
             }
             t.resume = resume;
             t.scope = Some(scope);

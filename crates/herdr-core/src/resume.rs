@@ -2,8 +2,8 @@
 mod launch;
 mod protocol;
 
-pub(crate) use launch::{helper, remove_abandoned, remove_launch};
-pub(crate) use protocol::Stream;
+pub(crate) use launch::{helper, remove_launch};
+use protocol::Stream;
 
 use crate::platform::{self, ProcessState};
 use crate::runtime::{Core, State};
@@ -14,6 +14,18 @@ use std::fmt;
 pub(crate) const TOKEN: &str = "OSC7577_TOKEN";
 const EXIT_GRACE_MS: u64 = 2000;
 const RAPID_LOSS_MS: u64 = 10_000;
+
+pub(crate) fn prepare_state(state: &std::path::Path, registry: &mut crate::terminals::Registry) {
+    if platform::secure_state_dir(state).is_ok() {
+        launch::remove_abandoned(state, |name| {
+            registry.terminals.values().any(|t| t.resume.as_ref().and_then(|r| r.launch.as_deref()) == Some(name))
+        });
+    } else {
+        for terminal in registry.terminals.values_mut() {
+            terminal.resume = None;
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Identity {
@@ -27,6 +39,8 @@ pub(crate) struct Resume {
     user: String,
     root: Option<Identity>,
     words: BTreeMap<u32, Word>,
+    #[serde(skip)]
+    stream: Stream,
     pub launch: Option<String>,
     pub rearmed: bool,
 }
@@ -55,13 +69,15 @@ struct Record {
 }
 
 impl Resume {
-    pub(crate) fn new() -> Option<Self> {
+    pub(crate) fn new(state: &std::path::Path) -> Option<Self> {
         let user = platform::resume_user()?;
+        platform::secure_state_dir(state).ok()?;
         Some(Self {
             token: platform::random_hex(),
             user,
             root: None,
             words: BTreeMap::new(),
+            stream: Stream::default(),
             launch: None,
             rearmed: false,
         })
@@ -78,6 +94,11 @@ impl Resume {
         {
             self.root = Some(p.identity);
         }
+    }
+
+    pub(crate) fn adopt(&mut self, pid: u32, raw_offset: u64) {
+        self.set_root(pid);
+        self.stream = Stream::at(raw_offset);
     }
 
     fn owner(&self, pid: u32) -> Option<(Identity, Vec<Identity>, Option<String>)> {
@@ -112,39 +133,39 @@ impl Resume {
         now: u64,
         find_owner: impl FnOnce(&Self, u32) -> Option<(Identity, Vec<Identity>, Option<String>)>,
     ) -> bool {
+        let len = self.words.len();
+        self.words.retain(|_, word| word.record.is_some() || now.saturating_sub(word.time) <= 60);
+        let pruned = self.words.len() != len;
         let previous = self.words.get(&report.pid);
-        if previous.is_some_and(|word| offset <= word.offset || report.time < word.time) {
-            return false;
+        if previous.map_or(self.words.len() >= 256, |word| offset <= word.offset || report.time < word.time) {
+            return pruned;
         }
-        let owner = report.action.as_ref().and_then(|_| find_owner(self, report.pid));
-        let clear = matches!(report.action, Some(protocol::Action::Clear)) && owner.is_some();
+        let clear = matches!(report.action, Some(protocol::Action::Clear));
         let record = match report.action {
-            Some(protocol::Action::Set { argv, cwd }) => owner.map(|(owner, ancestors, owner_cwd)| Record {
-                owner,
-                ancestors,
-                argv,
-                reported_cwd: cwd,
-                owner_cwd,
-                gone_since: None,
-            }),
+            Some(protocol::Action::Set { argv, cwd }) => {
+                find_owner(self, report.pid).map(|(owner, ancestors, owner_cwd)| Record {
+                    owner,
+                    ancestors,
+                    argv,
+                    reported_cwd: cwd,
+                    owner_cwd,
+                    gone_since: None,
+                })
+            }
             _ => None,
         };
         // Rejecting is a removal, but only accepted reports advance the time gate.
         let accepted = record.is_some() || clear;
         let time = if accepted { report.time } else { previous.map_or(0, |word| word.time) };
-        if self.words.len() >= 256 && previous.is_none() {
-            self.words.retain(|_, word| word.record.is_some() || now.saturating_sub(word.time) <= 60);
-            if self.words.len() >= 256 {
-                return false;
-            }
-        }
         self.words.insert(report.pid, Word { time, offset, record });
         true
     }
 
-    pub(crate) fn lost(&mut self, started: Option<u64>, now: u64) {
+    pub(crate) fn lost(&mut self, started: Option<u64>, now: u64, root_signaled: bool) {
         if self.rearmed && started.is_some_and(|ms| now.saturating_sub(ms) < RAPID_LOSS_MS) {
             self.words.clear();
+        } else if root_signaled && let Some(root) = self.root {
+            self.words.remove(&root.pid);
         }
     }
 
@@ -167,7 +188,7 @@ impl Resume {
             return None;
         }
         let record = self.choice()?;
-        launch::prepare(state, id, shell, cwd, &self.user, record).ok()
+        launch::prepare(state, id, shell, cwd, record).ok()
     }
 
     fn owners(&self) -> impl Iterator<Item = Identity> + '_ {
@@ -195,7 +216,7 @@ impl Core {
         let Some(resume) = &mut t.resume else { return };
         let seconds = now / 1000;
         let mut changed = false;
-        for (offset, bytes) in st.resume_streams.entry(id).or_default().feed(bytes) {
+        for (offset, bytes) in resume.stream.feed(bytes) {
             if let Some(report) = protocol::authenticate(&bytes, resume.token(), seconds) {
                 changed |= resume.apply(offset, report, seconds, Resume::owner);
             }
@@ -261,6 +282,7 @@ mod tests {
             user: "user".into(),
             root: None,
             words: BTreeMap::new(),
+            stream: Stream::default(),
             launch: None,
             rearmed: false,
         }
@@ -311,9 +333,9 @@ mod tests {
 
         set(&mut s, 11, 60, owner, &[]);
         s.rearmed = true;
-        s.lost(Some(60_000), 70_000);
+        s.lost(Some(60_000), 70_000, false);
         assert!(s.choice().is_some());
-        s.lost(Some(60_000), 69_999);
+        s.lost(Some(60_000), 69_999, false);
         assert!(s.choice().is_none());
     }
 

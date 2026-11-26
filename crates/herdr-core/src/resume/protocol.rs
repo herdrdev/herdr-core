@@ -40,7 +40,7 @@ mod tests {
     }
 
     #[test]
-    fn frames_at_every_split_and_only_since_the_string_opener() {
+    fn frames_at_every_split_and_restarts_after_an_unterminated_string() {
         for end in [b"\x07".as_slice(), b"\x1b\\"] {
             let frame = [OPEN, CLEAR, end].concat();
             for split in 0..=frame.len() {
@@ -50,7 +50,8 @@ mod tests {
                 assert_eq!(reports, [(frame.len() as u64, CLEAR.to_vec())]);
             }
             let mut stream = Stream::default();
-            assert!(stream.feed(&[b"\x1b]0;".as_slice(), &frame].concat()).is_empty());
+            let interrupted = [b"output\x1b]0;".as_slice(), &frame].concat();
+            assert_eq!(stream.feed(&interrupted), [(interrupted.len() as u64, CLEAR.to_vec())]);
             assert!(stream.feed(&[OPEN, CLEAR, b"\x18"].concat()).is_empty());
             assert_eq!(stream.feed(&frame).len(), 1);
 
@@ -107,19 +108,20 @@ use std::path::Path;
 const OPEN: &[u8] = b"\x1b]7577;";
 const LIMIT: usize = 8192;
 
-#[derive(Default)]
-pub(crate) struct Stream {
+#[derive(Clone, Default, PartialEq)]
+pub(super) struct Stream {
     offset: u64,
     frame: Frame,
     body: Vec<u8>,
-    escaped: bool,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy, Default, PartialEq)]
 enum Frame {
     #[default]
     Ground,
-    Escape,
+    Escape {
+        report: bool,
+    },
     Osc(usize),
     Body,
     Discard {
@@ -128,57 +130,49 @@ enum Frame {
 }
 
 impl Stream {
-    pub(crate) fn at(offset: u64) -> Self {
+    pub(super) fn at(offset: u64) -> Self {
         Self { offset, ..Self::default() }
     }
 
-    pub(super) fn feed(&mut self, bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    pub(super) fn feed(&mut self, mut bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
         let mut reports = Vec::new();
-        for &byte in bytes {
-            self.offset += 1;
-            match self.frame {
-                Frame::Ground | Frame::Escape => {
-                    self.frame = match (self.frame, byte) {
-                        (_, 0x1b) => Frame::Escape,
-                        (Frame::Escape, b']') => Frame::Osc(2),
-                        (Frame::Escape, b'P' | b'X' | b'^' | b'_') => Frame::Discard { bel: false },
-                        _ => Frame::Ground,
-                    };
-                }
-                frame => {
-                    let st = self.escaped && byte == b'\\';
-                    let bel = byte == 7 && !matches!(frame, Frame::Discard { bel: false });
-                    if st || bel || matches!(byte, 0x18 | 0x1a) {
-                        if (st || bel)
-                            && matches!(frame, Frame::Body)
-                            && OPEN.len() + self.body.len() + if st { 2 } else { 1 } <= LIMIT
-                        {
-                            reports.push((self.offset, std::mem::take(&mut self.body)));
-                        }
-                        self.body.clear();
-                        self.frame = Frame::Ground;
-                        self.escaped = false;
-                    } else {
-                        if self.escaped {
-                            // An apparent opener within another string remains part of that string.
-                            self.frame = Frame::Discard { bel: !matches!(frame, Frame::Discard { bel: false }) };
-                            self.body.clear();
-                        } else if byte != 0x1b {
-                            self.frame = match frame {
-                                Frame::Osc(i) if byte == OPEN[i] && i + 1 == OPEN.len() => Frame::Body,
-                                Frame::Osc(i) if byte == OPEN[i] => Frame::Osc(i + 1),
-                                Frame::Body if OPEN.len() + self.body.len() + 1 < LIMIT => {
-                                    self.body.push(byte);
-                                    Frame::Body
-                                }
-                                Frame::Discard { bel } => Frame::Discard { bel },
-                                _ => Frame::Discard { bel: true },
-                            };
-                        }
-                        self.escaped = byte == 0x1b;
-                    }
-                }
+        loop {
+            if matches!(self.frame, Frame::Ground) {
+                let skip = bytes.iter().position(|&byte| byte == 0x1b).unwrap_or(bytes.len());
+                self.offset += skip as u64;
+                bytes = &bytes[skip..];
             }
+            let Some((&byte, rest)) = bytes.split_first() else { break };
+            bytes = rest;
+            self.offset += 1;
+            let frame = self.frame;
+            if matches!((frame, byte), (Frame::Escape { report: true }, b'\\') | (Frame::Body, 7)) {
+                let terminator_len = if byte == 7 { 1 } else { 2 };
+                if OPEN.len() + self.body.len() + terminator_len <= LIMIT {
+                    reports.push((self.offset, std::mem::take(&mut self.body)));
+                }
+                self.body.clear();
+                self.frame = Frame::Ground;
+                continue;
+            }
+            if matches!(frame, Frame::Escape { .. }) || matches!(byte, 7 | 0x18 | 0x1a) {
+                self.body.clear();
+            }
+            self.frame = match (frame, byte) {
+                (_, 0x1b) => Frame::Escape { report: matches!(frame, Frame::Body) },
+                (Frame::Escape { .. }, b']') => Frame::Osc(2),
+                (Frame::Escape { .. }, b'P' | b'X' | b'^' | b'_') => Frame::Discard { bel: false },
+                (Frame::Ground | Frame::Escape { .. }, _) | (_, 0x18 | 0x1a) => Frame::Ground,
+                (Frame::Discard { bel: false }, _) => frame,
+                (_, 7) => Frame::Ground,
+                (Frame::Osc(i), byte) if byte == OPEN[i] && i + 1 == OPEN.len() => Frame::Body,
+                (Frame::Osc(i), byte) if byte == OPEN[i] => Frame::Osc(i + 1),
+                (Frame::Body, byte) if OPEN.len() + self.body.len() + 1 < LIMIT => {
+                    self.body.push(byte);
+                    Frame::Body
+                }
+                _ => Frame::Discard { bel: true },
+            };
         }
         reports
     }
@@ -218,7 +212,7 @@ fn envelope<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
 }
 
 pub(super) fn authenticate(body: &[u8], token: &str, now: u64) -> Option<Report> {
-    let end = body.len().checked_sub(69)?;
+    let end = body.len().checked_sub(b":mac=".len() + 64)?;
     let (body, suffix) = body.split_at(end);
     let sent = suffix.strip_prefix(b":mac=")?;
     let expected = mac(body, token);

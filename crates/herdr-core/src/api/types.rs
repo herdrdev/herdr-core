@@ -283,8 +283,8 @@ pub struct RunParams {
     #[arg(long)]
     #[serde(default)]
     pub rm: bool,
-    /// Replace lost programs with a shell in place, never re-run the original command.
-    #[arg(long, help = "Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell")]
+    /// Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell.
+    #[arg(long)]
     #[serde(default)]
     pub keep: bool,
     /// Then wait until it is not working, like `terminal.wait`, and return its

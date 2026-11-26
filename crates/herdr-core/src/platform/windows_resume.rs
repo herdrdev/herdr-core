@@ -139,22 +139,9 @@ pub(crate) fn resume_shell(shell: &[String], helper: &Path, file: &Path, first: 
 }
 
 pub(crate) fn run_resume(argv: &[String], cwd: &str) -> io::Result<i32> {
-    let name = Path::new(&argv[0]);
-    let path = if name.is_absolute() {
-        name.is_file().then(|| name.to_owned())
-    } else {
-        let path = std::env::var("PATH").unwrap_or_default();
-        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        super::windows::resolve(&argv[0], &path, &exts)
-    }
-    .ok_or(io::ErrorKind::NotFound)?;
-    // A registered handler is private to this process, unlike SetConsoleCtrlHandler(NULL, TRUE).
-    unsafe extern "system" fn ignore(event: u32) -> i32 {
-        i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
-    }
-    if unsafe { SetConsoleCtrlHandler(Some(ignore), 1) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let path = super::windows::resolve(&argv[0], &path, &exts).ok_or(io::ErrorKind::NotFound)?;
     let path = std::path::absolute(path)?;
     if path.extension().is_some_and(|ext| ["bat", "cmd"].iter().any(|suffix| ext.eq_ignore_ascii_case(suffix)))
         && path.as_os_str().as_encoded_bytes().contains(&b'%')
@@ -162,13 +149,42 @@ pub(crate) fn run_resume(argv: &[String], cwd: &str) -> io::Result<i32> {
         // Command quotes the script path, but cmd.exe still expands percent expressions there.
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let status = std::process::Command::new(path).args(&argv[1..]).env("PWD", cwd).status()?;
-    Ok(status.code().unwrap_or(1))
+    wait_for_program(std::process::Command::new(path).args(&argv[1..]).env("PWD", cwd))
+}
+
+fn wait_for_program(command: &mut std::process::Command) -> io::Result<i32> {
+    // A registered handler is private to this process, unlike SetConsoleCtrlHandler(NULL, TRUE).
+    unsafe extern "system" fn ignore(event: u32) -> i32 {
+        i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
+    }
+    if unsafe { SetConsoleCtrlHandler(Some(ignore), 1) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let status = command.status();
+    unsafe { SetConsoleCtrlHandler(Some(ignore), 0) };
+    Ok(status?.code().unwrap_or(1))
 }
 
 pub(crate) fn resume_fallback(shell: &[String]) -> i32 {
     shell
         .split_first()
-        .and_then(|(exe, args)| std::process::Command::new(exe).args(args).status().ok()?.code())
+        .and_then(|(exe, args)| wait_for_program(std::process::Command::new(exe).args(args)).ok())
         .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn powershell_resume_quotes_both_paths_as_literals() {
+        let helper = Path::new(r"C:\O'Name\hc.exe");
+        let file = Path::new(r"C:\‘folder’\$x.json");
+        let argv = resume_shell(&["pwsh.exe".into()], helper, file, false).unwrap();
+        assert_eq!(&argv[..3], ["pwsh.exe", "-NoExit", "-Command"]);
+        assert_eq!(
+            argv[3].strip_prefix(PROMPT_HOOK),
+            Some(r"; & 'C:\O''Name\hc.exe' __resume 'C:\‘‘folder’’\$x.json'")
+        );
+    }
 }

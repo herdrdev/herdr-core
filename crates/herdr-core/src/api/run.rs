@@ -110,9 +110,7 @@ pub(super) async fn start(
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
-    let mut restart_env = p.env;
-    restart_env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
-    let env = child_env(crate::platform::program_env().await, restart_env.clone());
+    let env = child_env(crate::platform::program_env().await, p.env.clone());
     let identity = format!(
         "{} {}",
         env.get("TERM_PROGRAM").map_or("", String::as_str),
@@ -168,11 +166,12 @@ pub(super) async fn start(
             display.apply(&mut screen);
         }
         st.screens.insert(id, screen);
-        let (env, scope, resume) = terminal_env(core, id, &cwd, env);
+        let resume = crate::resume::Resume::new(&core.paths.state);
+        let (env, scope) = terminal_env(core, id, &cwd, env, resume.as_ref());
         let terminal = st.reg.terminals.get_mut(&id).expect("just created");
         terminal.scope = Some(scope);
         terminal.resume = resume;
-        terminal.restart_env = restart_env;
+        terminal.restart_env = p.env;
         terminal.holder = Some(instance);
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
@@ -218,18 +217,18 @@ pub(crate) fn terminal_env(
     id: u32,
     cwd: &str,
     mut env: BTreeMap<String, String>,
-) -> (BTreeMap<String, String>, String, Option<crate::resume::Resume>) {
+    resume: Option<&crate::resume::Resume>,
+) -> (BTreeMap<String, String>, String) {
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
     env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
     let scope = crate::sweep::token();
     env.insert(crate::sweep::VAR.into(), scope.clone());
     // Preserve the requested spelling, including symlinks.
     env.insert("PWD".into(), cwd.into());
-    let resume = crate::resume::Resume::new();
-    if let Some(resume) = &resume {
+    if let Some(resume) = resume {
         env.insert(crate::resume::TOKEN.into(), resume.token().into());
     }
-    (env, scope, resume)
+    (env, scope)
 }
 
 /// The core's environment with its own terminal identity and explicit client overrides.
@@ -261,6 +260,16 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn client_environment_cannot_override_the_resume_token() {
+        let mut overrides = std::collections::BTreeMap::from([(crate::resume::TOKEN.into(), "client".into())]);
+        if cfg!(windows) {
+            overrides.insert("osc7577_token".into(), "client".into());
+        }
+        let env = super::child_env(Default::default(), overrides);
+        assert!(!env.keys().any(|key| key.eq_ignore_ascii_case(crate::resume::TOKEN)));
+    }
+
     #[test]
     fn a_long_output_keeps_whole_lines_from_its_end_even_mid_character() {
         let text = "é".repeat(30_000) + "\nlast line";
