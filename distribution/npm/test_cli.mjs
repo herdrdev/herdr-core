@@ -6,9 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { ensureBinary, parseManifestTarget, resolveTarget } from "./bin/herdr-core.js";
+import {
+  ensureBinary,
+  parseManifestTarget,
+  resolveTarget,
+  verifyDarwinSignature,
+} from "./bin/herdr-core.js";
 
 test("resolveTarget maps supported OS/arch pairs and rejects unsupported ones", () => {
   assert.equal(resolveTarget("darwin", "arm64"), "macos-aarch64");
@@ -18,7 +23,27 @@ test("resolveTarget maps supported OS/arch pairs and rejects unsupported ones", 
   assert.throws(() => resolveTarget("win32", "x64"), /Unsupported platform/);
 });
 
-test("ensureBinary verifies manifest SHA-256, extracts herdr-core + notices, caches, and rejects tampered archives", async () => {
+test("package.json bin manifest resolves unambiguously via npm exec's getBinFromManifest", async () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.bin["herdr-core"], "bin/herdr-core.js");
+  assert.equal(pkg.bin.hc, "bin/herdr-core.js");
+
+  // Locate npm's own libnpmexec/get-bin-from-manifest.js if installed alongside node.
+  const npmBin = execFileSync("which", ["npm"], { encoding: "utf8" }).trim();
+  const npmReal = fs.realpathSync(npmBin);
+  const npmRoot = path.resolve(path.dirname(npmReal), "..");
+  const candidates = [
+    path.join(npmRoot, "node_modules", "libnpmexec", "lib", "get-bin-from-manifest.js"),
+    path.join(npmRoot, "lib", "node_modules", "npm", "node_modules", "libnpmexec", "lib", "get-bin-from-manifest.js"),
+  ];
+  const helperPath = candidates.find((candidate) => fs.existsSync(candidate));
+  assert.ok(helperPath, "expected npm's libnpmexec get-bin-from-manifest.js");
+  const mod = await import(pathToFileURL(helperPath).href);
+  const getBinFromManifest = mod.default || mod;
+  assert.ok(["herdr-core", "hc"].includes(getBinFromManifest(pkg)));
+});
+
+test("ensureBinary verifies manifest SHA-256, Darwin codesign, caching, tampered archives, and CLI aliases", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hc-npm-test-"));
   const target = resolveTarget();
   const version = "0.99.0";
@@ -90,12 +115,61 @@ test("ensureBinary verifies manifest SHA-256, extracts herdr-core + notices, cac
     );
     assert.equal(fs.existsSync(path.join(badCache, version, target, "herdr-core")), false);
 
+    // Official macOS release checks Apple Developer ID signature before publishing to cache.
+    const unsignedDarwinArchiveName = "herdr-core-macos-aarch64.tar.gz";
+    const fakeOfficialFetch = async (url) => {
+      if (url === `https://releases.herdr.dev/core/${version}/manifest.json`) {
+        const body = Buffer.from(
+          JSON.stringify({
+            version,
+            generation: 1,
+            notes: `herdr-core ${version}`,
+            targets: {
+              "macos-aarch64": {
+                url: `https://releases.herdr.dev/core/${version}/${unsignedDarwinArchiveName}`,
+                sha256: sha,
+              },
+            },
+          })
+        );
+        return { ok: true, status: 200, arrayBuffer: async () => body };
+      }
+      if (url === `https://releases.herdr.dev/core/${version}/${unsignedDarwinArchiveName}`) {
+        return { ok: true, status: 200, arrayBuffer: async () => tarBytes };
+      }
+      return { ok: false, status: 404, arrayBuffer: async () => Buffer.alloc(0) };
+    };
+    const failingCodesign = path.join(tmp, "fake-codesign");
+    fs.writeFileSync(failingCodesign, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const codesignBin = process.platform === "darwin" && fs.existsSync("/usr/bin/codesign")
+      ? "/usr/bin/codesign"
+      : failingCodesign;
+
+    const unsignedCache = path.join(tmp, "unsigned-cache");
+    await assert.rejects(
+      ensureBinary({
+        version,
+        cacheRoot: unsignedCache,
+        releasesBaseURL: "https://releases.herdr.dev",
+        platform: "darwin",
+        arch: "arm64",
+        fetchImpl: fakeOfficialFetch,
+        codesignBin,
+      }),
+      /Not a signed Herdr release/
+    );
+    assert.equal(fs.existsSync(path.join(unsignedCache, version, "macos-aarch64", "herdr-core")), false);
+    assert.throws(
+      () => verifyDarwinSignature(path.join(buildDir, "herdr-core"), { codesignBin }),
+      /Not a signed Herdr release/
+    );
+
     assert.throws(
       () => parseManifestTarget({ version: "0.1.0", targets: {} }, version, target),
       /Manifest version mismatch/
     );
 
-    // Verify both bin/herdr-core.js and bin/hc.js forward arguments and fatal signals.
+    // Verify both invoked bin names (herdr-core.js and symlinked hc) forward arguments and fatal signals.
     const pkgVersion = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
     const cliBinDir = path.join(cacheRoot, pkgVersion, target);
     fs.mkdirSync(cliBinDir, { recursive: true });
@@ -105,8 +179,13 @@ test("ensureBinary verifies manifest SHA-256, extracts herdr-core + notices, cac
       { mode: 0o755 }
     );
 
-    for (const rel of ["./bin/herdr-core.js", "./bin/hc.js"]) {
-      const entry = fileURLToPath(new URL(rel, import.meta.url));
+    const launcher = fileURLToPath(new URL("./bin/herdr-core.js", import.meta.url));
+    const hcSymlinkDir = path.join(tmp, "bin-links");
+    fs.mkdirSync(hcSymlinkDir, { recursive: true });
+    const hcLink = path.join(hcSymlinkDir, "hc");
+    fs.symlinkSync(launcher, hcLink);
+
+    for (const entry of [launcher, hcLink]) {
       const runRes = spawnSync(process.execPath, [entry, "list", "--json"], {
         env: { ...process.env, HC_NPM_CACHE_DIR: cacheRoot },
         encoding: "utf8",
@@ -126,13 +205,13 @@ test("ensureBinary verifies manifest SHA-256, extracts herdr-core + notices, cac
   }
 });
 
-test("homebrew-formula.sh renders Formula/herdr-core.rb from manifest.json and fails closed on missing targets", () => {
+test("homebrew-formula.sh renders Formula/herdr-core.rb from manifest.json and fails closed on invalid URLs or missing targets", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hc-brew-test-"));
   const scriptPath = fileURLToPath(new URL("../homebrew-formula.sh", import.meta.url));
   const version = "0.1.22";
   const sha = (ch) => ch.repeat(64);
   const manifestPath = path.join(tmp, "manifest.json");
-  const fullManifest = {
+  const makeManifest = () => ({
     version,
     generation: 1,
     notes: `herdr-core ${version}`,
@@ -142,25 +221,35 @@ test("homebrew-formula.sh renders Formula/herdr-core.rb from manifest.json and f
       "linux-aarch64": { url: `https://releases.herdr.dev/core/${version}/herdr-core-linux-aarch64.tar.gz`, sha256: sha("c") },
       "linux-x86_64": { url: `https://releases.herdr.dev/core/${version}/herdr-core-linux-x86_64.tar.gz`, sha256: sha("d") },
     },
-  };
+  });
   try {
-    fs.writeFileSync(manifestPath, JSON.stringify(fullManifest, null, 2));
-    const formula = execFileSync("sh", [scriptPath, version, manifestPath], { encoding: "utf8" });
+    fs.writeFileSync(manifestPath, JSON.stringify(makeManifest(), null, 2));
+    const formula = execFileSync(scriptPath, [version, manifestPath], { encoding: "utf8" });
     assert.match(formula, /class HerdrCore < Formula/);
     assert.match(formula, new RegExp(`sha256 "${sha("a")}"`));
     assert.match(formula, new RegExp(`sha256 "${sha("d")}"`));
     assert.match(formula, /bin\.install_symlink "herdr-core" => "hc"/);
 
     // Version mismatch fails closed with empty stdout.
-    const mismatch = spawnSync("sh", [scriptPath, "0.2.0", manifestPath], { encoding: "utf8" });
+    const mismatch = spawnSync(scriptPath, ["0.2.0", manifestPath], { encoding: "utf8" });
     assert.notEqual(mismatch.status, 0);
     assert.equal(mismatch.stdout, "");
 
+    // Invalid or non-HTTPS URL fails closed with empty stdout.
+    for (const badURL of ["not-a-url", "http://releases.herdr.dev/core/0.1.22/herdr-core.tar.gz", "https://releases.herdr.dev/core/0.1.22/a.tar.gz#frag"]) {
+      const bad = makeManifest();
+      bad.targets["macos-aarch64"].url = badURL;
+      fs.writeFileSync(manifestPath, JSON.stringify(bad, null, 2));
+      const badRes = spawnSync(scriptPath, [version, manifestPath], { encoding: "utf8" });
+      assert.notEqual(badRes.status, 0);
+      assert.equal(badRes.stdout, "");
+    }
+
     // Missing target fails closed with empty stdout.
-    delete fullManifest.targets["linux-arm64"];
-    delete fullManifest.targets["linux-aarch64"];
-    fs.writeFileSync(manifestPath, JSON.stringify(fullManifest, null, 2));
-    const incomplete = spawnSync("sh", [scriptPath, version, manifestPath], { encoding: "utf8" });
+    const incompleteManifest = makeManifest();
+    delete incompleteManifest.targets["linux-aarch64"];
+    fs.writeFileSync(manifestPath, JSON.stringify(incompleteManifest, null, 2));
+    const incomplete = spawnSync(scriptPath, [version, manifestPath], { encoding: "utf8" });
     assert.notEqual(incomplete.status, 0);
     assert.equal(incomplete.stdout, "");
   } finally {
