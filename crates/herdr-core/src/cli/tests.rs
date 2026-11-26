@@ -71,6 +71,25 @@ fn human_folders_follow_the_foreground_but_json_keeps_the_launch_folder() {
 }
 
 #[test]
+fn windows_paths_show_their_program_and_last_folder_like_unix_ones() {
+    let t = |program: &str, cwd: &str| json!({"address": "t1", "argv": [program], "cwd": cwd});
+    for (program, cwd, name, last) in [
+        (r"C:\Program Files\PowerShell\7\pwsh.exe", r"C:\Users\me\proj", "pwsh.exe", "proj"),
+        (r"C:\Windows\System32\cmd.exe", r"C:\Users\me\proj\", "cmd.exe", "proj"),
+        ("C:/tools/pi.exe", r"C:\Users/me\proj/", "pi.exe", "proj"),
+        ("/usr/bin/bash", "/home/me/proj/", "bash", "proj"),
+        ("pi", "proj", "pi", "proj"),
+        ("pi", "/", "pi", "/"),
+        ("pi", r"C:\", "pi", "C:"),
+        ("", "", "", ""),
+    ] {
+        let t = t(program, cwd);
+        assert_eq!((agent(&t), folder(&t)), (name.into(), last.into()), "{program} in {cwd}");
+        assert_eq!(short(&t)["agent"], name, "json keeps the program name too");
+    }
+}
+
+#[test]
 fn get_keeps_an_unsent_first_message_visible_to_people() {
     let mut t = json!({"address": "t1", "argv": ["pi"], "state": "live"});
     assert!(!describe(&t).contains("first message"));
