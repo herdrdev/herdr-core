@@ -95,6 +95,67 @@ async fn a_send_on_an_already_closed_line_fails_without_waiting() {
     }
 }
 
+// A transport can lose its request pipe while its response pipe stays open:
+// the line must end then, not wait for output EOF or the silence timeout.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_writer_ends_the_line_even_while_its_output_stays_open() {
+    use tokio::io::AsyncReadExt;
+    let root = crate::test_tmp().join(format!("hc-writer-{}", crate::platform::random_hex()));
+    let paths = Paths {
+        socket: root.join("core.sock"),
+        holder_socket: root.join("holder.sock"),
+        state: root.clone(),
+        config: root.join("config.toml"),
+    };
+    paths.create_dirs().unwrap();
+    let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+    let machine: Machine = serde_json::from_value(json!({
+        "name": "away", "target": "away", "id": "away", "host": "away",
+        "version": "test", "session": null
+    }))
+    .unwrap();
+    // Stdin closed, stdout still open and silent.
+    let mut child = tokio::process::Command::new("/bin/sh")
+        .args(["-c", "exec 0<&-; printf ready; exec sleep 30"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+    let mut ready = [0; 5];
+    stdout.read_exact(&mut ready).await.unwrap();
+    let dialed = crate::machines::Dialed {
+        stdin: child.stdin.take().unwrap(),
+        stdout,
+        stderr: child.stderr.take().unwrap(),
+        child,
+        hello: json!({}),
+    };
+    let mut holding = Box::pin(hold(&core, &machine, dialed));
+    tokio::select! {
+        biased;
+        () = &mut holding => panic!("its output is still open"),
+        () = std::future::ready(()) => {}
+    }
+    let line = match core.lock().lines.get("away") {
+        Some(LineState::Connected(line)) => line.clone(),
+        _ => panic!("hold publishes the line before reading frames"),
+    };
+    let call = line.call("away", "doc.get", json!({"name": "test"}), Duration::from_secs(30));
+    let ended = tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(&mut holding, call).1 }).await;
+    let connected = matches!(core.lock().lines.get("away"), Some(LineState::Connected(_)));
+    // Clean up first so a failing run leaves no child or scratch state behind.
+    drop(holding);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+    let called = ended.expect("a failed writer must end the line without waiting for output EOF or silence");
+    assert!(called.unwrap_err().message.contains("lost the line"));
+    assert!(!connected, "a dead line must not stay advertised as connected");
+}
+
 #[test]
 fn automatic_input_requires_support_at_every_hop() {
     for features in [json!([]), json!(["automatic_input"])] {
