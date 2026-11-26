@@ -239,6 +239,11 @@ fn a_restart_does_not_inherit_a_parent_panes_resume_token() {
     use std::ffi::{OsStr, OsString};
     let mut s = Session::new();
     s.env.push(("OSC7577_TOKEN".into(), "dummy-parent-token".into()));
+    if cfg!(target_os = "linux") {
+        let core = s.json(&["server", "start"])["pid"].as_u64().unwrap();
+        let env = std::fs::read(format!("/proc/{core}/environ")).unwrap();
+        assert!(!env.split(|byte| *byte == 0).any(|entry| entry.starts_with(b"OSC7577_TOKEN=")));
+    }
     let handoff = saved_restart(&s);
     let mut note: serde_json::Value = serde_json::from_slice(&handoff).unwrap();
     let vars: Vec<(OsString, OsString)> = serde_json::from_value(note["vars"].clone()).unwrap();

@@ -134,7 +134,7 @@ mod tests {
         #[cfg(unix)]
         let base = std::env::temp_dir();
         #[cfg(windows)]
-        let base = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let base = platform::resume_profile().unwrap();
         let dir = base.join(format!("hc-resume-{}", platform::random_hex()));
         platform::private_dir(&dir).unwrap();
         let path = dir.join(format!("resume-1-{}.json", platform::random_hex()));

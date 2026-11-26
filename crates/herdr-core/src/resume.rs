@@ -227,7 +227,10 @@ impl Core {
         for (offset, bytes) in resume.stream.feed(bytes) {
             if let Some(report) = protocol::authenticate(&bytes, resume.token(), seconds) {
                 if platform::secure_state_dir(&self.paths.state).is_err() {
-                    break;
+                    let launch = t.resume.take().and_then(|resume| resume.launch);
+                    remove_launch(&self.paths.state, launch.as_deref());
+                    self.save(st);
+                    return;
                 }
                 changed |= resume.apply(offset, report, seconds, Resume::owner);
             }

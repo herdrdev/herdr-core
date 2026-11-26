@@ -206,6 +206,26 @@ fn a_shared_state_directory_disables_resume_without_changing_its_mode() {
     assert_eq!(log.matches("OSC 7577 resume disabled").count(), 1, "{log}");
 }
 
+#[test]
+fn a_pane_discards_its_resume_record_when_state_becomes_shared() {
+    if !can_resume() {
+        return;
+    }
+    let f = Fixture::new(bash());
+    let s = &f.session;
+    let t = f.start("replay-clear", true);
+    wait_until("saved command", || f.has_word(&t));
+    let core = s.json(&["server", "status"])["pid"].clone();
+    fs::set_permissions(f.state(), fs::Permissions::from_mode(0o750)).unwrap();
+    fs::write(s.root.join("trigger"), b"").unwrap();
+    wait_until("the core discarded the pane's resume state", || f.reg_record(&t)["resume"].is_null());
+    fs::set_permissions(f.state(), fs::Permissions::from_mode(0o700)).unwrap();
+    f.holder_loss(&t);
+    f.verify_shell(&t);
+    assert!(!s.root.join("resumed").exists());
+    assert_eq!(s.json(&["server", "status"])["pid"], core);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_surviving_owner_is_not_started_a_second_time() {

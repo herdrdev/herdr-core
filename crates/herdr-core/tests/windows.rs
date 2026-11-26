@@ -14,6 +14,22 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
 
 #[test]
+fn resume_helper_checks_the_account_profile_and_keeps_the_pane_environment() {
+    let s = Session::new();
+    let profile = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+    let dir = profile.join(format!("hc-{}", s.name));
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("resume-1-0123456789abcdef0123456789abcdef.json");
+    let launch = json!({"argv": ["cmd.exe", "/d", "/c", "set USERPROFILE"], "cwd": s.root, "shell": []});
+    std::fs::write(&file, serde_json::to_vec(&launch).unwrap()).unwrap();
+    let override_profile = r"C:\hc fixture\pane profile";
+    let out = Command::new(BIN).args(["__resume"]).arg(&file).env("USERPROFILE", override_profile).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains(override_profile), "{out:?}");
+}
+
+#[test]
 fn via_runs_without_a_console_and_passes_the_remote_line_whole() {
     let s = Session::new();
     std::fs::create_dir_all(s.root.join("via dir")).unwrap();
