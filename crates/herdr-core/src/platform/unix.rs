@@ -158,7 +158,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "freebsd"))))]
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -168,6 +168,11 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
             to.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
+    };
+    #[cfg(target_os = "freebsd")]
+    let result = unsafe {
+        // FreeBSD 14 has renameat2(2); it returns EEXIST like the Linux syscall.
+        libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE)
     };
     #[cfg(target_os = "macos")]
     let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
@@ -351,7 +356,7 @@ fn socket_is_live(path: &Path, abstract_socket: bool) -> bool {
     let length =
         (std::mem::offset_of!(libc::sockaddr_un, sun_path) + prefix + name.len() + usize::from(!abstract_socket))
             as libc::socklen_t;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
         address.sun_len = length as u8;
     }
@@ -455,6 +460,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "freebsd")]
+    fn a_set_hostuuid_is_the_identity_and_an_unset_one_is_none() {
+        assert_eq!(
+            hostuuid_id(b"06f0d638-4ded-4e20-a302-a1b2c3d4e5f6\0"),
+            Some("06f0d638-4ded-4e20-a302-a1b2c3d4e5f6".into())
+        );
+        // The guard between the sysctl's NUL-terminated zeros and "no identity":
+        // this jail's exact value, which must never count as a machine.
+        assert_eq!(hostuuid_id(b"00000000-0000-0000-0000-000000000000\0"), None);
+        assert_eq!(hostuuid_id(b"\0"), None);
+        assert_eq!(hostuuid_id(b""), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "freebsd")]
+    fn moving_onto_an_existing_name_keeps_it() {
+        let scratch = dir("noreplace");
+        std::fs::write(scratch.join("from"), "from").unwrap();
+        std::fs::write(scratch.join("taken"), "taken").unwrap();
+        let error = rename_noreplace(&scratch.join("from"), &scratch.join("taken")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(scratch.join("taken")).unwrap(), "taken", "kept as it was");
+        assert!(scratch.join("from").exists());
+        rename_noreplace(&scratch.join("from"), &scratch.join("fresh")).unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("fresh")).unwrap(), "from");
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
     fn an_uncertain_socket_error_keeps_the_display() {
         let runtime = dir("uncertain-socket");
         std::fs::write(runtime.join("file"), "").unwrap();
@@ -529,7 +563,8 @@ pub async fn exited(child: &mut tokio::process::Child) {
     let _ = tokio::task::spawn_blocking(move || {
         loop {
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            let done = unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0;
+            let done =
+                unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0;
             if done || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                 return;
             }
@@ -598,11 +633,35 @@ pub fn machine_id() -> Option<String> {
         let line = text.lines().find(|l| l.contains("\"IOPlatformUUID\""))?;
         line.rsplit('"').nth(1).map(String::from)
     }
-    #[cfg(not(target_os = "macos"))]
-    std::fs::read_to_string("/etc/machine-id")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s != "uninitialized")
+    #[cfg(target_os = "freebsd")]
+    {
+        // FreeBSD's kernel host UUID, populated from /etc/hostid (or SMBIOS)
+        // at boot; all zeros in an unconfigured jail, which counts as none.
+        let mut mib = [libc::CTL_KERN, libc::KERN_HOSTUUID];
+        let mut buf = [0u8; 72];
+        let mut size = buf.len() as libc::size_t;
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 2, buf.as_mut_ptr().cast(), &mut size, std::ptr::null(), 0) } != 0 {
+            return None;
+        }
+        hostuuid_id(&buf[..size])
+    }
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "freebsd"))))]
+    {
+        std::fs::read_to_string("/etc/machine-id")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "uninitialized")
+    }
+}
+
+/// A FreeBSD machine identity from the kernel's host UUID bytes: the
+/// sysctl returns it NUL-terminated, and an unset box (or jail) is all
+/// zeros, which is no identity.
+#[cfg(target_os = "freebsd")]
+fn hostuuid_id(bytes: &[u8]) -> Option<String> {
+    const ZERO: &str = "00000000-0000-0000-0000-000000000000";
+    let id = std::str::from_utf8(bytes).ok()?.trim_end_matches('\0').trim();
+    (!id.is_empty() && id != ZERO && id != "0").then(|| id.to_string())
 }
 
 /// Identity of this boot, not just the machine that owns the disk.
@@ -629,7 +688,7 @@ pub fn boot_id() -> io::Result<Option<String>> {
         }
         Ok(Some(value.into()))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     {
         let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
         let value = value.trim();
@@ -637,6 +696,20 @@ pub fn boot_id() -> io::Result<Option<String>> {
             return Err(io::Error::other("boot identity is empty"));
         }
         Ok(Some(value.into()))
+    }
+    #[cfg(target_os = "freebsd")]
+    {
+        // This boot's start time; the closest FreeBSD has to Linux's boot_id.
+        let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
+        let mut boot = libc::timeval { tv_sec: 0, tv_usec: 0 };
+        let mut size = std::mem::size_of_val(&boot);
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 2, (&raw mut boot).cast(), &mut size, std::ptr::null(), 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if boot.tv_sec == 0 && boot.tv_usec == 0 {
+            return Err(io::Error::other("boot identity is empty"));
+        }
+        Ok(Some(format!("{}.{}", boot.tv_sec, boot.tv_usec)))
     }
 }
 

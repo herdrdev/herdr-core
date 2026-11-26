@@ -31,10 +31,7 @@ fn pid_in(s: &Session, file: &str) -> Option<i64> {
 
 /// Alive and not a zombie.
 fn running(pid: i64) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
-        Err(_) => cfg!(target_os = "macos") && pid_alive(pid),
-    }
+    pid_running(pid)
 }
 
 fn started(s: &Session, files: &[&str]) -> Vec<i64> {

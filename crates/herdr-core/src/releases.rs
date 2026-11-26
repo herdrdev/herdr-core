@@ -76,7 +76,7 @@ fn sha256(file: &Path) -> Option<String> {
 fn sha256(file: &Path) -> Option<String> {
     let run =
         |cmd: &str, args: &[&str]| Command::new(cmd).args(args).arg(file).output().ok().filter(|o| o.status.success());
-    let out = run("sha256sum", &[]).or_else(|| run("shasum", &["-a", "256"]))?;
+    let out = run("sha256sum", &[]).or_else(|| run("shasum", &["-a", "256"])).or_else(|| run("sha256", &["-q"]))?;
     String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(String::from)
 }
 

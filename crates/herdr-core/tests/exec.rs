@@ -34,10 +34,7 @@ fn pid_in(s: &Session, file: &str) -> i64 {
 }
 
 fn running(pid: i64) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
-        Err(_) => cfg!(target_os = "macos") && pid_alive(pid),
-    }
+    pid_running(pid)
 }
 
 fn gone(pid: i64) {

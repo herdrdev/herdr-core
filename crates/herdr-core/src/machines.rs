@@ -415,12 +415,14 @@ async fn dial_once(
     }
 }
 
-/// `uname -sm` as this binary names platforms: `linux x86_64`, `macos aarch64`.
+/// `uname -sm` as this binary names platforms: `linux x86_64`, `macos aarch64`,
+/// `freebsd x86_64`.
 fn platform(uname: &str) -> String {
     let mut words = uname.split_whitespace();
     let os = match words.next() {
         Some("Linux") => "linux",
         Some("Darwin") => "macos",
+        Some("FreeBSD") => "freebsd",
         Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") => "windows",
         other => other.unwrap_or("?"),
     };
