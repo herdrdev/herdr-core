@@ -2,6 +2,43 @@ use super::*;
 use serde_json::{Value, json};
 
 #[tokio::test(start_paused = true)]
+async fn title_events_go_out_at_most_twice_a_second_and_the_last_title_always_follows() {
+    let (core, root) = test_core();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        id
+    };
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    core.subscribe(&mut core.lock(), crate::events::Filter::default(), crate::events::Sink::Waiter(tx));
+    let timer = tokio::spawn(core.clone().send_due_titles());
+    // A spinner in the title: a new one every frame for a second.
+    let mut current = Vec::new();
+    for i in 0..30 {
+        core.output(&mut core.lock(), id, format!("\x1b]2;spin {i}\x07").as_bytes());
+        current.push(core.lock().reg.terminals[&id].title == format!("spin {i}"));
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut titles = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event["type"] == "title" {
+            titles.push(event["data"]["title"].as_str().unwrap().to_string());
+        }
+    }
+    timer.abort();
+    let _ = timer.await;
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(current.iter().all(|c| *c), "the record has every title at once");
+    assert!(titles.len() <= 3, "30 titles in a second: {titles:?}");
+    assert_eq!(titles.first().map(String::as_str), Some("spin 0"), "a first change goes out at once");
+    assert_eq!(titles.last().map(String::as_str), Some("spin 29"), "the latest title always follows");
+}
+
+#[tokio::test(start_paused = true)]
 async fn expiring_an_ended_terminals_image_wait_does_not_recreate_its_gate() {
     let (core, root) = test_core();
     core.lock().image_deadlines.insert(1, (1, tokio::time::Instant::now()));

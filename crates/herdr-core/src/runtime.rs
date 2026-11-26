@@ -42,6 +42,7 @@ pub struct Core {
     dirty: std::sync::atomic::AtomicBool,
     save_due: Notify,
     pub(crate) image_due: Notify,
+    pub(crate) title_due: Notify,
     registry_writer: RegistryWriter,
 }
 
@@ -73,6 +74,9 @@ pub struct State {
     /// When each terminal last printed anything, and how many times.
     pub last_output: HashMap<u32, Instant>,
     pub output_seq: HashMap<u32, u64>,
+    /// When each terminal's last `title` event went out, and when a held-back one is due.
+    pub title_sent: HashMap<u32, tokio::time::Instant>,
+    pub title_due: HashMap<u32, tokio::time::Instant>,
     /// Terminals a read is scrolling right now (viewers paused).
     pub stitching: HashSet<u32>,
     /// The last stitched read per terminal, good while it prints nothing:
@@ -202,6 +206,7 @@ impl Core {
             dirty: Default::default(),
             save_due: Notify::new(),
             image_due: Notify::new(),
+            title_due: Notify::new(),
         });
         core.attach_all()?;
         Ok(core)
