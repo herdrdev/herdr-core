@@ -275,9 +275,17 @@ fn a_lost_holder_takes_its_programs_with_it() {
     let s = Session::new();
     let t = run(&s, &format!("{} exec {}", stubborn(&s, "detached", true), python(&s, "leader", false, false)));
     let pids = started(&s, &["leader", "detached"]);
-    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
-    unsafe { libc::kill(holder as i32, libc::SIGKILL) };
+    let status = s.json(&["server", "status"]);
+    let holder = &status["holder"];
+    let instance = holder["instance"].as_str().unwrap();
+    let pid = holder["pid"].as_i64().unwrap() as i32;
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
     wait_until("holder lost", || s.json(&["get", &t])["reason"] == "holder_lost");
+    wait_until(&format!("holder {instance} EOF in core.log"), || {
+        let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
+        log.lines()
+            .any(|line| line.contains(instance) && line.contains("EOF") && line.ends_with("holder_lost count: 1"))
+    });
     gone(&pids);
 }
 

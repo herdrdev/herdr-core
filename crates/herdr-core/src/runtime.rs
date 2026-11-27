@@ -601,33 +601,43 @@ impl Core {
     fn read_holder(self: Arc<Self>, mut stream: UnixStream, instance: String, socket: PathBuf) {
         let ended =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.holder_frames(&mut stream, &instance)));
-        if matches!(ended, Ok(Ok(true))) {
-            return;
-        }
+        let (mut cause, read_failed) = match ended {
+            Ok(Ok(true)) => {
+                let _ = writeln!(io::stderr(), "core: holder {instance} closed its link after BYE");
+                return;
+            }
+            Ok(Ok(false)) => ("EOF".into(), false),
+            Ok(Err(e)) => (format!("read error: {e}"), true),
+            Err(_) => ("panic".into(), true),
+        };
         // Never leave the link open with nobody reading: the holder would wait on us.
         let _ = stream.shutdown(std::net::Shutdown::Both);
         // Only our reading failed (a panic, a bad frame): a holder still there takes us
         // back. Not while stopping: the goodbye holds `holder_start` until this link ends.
         let stopping = || self.lock().stopping || self.restart.load(std::sync::atomic::Ordering::SeqCst);
-        let mut relink = !matches!(ended, Ok(Ok(false))) && !stopping();
-        let _starting = relink.then(|| self.holder_start.lock().unwrap_or_else(|p| p.into_inner()));
+        let mut relink = read_failed && !stopping();
+        let starting = relink.then(|| self.holder_start.lock().unwrap_or_else(|p| p.into_inner()));
         relink &= !stopping(); // a stop that began meanwhile
         let mut st = self.lock();
         let Some(at) = st.holders.iter().position(|l| l.instance == instance) else { return };
         // Kept to the end: dropping it wakes a goodbye, which must find the sweep below counted.
         let link = st.holders.remove(at);
         let current = link.current;
-        if relink {
+        let link = if relink {
             drop(st);
             // Fully closed first (its writer holds a copy): an older holder stuck
             // writing to us only lets go when our end is gone, not just shut down.
             drop(link);
             drop(stream);
-            if let Ok(stream) = platform::connect(&socket) {
-                return self.relink(stream, &instance, &socket);
+            match platform::connect(&socket) {
+                Ok(stream) => return self.relink(stream, &instance, &socket, &cause),
+                Err(e) => cause = format!("{cause}, relink failed to connect: {e}"),
             }
             st = self.lock();
-        }
+            None
+        } else {
+            Some(link)
+        };
         // The holder is gone (drained, or died), and with it every program it ran.
         let theirs: Vec<u32> = st
             .reg
@@ -638,6 +648,7 @@ impl Core {
             .collect();
         // Its programs may have outlived it (closing the PTY is only a hangup).
         self.sweep_in_background(theirs.iter().filter_map(|id| st.reg.terminals[id].scope.clone()).collect());
+        let lost = theirs.iter().filter(|id| !st.killing.contains(*id)).count();
         for id in theirs {
             self.record_finish(&mut st, id, Exit { code: None, signal: None }, "holder_lost");
         }
@@ -648,12 +659,16 @@ impl Core {
         }
         self.save(&st);
         self.changed.notify_waiters();
+        drop(link);
+        drop(st);
+        drop(starting);
+        let _ = writeln!(io::stderr(), "core: lost the link to holder {instance} ({cause}), holder_lost count: {lost}");
     }
 
     /// Takes over a holder that still answers after our reading of it failed. If
     /// that fails too (a panic replaying its tails), or keeps happening, it is left
     /// alone: its programs run on, for the next core start to adopt.
-    fn relink(self: &Arc<Self>, stream: UnixStream, instance: &str, socket: &std::path::Path) {
+    fn relink(self: &Arc<Self>, stream: UnixStream, instance: &str, socket: &std::path::Path, cause: &str) {
         let last = self.lock().relinked.insert(instance.into(), Instant::now());
         let ours = stream.try_clone();
         // A holder that doesn't answer must not keep `holder_start` (runs, stops) waiting:
@@ -667,24 +682,20 @@ impl Core {
                 }
             });
         }
-        let taken = last.is_none_or(|at| at.elapsed() >= RELINK_GAP)
-            && matches!(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.take_over(
-                    stream,
-                    false,
-                    socket,
-                    Some(answered)
-                ))),
-                Ok(Ok(_))
-            );
-        if taken {
-            let _ = writeln!(io::stderr(), "core: lost the link to holder {instance}, reconnected");
-            return;
-        }
-        let _ = writeln!(
-            io::stderr(),
-            "core: lost the link to holder {instance} for good; its terminals wait for the next core start"
-        );
+        let failure = if last.is_none_or(|at| at.elapsed() >= RELINK_GAP) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.take_over(stream, false, socket, Some(answered))
+            })) {
+                Ok(Ok(_)) => {
+                    let _ = writeln!(io::stderr(), "core: lost the link to holder {instance} ({cause}), reconnected");
+                    return;
+                }
+                Ok(Err(e)) => e.to_string(),
+                Err(_) => "panic during takeover".into(),
+            }
+        } else {
+            "relink attempted too recently".into()
+        };
         // Closed, so the holder sees us leave instead of waiting on a link nobody reads.
         if let Ok(ours) = ours {
             let _ = ours.shutdown(std::net::Shutdown::Both);
@@ -692,6 +703,12 @@ impl Core {
         let mut st = self.lock();
         st.holders.retain(|l| l.instance != instance);
         st.disconnected.insert(instance.into(), socket.to_path_buf());
+        drop(st);
+        let _ = writeln!(
+            io::stderr(),
+            "core: lost the link to holder {instance} ({cause}), relink failed: {failure}. \
+             Its terminals wait for the next core start"
+        );
     }
 
     /// Handles the holder's frames until it says goodbye (true) or the link ends (false).

@@ -169,18 +169,31 @@ impl Holder {
         st.core_left = Instant::now();
     }
 
+    /// Says why a core link closed; called after the state lock is released.
+    fn link_closed(&self, why: &str) {
+        let _ = writeln!(io::stderr(), "holder {}: core link closed: {why}", self.instance);
+    }
+
     /// Writes one core's frames in order; a failed write means that core is gone.
     fn write_to_core(&self, generation: u64, mut stream: Stream, frames: Receiver<Vec<u8>>, backlog: Arc<Backlog>) {
+        let mut error = None;
         for frame in frames {
-            if stream.write_all(&frame).is_err() {
+            if let Err(e) = stream.write_all(&frame) {
+                error = Some(e);
                 break;
             }
             backlog.update(|b| *b = b.map(|n| n.saturating_sub(frame.len())));
         }
         backlog.update(|b| *b = None);
         let mut st = self.lock();
-        if st.core.as_ref().is_some_and(|c| c.generation == generation) {
+        let gone = st.core.as_ref().is_some_and(|c| c.generation == generation);
+        if gone {
             self.core_gone(&mut st, "crash");
+        }
+        drop(st);
+        if gone {
+            let why = error.map_or_else(|| "the writer stopped".into(), |e| format!("writing to the core failed: {e}"));
+            self.link_closed(&why);
         }
     }
 
@@ -189,9 +202,10 @@ impl Holder {
             Some((proto::HELLO, _, payload)) => proto::parse::<proto::Hello>(&payload)?,
             _ => return Ok(()),
         };
-        let generation = {
+        let (generation, replaced) = {
             let mut st = self.lock();
-            if st.core.is_some() {
+            let replaced = st.core.is_some();
+            if replaced {
                 self.core_gone(&mut st, "crash");
             }
             st.generation += 1;
@@ -242,13 +256,24 @@ impl Holder {
             std::thread::spawn(move || holder.write_to_core(generation, writer, queued, written));
             st.core = Some(Core { generation, frames, backlog, stream: kept });
             self.to_core(&mut st, &out);
-            generation
+            (generation, replaced)
         };
+        if replaced {
+            self.link_closed("replaced by another hello");
+        }
 
         let result = self.commands(&mut stream, generation);
         let mut st = self.lock();
-        if st.core.as_ref().is_some_and(|c| c.generation == generation) {
+        let gone = st.core.as_ref().is_some_and(|c| c.generation == generation);
+        if gone {
             self.core_gone(&mut st, "crash");
+        }
+        drop(st);
+        if gone {
+            self.link_closed(&match &result {
+                Ok(()) => "the core closed the link".into(),
+                Err(e) => format!("reading from the core failed: {e}"),
+            });
         }
         result
     }
@@ -320,10 +345,13 @@ impl Holder {
                         if let Some(backlog) = backlog {
                             backlog.wait(0, Duration::from_secs(5));
                         }
+                        self.link_closed("shutdown");
                         self.exit();
                     }
                     self.to_core(&mut st, &proto::frame(proto::BYE, 0, &[]));
                     self.core_gone(&mut st, "handover");
+                    drop(st);
+                    self.link_closed("handover");
                     return Ok(());
                 }
                 _ => {}
