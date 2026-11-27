@@ -266,9 +266,10 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
     let tmp = s.root.join("noexec-tmp");
     std::fs::create_dir(&tmp).unwrap();
     // The runner may forbid user namespaces (hardened CI): probe with a
-    // no-op before relying on it, and skip when unprivileged mounting is out.
-    let probe = Command::new("unshare").args(["-rm", "--map-root-user", "true"]).output().unwrap();
-    if !probe.status.success() {
+    // no-op before relying on it, and skip when unshare is missing or unprivileged
+    // mounting is out.
+    let probe = Command::new("unshare").args(["-rm", "--map-root-user", "true"]).output();
+    if !probe.is_ok_and(|probe| probe.status.success()) {
         return;
     }
     // Root inside a fresh mount namespace: a noexec tmpfs for TMPDIR, the
@@ -278,8 +279,8 @@ fn the_install_script_installs_when_the_temp_dir_cannot_execute() {
         "set -e; mount --make-rprivate /; mount -t tmpfs -o size=256M,noexec tmpfs {}; \
          export TAR_OPTIONS=--no-same-owner; \
          export HC_INSTALL_DIR={} TMPDIR={} HERDR_RELEASES_URL={}; \
-         /usr/bin/sh {}/../../distribution/install.sh; \
-         /usr/bin/sh {}/../../distribution/install.sh",
+         sh {}/../../distribution/install.sh; \
+         sh {}/../../distribution/install.sh",
         tmp.display(),
         bin.display(),
         tmp.display(),

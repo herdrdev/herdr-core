@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 const CAPTURING: &str = "HC_LOGIN_CAPTURE";
 const MARKER: &[u8] = b"\0HC_LOGIN_ENV\0";
 const END: &[u8] = b"\0HC_LOGIN_END\0";
-const SCRIPT: &str = "printf '\\0HC_LOGIN_ENV\\0'; /usr/bin/env -0; printf '\\0HC_LOGIN_END\\0'";
+// env from the login PATH: not every system has /usr/bin/env.
+const SCRIPT: &str = "printf '\\0HC_LOGIN_ENV\\0'; env -0; printf '\\0HC_LOGIN_END\\0'";
 
 pub(super) fn apply(cmd: &mut Command, state: &Path) {
     if std::env::var_os(CAPTURING).is_some() {

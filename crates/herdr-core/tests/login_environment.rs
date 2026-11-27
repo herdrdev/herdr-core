@@ -79,7 +79,7 @@ fn holder_environment_does_not_reload_login_profile() {
 
 fn ssh_session(profile: &str) -> Session {
     let mut s = Session::new();
-    s.env.extend([("SSH_CONNECTION".into(), "test".into()), ("SHELL".into(), "/bin/bash".into())]);
+    s.env.extend([("SSH_CONNECTION".into(), "test".into()), ("SHELL".into(), "bash".into())]);
     std::fs::write(s.root.join(".bash_profile"), profile).unwrap();
     s
 }
@@ -114,7 +114,10 @@ fn failing_login_profile_falls_back_and_logs_the_shell_and_reason() {
     s.env.push(("LOGIN_TEST".into(), "inherited".into()));
     assert_eq!(value(&s), "inherited");
     let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
-    assert!(log.contains("/bin/bash") && log.contains("17") && log.contains("using inherited environment"), "{log}");
+    assert!(
+        log.contains("from bash unavailable") && log.contains("17") && log.contains("using inherited environment"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -125,5 +128,5 @@ fn a_login_profile_cannot_block_machine_start_forever() {
     assert_eq!(value(&s), "inherited");
     assert!(start.elapsed() < std::time::Duration::from_secs(10));
     let log = std::fs::read_to_string(s.root.join("state/herdr-core/test/core.log")).unwrap();
-    assert!(log.contains("/bin/bash") && log.contains("exceeded 5 s"), "{log}");
+    assert!(log.contains("from bash unavailable") && log.contains("exceeded 5 s"), "{log}");
 }
