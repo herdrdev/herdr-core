@@ -44,16 +44,48 @@ fn key_code(name: &str) -> Option<(i32, char)> {
     })
 }
 
+/// US-layout symbols produced by Shift and a digit. `hc keys shift+1` is `!`.
+fn us_shift_digit(c: char) -> Option<char> {
+    Some(match c {
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        _ => return None,
+    })
+}
+
+fn unshift_us_digit(c: char) -> Option<char> {
+    Some(match c {
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+        _ => return None,
+    })
+}
+
 /// Encodes one key name like `ctrl+shift+tab` for this screen.
 pub fn encode(screen: &Screen, spec: &str) -> Result<Vec<u8>, RpcError> {
     let bad = || RpcError::invalid_params(format!("unknown key {spec:?} (try enter, esc, up, ctrl+c, alt+x, f5, a)"));
-    let lower = spec.to_ascii_lowercase();
-    let mut parts: Vec<&str> = lower.split('+').collect();
+    let mut parts: Vec<&str> = spec.split('+').collect();
     // `ctrl++` style ends in an empty part for the plus key itself; we don't support it.
-    let name = parts.pop().filter(|n| !n.is_empty()).ok_or_else(bad)?;
+    let raw_name = parts.pop().filter(|n| !n.is_empty()).ok_or_else(bad)?;
     let mut mods = 0u16;
     for m in parts {
-        mods |= match m {
+        mods |= match m.to_ascii_lowercase().as_str() {
             "shift" => 1,
             "ctrl" | "control" => 2,
             "alt" | "meta" | "opt" => 4,
@@ -61,11 +93,34 @@ pub fn encode(screen: &Screen, spec: &str) -> Result<Vec<u8>, RpcError> {
             _ => return Err(bad()),
         };
     }
-    let (code, ch) = key_code(name).ok_or_else(bad)?;
-    let text = match ch {
-        '\0' => String::new(),
-        c if mods & 1 != 0 => c.to_ascii_uppercase().to_string(),
-        c => c.to_string(),
+    let (name, typed) = if raw_name.chars().count() == 1 {
+        let c = raw_name.chars().next().unwrap();
+        if c.is_ascii_uppercase() {
+            // ctrl+V and super+A must stay unshifted. Shift is only for a bare letter.
+            if mods == 0 {
+                mods |= 1;
+                (c.to_ascii_lowercase().to_string(), Some(c))
+            } else {
+                (c.to_ascii_lowercase().to_string(), None)
+            }
+        } else if let Some(base) = unshift_us_digit(c) {
+            mods |= 1;
+            (base.to_string(), Some(c))
+        } else {
+            (raw_name.to_ascii_lowercase(), None)
+        }
+    } else {
+        (raw_name.to_ascii_lowercase(), None)
+    };
+    let (code, ch) = key_code(&name).ok_or_else(bad)?;
+    let text = if let Some(c) = typed {
+        c.to_string()
+    } else {
+        match ch {
+            '\0' => String::new(),
+            c if mods & 1 != 0 => us_shift_digit(c).unwrap_or_else(|| c.to_ascii_uppercase()).to_string(),
+            c => c.to_string(),
+        }
     };
     let bytes = screen.encode_key(code, mods, if mods & 6 != 0 { "" } else { &text }, ch as u32);
     if bytes.is_empty() { Err(bad()) } else { Ok(bytes) }
@@ -89,6 +144,18 @@ mod tests {
             ),
             ["\r", "\x1b", "\t", "\x7f", "a", "A", "7", "\x03", "\x1bx", "\x1b[A", "\x1bOP", " "]
         );
+        assert_eq!(keys(&screen, &["V", "Z", "X"]), ["V", "Z", "X"]);
+        assert_eq!(keys(&screen, &["ctrl+C", "ctrl+V", "ctrl+A"]), ["\x03", "\x16", "\x01"]);
+        // macOS libghostty-vt returns no legacy bytes for super, so both are errors.
+        // Linux encodes them, and they must be the same bytes (super+A is not super+shift).
+        match (encode(&screen, "super+A"), encode(&screen, "super+a")) {
+            (Ok(upper), Ok(lower)) => assert_eq!(upper, lower),
+            (Err(_), Err(_)) => {}
+            (upper, lower) => panic!("super+A and super+a disagree: {upper:?} {lower:?}"),
+        }
+        assert_eq!(encode(&screen, "ctrl+alt+A").unwrap(), encode(&screen, "ctrl+alt+a").unwrap());
+        assert_eq!(keys(&screen, &["shift+1", "shift+2", "shift+0"]), ["!", "@", ")"]);
+        assert_eq!(keys(&screen, &["!", "@"]), ["!", "@"]);
         // Application cursor keys (vim, less) change what arrows send.
         screen.write(b"\x1b[?1h");
         assert_eq!(keys(&screen, &["up", "left"]), ["\x1bOA", "\x1bOD"]);
