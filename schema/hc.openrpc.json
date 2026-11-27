@@ -90,6 +90,16 @@
               "string",
               "null"
             ]
+          },
+          "palette": {
+            "description": "Theme palette as `#rrggbb`, in palette index order (0-255): entry i sets\npalette color i. Indices not given keep their color.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -2486,7 +2496,8 @@
               "bg": null,
               "cell": null,
               "cursor": null,
-              "fg": null
+              "fg": null,
+              "palette": null
             },
             "description": "The viewer's own colors and cell size, used to answer display queries."
           }

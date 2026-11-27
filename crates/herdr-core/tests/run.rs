@@ -48,6 +48,20 @@ fn initial_display_answers_the_programs_first_color_query() {
 }
 
 #[test]
+fn initial_display_palette_answers_the_programs_first_palette_query() {
+    use serde_json::json;
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let mut conn = s.connect();
+    // Asks for palette color 1 at once, like Pi reading its theme at startup.
+    let probe = "stty raw -echo min 0 time 10; printf '\\033]4;1;?\\033\\\\'; r=$(dd bs=256 count=1 2>/dev/null); \
+                 stty sane; printf '%s' \"$r\" | od -An -c | tr -d ' \\n'";
+    let params = json!({"argv": ["sh", "-c", probe], "wait": true, "display": {"palette": ["#000000", "#e06c75"]}});
+    let reply = conn.call(1, "terminal.run", params);
+    assert!(reply["result"]["output"].as_str().unwrap().contains("e0e0/6c6c/7575"), "{reply}");
+}
+
+#[test]
 fn callers_use_the_cores_terminal_identity() {
     let mut s = Session::new();
     s.env.extend(

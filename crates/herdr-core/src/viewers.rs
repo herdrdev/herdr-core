@@ -25,6 +25,9 @@ pub struct Display {
     pub bg: Option<String>,
     /// Cursor color as `#rrggbb`.
     pub cursor: Option<String>,
+    /// Theme palette as `#rrggbb`, in palette index order (0-255): entry i sets
+    /// palette color i. Indices not given keep their color.
+    pub palette: Option<Vec<String>>,
     /// Cell size in pixels: `[width, height]`.
     pub cell: Option<[u32; 2]>,
 }
@@ -47,12 +50,14 @@ pub struct Viewer {
 impl Display {
     /// Answer the program's color and cell-size queries with these facts.
     pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) {
-        screen.set_display(rgb(&self.fg), rgb(&self.bg), rgb(&self.cursor), self.cell.map(|[w, h]| (w, h)));
+        let palette: Vec<_> = self.palette.iter().flatten().map(|c| rgb(Some(c))).collect();
+        let [fg, bg, cursor] = [&self.fg, &self.bg, &self.cursor].map(|c| rgb(c.as_deref()));
+        screen.set_display(fg, bg, cursor, &palette, self.cell.map(|[w, h]| (w, h)));
     }
 }
 
-fn rgb(hex: &Option<String>) -> Option<Rgb> {
-    let hex = hex.as_deref()?.strip_prefix('#')?;
+fn rgb(hex: Option<&str>) -> Option<Rgb> {
+    let hex = hex?.strip_prefix('#')?;
     let n = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
     Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
 }
@@ -335,6 +340,7 @@ impl Core {
         v.display.fg = display.fg.or(v.display.fg.take());
         v.display.bg = display.bg.or(v.display.bg.take());
         v.display.cursor = display.cursor.or(v.display.cursor.take());
+        v.display.palette = display.palette.or(v.display.palette.take());
         v.display.cell = display.cell.or(v.display.cell);
         let display = st.viewers[&id]
             .iter()

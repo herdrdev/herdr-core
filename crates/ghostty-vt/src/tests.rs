@@ -21,18 +21,18 @@ fn display_changes_report_to_subscribers_and_queries_use_the_latest_facts() {
     let mut t = Terminal::new(80, 24, 0);
     t.write(b"\x1b[?2031h");
     t.take_responses(); // Enabling reporting may itself report the current scheme.
-    t.set_display(Some([1, 2, 3]), Some([255; 3]), Some([4, 5, 6]), Some((9, 18)));
+    t.set_display(Some([1, 2, 3]), Some([255; 3]), Some([4, 5, 6]), &[], Some((9, 18)));
     assert_eq!(t.take_responses(), b"\x1b[?997;2n", "dark to light");
-    t.set_display(None, Some([0; 3]), None, None);
+    t.set_display(None, Some([0; 3]), None, &[], None);
     assert_eq!(t.take_responses(), b"\x1b[?997;1n", "light to dark");
 
     // Mode 2031 also tells subscribers to re-query colors within the same scheme.
-    t.set_display(Some([7, 8, 9]), None, None, None);
+    t.set_display(Some([7, 8, 9]), None, None, &[], None);
     assert_eq!(t.take_responses(), b"\x1b[?997;1n", "foreground changed");
-    t.set_display(None, None, Some([10, 11, 12]), None);
+    t.set_display(None, None, Some([10, 11, 12]), &[], None);
     assert_eq!(t.take_responses(), b"\x1b[?997;1n", "cursor changed");
-    t.set_display(Some([7, 8, 9]), Some([0; 3]), Some([10, 11, 12]), Some((10, 20)));
-    t.set_display(None, None, None, None);
+    t.set_display(Some([7, 8, 9]), Some([0; 3]), Some([10, 11, 12]), &[], Some((10, 20)));
+    t.set_display(None, None, None, &[], None);
     assert!(t.take_responses().is_empty(), "repeated colors and cell size are silent");
 
     t.write(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07\x1b[?996n\x1b[16t");
@@ -45,12 +45,44 @@ fn display_changes_report_to_subscribers_and_queries_use_the_latest_facts() {
 #[test]
 fn display_changes_do_not_report_without_a_subscription() {
     let mut t = Terminal::new(80, 24, 0);
-    t.set_display(None, Some([255; 3]), None, None);
+    t.set_display(None, Some([255; 3]), None, &[], None);
     assert!(t.take_responses().is_empty());
     t.write(b"\x1b[?2031h\x1b[?2031l");
     t.take_responses();
-    t.set_display(None, Some([0; 3]), None, None);
+    t.set_display(None, Some([0; 3]), None, &[], None);
     assert!(t.take_responses().is_empty(), "disabled subscription stays silent");
+}
+
+#[test]
+fn palette_queries_use_the_viewers_palette_and_changes_report_to_subscribers() {
+    let mut t = Terminal::new(80, 24, 0);
+    let ask = |t: &mut Terminal, q: &[u8]| {
+        t.write(q);
+        String::from_utf8_lossy(&t.take_responses()).into_owned()
+    };
+    let default_2 = ask(&mut t, b"\x1b]4;2;?\x1b\\");
+    t.write(b"\x1b[?2031h");
+    t.take_responses();
+    t.set_display(None, None, None, &[Some([1, 2, 3]), Some([0x12, 0x34, 0x56])], None);
+    assert_eq!(t.take_responses(), b"\x1b[?997;1n", "palette changed");
+    assert_eq!(ask(&mut t, b"\x1b]4;1;?\x1b\\"), "\x1b]4;1;rgb:1212/3434/5656\x1b\\");
+    assert_eq!(ask(&mut t, b"\x1b]4;2;?\x1b\\"), default_2, "an index not given keeps its default");
+    t.set_display(None, None, None, &[Some([1, 2, 3]), None], None);
+    assert!(t.take_responses().is_empty(), "an unchanged palette is silent");
+    assert_eq!(
+        ask(&mut t, b"\x1b]4;1;?\x1b\\"),
+        "\x1b]4;1;rgb:1212/3434/5656\x1b\\",
+        "an omitted entry keeps the color"
+    );
+    // A program's own OSC 4 override survives later viewer palette updates.
+    t.write(b"\x1b]4;1;rgb:aa/bb/cc\x1b\\");
+    t.set_display(None, None, None, &[Some([1, 2, 3]), Some([0x99, 0x88, 0x77])], None);
+    assert_eq!(t.take_responses(), b"\x1b[?997;1n", "default palette update still reports");
+    assert_eq!(
+        ask(&mut t, b"\x1b]4;1;?\x1b\\"),
+        "\x1b]4;1;rgb:aaaa/bbbb/cccc\x1b\\",
+        "program-set OSC 4 override survives default palette updates"
+    );
 }
 
 #[test]
@@ -242,7 +274,7 @@ fn wheel_notches_follow_the_programs_mouse_mode_and_rows_keep_their_width() {
 fn answers_queries_like_ghostty_with_viewer_facts() {
     let mut t = Terminal::new(80, 24, 1 << 20);
     t.set_xtversion("WezTerm 20240203");
-    t.set_display(Some([1, 2, 3]), Some([0xff, 0xff, 0xff]), None, Some((9, 18)));
+    t.set_display(Some([1, 2, 3]), Some([0xff, 0xff, 0xff]), None, &[], Some((9, 18)));
     let ask = |t: &mut Terminal, q: &[u8]| {
         t.write(q);
         String::from_utf8_lossy(&t.take_responses()).into_owned()
