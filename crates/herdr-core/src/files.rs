@@ -176,7 +176,10 @@ fn swap_in(path: &Path, bytes: &[u8]) -> Result<FileResult, RpcError> {
         let _ = std::fs::remove_file(&tmp);
         return Err(io(&path, e));
     }
-    Ok(FileResult { path: path.display().to_string(), bytes: bytes.len() })
+    // Report what the target holds, not what we tried to send: a write that did
+    // not land must not look successful.
+    let on_disk = std::fs::metadata(&path).map_err(|e| io(&path, e))?.len() as usize;
+    Ok(FileResult { path: path.display().to_string(), bytes: on_disk })
 }
 
 #[cfg(test)]

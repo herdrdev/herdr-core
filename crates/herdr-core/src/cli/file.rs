@@ -57,7 +57,11 @@ pub(super) fn file(
         }
         FileCmd::Write(mut p) => {
             here_unless_on(&mut p.at);
-            p.data = crate::put::encode(&piped(crate::files::MAX_BYTES)?);
+            let bytes = piped(crate::files::MAX_BYTES)?;
+            if bytes.is_empty() && !p.allow_empty {
+                return Err(RpcError::new("usage", "nothing piped in", "pipe content in, or pass --allow-empty"));
+            }
+            p.data = crate::put::encode(&bytes);
             let r = call("file.write", to(&p))?;
             let human = format!("wrote {} ({} bytes)", r["path"].as_str().unwrap_or_default(), r["bytes"]);
             Out { json: r, human }

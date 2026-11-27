@@ -753,6 +753,11 @@ pub struct FileWriteParams {
     /// Its new content, base64, at most 8 MB raw (CLI: what is piped in).
     #[arg(skip)]
     pub data: String,
+    /// Accept empty stdin and write an empty file (CLI only).
+    #[arg(long)]
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub allow_empty: bool,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
