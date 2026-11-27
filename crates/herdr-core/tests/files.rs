@@ -96,3 +96,39 @@ fn a_write_swaps_the_file_in_whole_and_keeps_what_it_was() {
     let big = s.hc_input(&["--json", "file", "write", "--cwd", &cwd, "big"], &vec![b'x'; (8 << 20) + 1]);
     assert!(String::from_utf8_lossy(&big.stderr).contains("invalid_params"), "8 MB at most");
 }
+
+#[test]
+fn an_empty_write_is_refused_and_leaves_the_target_untouched() {
+    let s = Session::new();
+    let cwd = s.root.display().to_string();
+    let missing = s.root.join("not-created.txt");
+
+    let (code, e) = s.err(&["--json", "file", "write", "--cwd", &cwd, "not-created.txt"]);
+    assert_eq!(code, 2, "{e}");
+    assert_eq!(e["error"]["kind"], "usage", "{e}");
+    assert!(!missing.exists(), "no empty file made");
+
+    let existing = s.root.join("kept.txt");
+    std::fs::write(&existing, b"keep me").unwrap();
+    let (code, _) = s.err(&["--json", "file", "write", "--cwd", &cwd, "kept.txt"]);
+    assert_eq!(code, 2);
+    assert_eq!(std::fs::read(&existing).unwrap(), b"keep me", "not truncated");
+
+    let allowed = s.hc_input(&["--json", "file", "write", "--allow-empty", "--cwd", &cwd, "not-created.txt"], b"");
+    assert!(allowed.status.success(), "{}", String::from_utf8_lossy(&allowed.stderr));
+    assert_eq!(std::fs::metadata(&missing).unwrap().len(), 0, "explicit empty write");
+    let r: serde_json::Value = serde_json::from_slice(&allowed.stdout).unwrap();
+    assert_eq!(r["bytes"], 0, "{r}");
+}
+
+#[test]
+fn a_write_reports_the_bytes_the_target_holds() {
+    let s = Session::new();
+    let cwd = s.root.display().to_string();
+    let content = b"exactly twelve";
+    let out = s.hc_input(&["--json", "file", "write", "--cwd", &cwd, "counted.txt"], content);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let r: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(r["bytes"], content.len() as u64, "{r}");
+    assert_eq!(std::fs::metadata(s.root.join("counted.txt")).unwrap().len(), content.len() as u64);
+}

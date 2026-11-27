@@ -208,6 +208,7 @@ Options:
       --json          JSON output even in a terminal
       --on <MACHINE>  On another machine (see `hc machine ls`)
       --cwd <CWD>     Where a relative path starts (default: where hc runs; through the API, the core's; with --on, that machine's home)
+      --allow-empty   Accept empty stdin and write an empty file (CLI only)
   -h, --help          Print help
 ```
 
