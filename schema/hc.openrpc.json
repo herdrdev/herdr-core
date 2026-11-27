@@ -1714,7 +1714,7 @@
       }
     },
     {
-      "description": "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
+      "description": "Start a program in a new terminal; or, when argv[0] names a template and argv[1] is not a flag (a `-` word without spaces), start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
       "errors": [
         {
           "code": -32602,
@@ -1777,12 +1777,12 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "description": "Program and arguments, or a template name and its task. With neither\nargv nor line: that machine's own shell.",
+          "description": "Program and arguments, or a template name and its task. A flag (a `-`\nword without spaces) right after a template's name makes it a program\nand its arguments. With neither argv nor line: that machine's own shell.",
           "name": "argv",
           "required": false,
           "schema": {
             "default": [],
-            "description": "Program and arguments, or a template name and its task. With neither\nargv nor line: that machine's own shell.",
+            "description": "Program and arguments, or a template name and its task. A flag (a `-`\nword without spaces) right after a template's name makes it a program\nand its arguments. With neither argv nor line: that machine's own shell.",
             "items": {
               "type": "string"
             },

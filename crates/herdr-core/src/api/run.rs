@@ -4,9 +4,9 @@ use super::*;
 
 pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunResult, RpcError> {
     // A template is found only by template lookup, never by terminal name.
-    let template = match p.argv.first() {
-        Some(name) => crate::templates::load(&core.paths, name)?,
-        None => None,
+    let template = match p.argv.split_first() {
+        Some((name, task)) if crate::templates::is_task(task) => crate::templates::load(&core.paths, name)?,
+        _ => None,
     };
     let first = template.as_ref().map(|t| crate::templates::first_message(t, &p.argv[1..].join(" ")));
     match (&template, p.line.take(), p.argv.is_empty()) {

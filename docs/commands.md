@@ -489,7 +489,7 @@ Start a program, or a template by name with its task: hc run reviewer "review sr
 Usage: hc run [OPTIONS] [ARGV]...
 
 Arguments:
-  [ARGV]...  Program and arguments, or a template name and its task. With neither argv nor line: that machine's own shell
+  [ARGV]...  Program and arguments, or a template name and its task. A flag (a `-` word without spaces) right after a template's name makes it a program and its arguments. With neither argv nor line: that machine's own shell
 
 Options:
       --json               JSON output even in a terminal

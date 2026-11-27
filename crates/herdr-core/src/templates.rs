@@ -73,6 +73,13 @@ fn parse(name: &str, text: &str) -> Result<Template, String> {
     Ok(t)
 }
 
+/// Words after a template's name are its task unless the first is a flag (a
+/// `-` word without spaces): `pi --model m` is the program `pi` and its flag,
+/// while `"-x is broken"` or `fix the --verbose handling` stay a task.
+pub fn is_task(words: &[String]) -> bool {
+    words.first().is_none_or(|w| !w.starts_with('-') || w.contains(char::is_whitespace))
+}
+
 /// The template called `name`, if there is one.
 pub fn load(paths: &Paths, name: &str) -> Result<Option<Template>, RpcError> {
     if name.is_empty() || name.contains('/') || name.starts_with('.') {
