@@ -18,8 +18,10 @@ Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
 First check `hc templates`: ready-made roles may include `reviewer`,
 `simplifier`, or implementers. Use one that fits. Templates are Markdown
-files in `~/.config/herdr-core/templates/<name>.md`: frontmatter has `name`,
-`description`, `command` (including model); the body supplies instructions.
+files in `~/.config/herdr-core/templates/<name>.md` (Windows:
+`%APPDATA%\herdr-core\templates\<name>.md`): frontmatter has `name`,
+`description`, `command` (including model), `ready`, `submit`, `stop`,
+`paste_gap_ms`; the body supplies instructions.
 
 ```sh
 hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Read-only; no subagents. Report findings with hc send $HC_TERMINAL_ID when done or stuck."
