@@ -38,7 +38,7 @@ use put::*;
 pub use put::{begin_read, forget_puts};
 mod waiting;
 use run::*;
-pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
+pub(crate) use run::{child_env, not_stopping, tail, terminal_env, terminal_identity};
 pub use types::*;
 use waiting::*;
 

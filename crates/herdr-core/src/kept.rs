@@ -90,6 +90,7 @@ impl Core {
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            t.identity = crate::api::terminal_identity(&env);
             let cwd = t
                 .last_cwd
                 .as_ref()

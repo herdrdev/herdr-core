@@ -213,8 +213,9 @@ fn child_gets_core_env_terminal_identity_cwd_and_its_own_address() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    wait_text(&s, "t2", "tp=ghostty v=.");
-    assert_eq!(get(&s, "t2")["identity"], "ghostty");
+    let version = ghostty_vt::VERSION;
+    wait_text(&s, "t2", &format!("tp=ghostty v={version}."));
+    assert_eq!(get(&s, "t2")["identity"], format!("ghostty {version}"));
 }
 
 #[test]

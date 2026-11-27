@@ -111,13 +111,7 @@ pub(super) async fn start(
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
     let env = child_env(crate::platform::program_env().await, p.env.clone());
-    let identity = format!(
-        "{} {}",
-        env.get("TERM_PROGRAM").map_or("", String::as_str),
-        env.get("TERM_PROGRAM_VERSION").map_or("", String::as_str)
-    )
-    .trim()
-    .to_string();
+    let identity = terminal_identity(&env);
     // Set once, at start: an explicit parent, else the calling terminal.
     let parent = match (&p.parent, &p.caller) {
         (Some(parent), _) => Some(crate::terminals::address(resolve(core, parent)?)),
@@ -231,18 +225,31 @@ pub(crate) fn terminal_env(
     (env, scope)
 }
 
+pub(crate) fn terminal_identity(env: &BTreeMap<String, String>) -> String {
+    format!(
+        "{} {}",
+        env.get("TERM_PROGRAM").map_or("", String::as_str),
+        env.get("TERM_PROGRAM_VERSION").map_or("", String::as_str)
+    )
+    .trim()
+    .to_string()
+}
+
 /// The core's environment with its own terminal identity and explicit client overrides.
 pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let identity_key =
+        |key: &str| IDENTITY_VARS.iter().copied().find(|name| crate::platform::environment_key_eq(key.as_ref(), name));
     let mut env: BTreeMap<String, String> = base
         .into_iter()
         .filter(|(k, _)| {
-            !IDENTITY_VARS.contains(&k.as_str())
+            identity_key(k).is_none()
                 && !["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME].contains(&k.as_str())
         })
         .collect();
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("TERM_PROGRAM".into(), "ghostty".into());
+    let extra = extra.into_iter().map(|(key, value)| (identity_key(&key).map_or(key, str::to_owned), value)).collect();
     crate::platform::merge_env(&mut env, extra);
     env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
     if let Ok(session) = std::env::var("HC_SESSION") {
@@ -255,11 +262,29 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
         env.insert("TERM_PROGRAM".into(), "ghostty".into());
         env.remove("TERM_PROGRAM_VERSION"); // the version belonged to whatever we replaced
     }
+    if env.get("TERM_PROGRAM").is_some_and(|p| p == "ghostty") {
+        env.entry("TERM_PROGRAM_VERSION".into()).or_insert_with(|| ghostty_vt::VERSION.into());
+    }
     env
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_env_replaces_herdr_and_preserves_an_explicit_empty_ghostty_version() {
+        let (program, version) = if cfg!(windows) {
+            ("term_program", "term_program_version")
+        } else {
+            ("TERM_PROGRAM", "TERM_PROGRAM_VERSION")
+        };
+        for (name, requested, expected) in [("herdr", "0.9.3", ghostty_vt::VERSION), ("ghostty", "", "")] {
+            let overrides = [(program.into(), name.into()), (version.into(), requested.into())].into();
+            let env = super::child_env(Default::default(), overrides);
+            assert_eq!(env["TERM_PROGRAM"], "ghostty");
+            assert_eq!(env["TERM_PROGRAM_VERSION"], expected);
+        }
+    }
+
     #[test]
     fn client_environment_cannot_override_the_resume_token() {
         let mut overrides = std::collections::BTreeMap::from([(crate::resume::TOKEN.into(), "client".into())]);

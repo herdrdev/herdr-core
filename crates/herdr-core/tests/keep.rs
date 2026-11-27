@@ -52,7 +52,8 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     let r = get(&s, &t);
     assert_eq!(r["cwd"], canonical_dir.display().to_string());
     assert_eq!(r["name"], "kept");
-    assert_eq!(r["identity"], "ghostty");
+    let version = ghostty_vt::VERSION;
+    assert_eq!(r["identity"], format!("ghostty {version}"));
     assert_eq!((r["cols"].as_u64(), r["rows"].as_u64()), (Some(91), Some(29)));
     let mut viewer = framed::Viewer::attach(&s, &t, 91, 29, serde_json::json!({}));
     s.json(&[
@@ -60,7 +61,7 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
         &t,
         "printf 'kept-env:%s:%s:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"${TERM_PROGRAM_VERSION-}\" \"$HC_KEEP_TEST\"",
     ]);
-    viewer.shows("kept-env:xterm-256color:truecolor:ghostty::preserved");
+    viewer.shows(&format!("kept-env:xterm-256color:truecolor:ghostty:{version}:preserved"));
     assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
     assert!(!pid_alive(old));
 }

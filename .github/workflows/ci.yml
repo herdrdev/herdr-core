@@ -59,7 +59,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
-      - run: mkdir -p vendor/ghostty
+      - run: git submodule update --init --depth 1 vendor/ghostty
       - run: cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
         env:
           ZIG: ${{ github.workspace }}/scripts/zig-stub.sh
