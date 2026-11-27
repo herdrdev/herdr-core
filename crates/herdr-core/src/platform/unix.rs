@@ -42,6 +42,51 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Stream::connect(path)
 }
 
+/// Stdin EOF can still owe replies; a lost stdout reader cannot receive them.
+pub fn read_connect_reply(mut stream: &Stream, output: &File, buf: &mut [u8]) -> io::Result<usize> {
+    if buf.is_empty() {
+        return Ok(0);
+    }
+    let mut fds = [
+        libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        // Darwin needs these events explicitly to report a pipe's closed reader.
+        libc::pollfd { fd: output.as_raw_fd(), events: libc::POLLHUP | libc::POLLERR, revents: 0 },
+    ];
+    let mut half_closed = false;
+    loop {
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, if half_closed { 25 } else { -1 }) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if half_closed || fds[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            // A socket HUP on Darwin can be only SHUT_WR: the caller still reads.
+            if unsafe { libc::send(output.as_raw_fd(), std::ptr::null(), 0, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL) }
+                < 0
+            {
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ENOTSOCK | libc::EPIPE | libc::ECONNRESET | libc::ENOTCONN | libc::EBADF)
+                ) {
+                    return Ok(0);
+                }
+                if !matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) {
+                    return Err(error);
+                }
+            }
+            // Do not spin on a persistent HUP; probe the reply side as reply_closed does.
+            half_closed = true;
+            fds[1].fd = -1;
+        }
+        if fds[0].revents != 0 {
+            return stream.read(buf);
+        }
+    }
+}
+
 pub fn may_autostart(_explicit: bool) -> Result<(), crate::rpc::RpcError> {
     Ok(())
 }

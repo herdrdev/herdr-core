@@ -118,6 +118,10 @@ impl Pipe {
 #[derive(Clone)]
 pub struct Stream(Arc<Pipe>);
 
+pub fn read_connect_reply(mut stream: &Stream, _output: &File, buf: &mut [u8]) -> io::Result<usize> {
+    stream.read(buf)
+}
+
 impl Stream {
     pub fn try_clone(&self) -> io::Result<Stream> {
         Ok(self.clone())
