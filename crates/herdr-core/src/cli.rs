@@ -738,7 +738,7 @@ fn connect(paths: &Paths) -> Result<(), RpcError> {
     let mut out = crate::platform::console::stdout();
     let mut buf = [0u8; 64 * 1024];
     let mut counting = true;
-    while let Ok(n @ 1..) = (&stream).read(&mut buf) {
+    while let Ok(n @ 1..) = crate::platform::read_connect_reply(&stream, &out, &mut buf) {
         if std::io::Write::write_all(&mut *out, &buf[..n]).is_err() {
             break;
         }
