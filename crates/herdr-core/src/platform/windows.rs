@@ -259,8 +259,13 @@ pub struct Listener {
     next: std::sync::Mutex<Option<Pipe>>,
 }
 
-pub fn may_autostart(explicit: bool) -> Result<(), crate::rpc::RpcError> {
-    if explicit { Ok(()) } else { super::windows_session::check_autostart() }
+pub fn may_autostart(_explicit: bool) -> Result<(), crate::rpc::RpcError> {
+    // Explicit spawns (`hc server start`, `hc server restart` with no reachable
+    // core) wedge a logged-in desktop exactly like implicit autostarts: a core
+    // started from an elevated SSH session owns a pipe no desktop client can
+    // open. The same refusal applies; it still passes when no desktop session
+    // exists, so SSH-only/headless hosts are unaffected.
+    super::windows_session::check_autostart()
 }
 
 pub fn status_may_start_core() -> bool {
