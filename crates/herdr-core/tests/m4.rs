@@ -154,6 +154,23 @@ fn send_refuses_a_blocked_program_and_checks_status_atomically() {
 }
 
 #[test]
+fn a_program_that_stays_done_takes_a_guarded_follow_up() {
+    let s = session();
+    let agent =
+        run(&s, "stty -echo; r state=done; while read -r l; do echo got:$l; r state=working; r state=done; done");
+    wait_until("done", || status(&s, &agent) == "done");
+    let (code, err) = s.err(&["send", "--if", "idle", &agent, "nope"]);
+    assert_eq!((code, err["error"]["kind"].as_str()), (10, Some("status_mismatch")));
+
+    assert_eq!(s.json(&["send", "--if", "done", &agent, "next"])["status"], "done");
+    shows(&s, &agent, "got:next");
+    let sent = s.connect().call(1, "terminal.send", json!({"terminal": agent, "text": "again", "if": "done"}));
+    assert_eq!(sent["result"]["status"], "done", "{sent}");
+    shows(&s, &agent, "got:again");
+    assert!(!text(&s, &agent).contains("nope"));
+}
+
+#[test]
 fn agents_wait_for_a_person_to_pause() {
     let s = session();
     let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
