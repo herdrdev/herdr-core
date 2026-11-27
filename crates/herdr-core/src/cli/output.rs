@@ -26,8 +26,11 @@ pub(super) fn status(t: &Value) -> (String, &'static str) {
 /// Who runs in a terminal: the app it reports, else its program's name.
 pub(super) fn agent(t: &Value) -> String {
     let program = t["argv"][0].as_str().unwrap_or_default();
-    t["status"]["app"].as_str().unwrap_or_else(|| program.rsplit('/').next().unwrap_or_default()).into()
+    t["status"]["app"].as_str().unwrap_or_else(|| program.rsplit(SEPARATORS).next().unwrap_or_default()).into()
 }
+
+/// Path separators of every OS a terminal can run on: Windows paths use both.
+const SEPARATORS: [char; 2] = ['/', '\\'];
 
 /// The current folder, falling back to where the terminal started.
 fn cwd(t: &Value) -> Option<&str> {
@@ -41,7 +44,7 @@ pub(super) fn folder(t: &Value) -> String {
     if !home.is_empty() && cwd.trim_end_matches('/') == home.trim_end_matches('/') {
         return "~".into();
     }
-    cwd.trim_end_matches('/').rsplit('/').next().filter(|f| !f.is_empty()).unwrap_or(cwd).into()
+    cwd.trim_end_matches(SEPARATORS).rsplit(SEPARATORS).next().filter(|f| !f.is_empty()).unwrap_or(cwd).into()
 }
 
 /// The picker's orders, Tab cycles them: last status change first (a program
