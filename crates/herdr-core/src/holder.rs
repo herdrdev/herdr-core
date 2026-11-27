@@ -479,7 +479,7 @@ impl Holder {
                 let _ = writeln!(io::stderr(), "holder: original GUI login unavailable; waiting for a fresh launcher");
                 continue;
             }
-            if let Err(e) = crate::client::spawn_core(&self.paths) {
+            if let Err(e) = crate::client::spawn_core(&self.paths, false) {
                 let _ = writeln!(io::stderr(), "holder: cannot start core: {e:?}");
             }
         }

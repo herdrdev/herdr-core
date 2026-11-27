@@ -106,6 +106,7 @@ impl Fixture {
 
     fn start(&self, mode: &str, direct: bool) -> String {
         let s = &self.session;
+        s.json(&["server", "start"]);
         let argv = if direct {
             vec![self.reporter.to_str().unwrap(), mode]
         } else {
@@ -316,6 +317,7 @@ fn restart_preserves_the_program_and_stop_restores_a_first_process() {
     assert!(exec.status.success());
     assert_eq!(exec.stdout, b"unset");
     s.json(&["server", "stop"]);
+    s.json(&["server", "start"]);
     f.verify_resume(&t);
     s.json(&["keys", &t, "enter"]);
     wait_until("direct program's ordinary exit ends the terminal", || get(s, &t)["state"] == "finished");

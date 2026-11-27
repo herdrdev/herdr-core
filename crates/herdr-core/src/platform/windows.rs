@@ -579,8 +579,8 @@ pub fn file_identity(m: &std::fs::Metadata) -> String {
 /// stdin/stdout to NUL and stderr to `log`. It inherits only those two
 /// handles: std's spawn hands down every inheritable one, and a pipe of an
 /// ssh session living on in the daemon keeps that session from ending.
-pub fn spawn_detached(cmd: Command, log: File) -> io::Result<()> {
-    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+pub fn spawn_detached(cmd: Command, log: File, clean: bool) -> io::Result<()> {
+    let mut env: BTreeMap<String, String> = if clean { BTreeMap::new() } else { std::env::vars().collect() };
     for (k, v) in cmd.get_envs() {
         let k = k.to_string_lossy().into_owned();
         match v {

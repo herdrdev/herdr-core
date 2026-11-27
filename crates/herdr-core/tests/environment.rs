@@ -48,6 +48,7 @@ fn fresh_restart_replaces_the_base_without_losing_live_programs() {
     let mut s = Session::new();
     s.env.push(("NO_COLOR".into(), "1".into()));
     s.env.push(("FOO".into(), "dirty".into()));
+    s.json(&["server", "start"]);
     let t = run(&s, &["sleep", "100"]);
     let pid = get(&s, &t)["pid"].as_i64().unwrap();
     let core_pid = s.json(&["server", "status"])["pid"].clone();
@@ -344,6 +345,7 @@ fn invalid_or_stale_snapshots_leave_the_fresh_environment_intact() {
         }
         s.env.retain(|(key, _)| key != "HC_RESTART_VALUE");
         s.env.push(("HC_RESTART_VALUE".into(), "fresh".into()));
+        s.json(&["server", "start"]);
         let out = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
         assert!(out.status.success(), "{bad}: {out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout), "fresh", "{bad}");
@@ -427,6 +429,7 @@ fn sigterm_leaves_no_environment_for_the_next_fresh_start() {
     assert!(!snapshot(&s).exists());
     s.env.retain(|(key, _)| key != "HC_RESTART_VALUE");
     s.env.push(("HC_RESTART_VALUE".into(), "fresh".into()));
+    s.json(&["server", "start"]);
     let out = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "fresh");
 }

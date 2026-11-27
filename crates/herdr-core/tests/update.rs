@@ -95,6 +95,7 @@ fn update_from_a_file_swaps_hc_and_keeps_everything_running() {
     std::fs::copy(BIN, dir.join("herdr-core")).unwrap();
     std::os::unix::fs::symlink("herdr-core", dir.join("hc")).unwrap();
     s.bin = dir.join("hc"); // run as `hc`, the way people do
+    s.json(&["server", "start"]);
     let t = run(&s, &["sh", "-c", "echo before; while read l; do echo got-$l; done"]);
     let pid = s.json(&["server", "status"])["pid"].clone();
 

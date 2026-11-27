@@ -54,15 +54,120 @@ pub(crate) fn resume_executable() -> std::io::Result<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-mod linux_login;
-#[cfg(target_os = "linux")]
 pub mod systemd;
+#[cfg(unix)]
+mod unix_login;
 
-/// Only a new SSH-started Linux core imports login settings; holders inherit the core.
-#[allow(unused_variables)]
-pub fn core_environment(cmd: &mut std::process::Command, state: &std::path::Path) {
-    #[cfg(target_os = "linux")]
-    linux_login::apply(cmd, state);
+const SESSION_PATHS: &[&str] = &[
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "HC_SESSION",
+    "HC_SOCKET",
+];
+
+pub(crate) const LOGIN_CAPTURE: &str = "HC_LOGIN_CAPTURE";
+
+const CORE_INPUTS: &[&str] = &[
+    "HC_SESSION",
+    "HC_SOCKET",
+    "HC_INSTALL_DIR",
+    "HERDR_RELEASES_URL",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "HC_DRAFT_MS",
+    "HC_FOREGROUND_MS",
+    "HC_HEARTBEAT_MS",
+    "HC_HOLDER_GRACE_MS",
+    "HC_IMAGE_ANSWER_MS",
+    "HC_QUIET_MS",
+    "HC_READY_MS",
+    "HC_RECONNECT_MS",
+    "HC_RETAIN_MS",
+    "HC_SETTLE_MS",
+    "HC_SPAWN_MS",
+    "HC_SSH",
+    "HC_STARTED_MS",
+    "HC_STITCH_MS",
+];
+
+pub(crate) fn capturing_login() -> bool {
+    #[cfg(unix)]
+    return std::env::var_os(LOGIN_CAPTURE).is_some();
+    #[cfg(windows)]
+    false
+}
+
+pub(crate) fn dump_login_environment() -> Option<i32> {
+    #[cfg(unix)]
+    return unix_login::maybe_dump();
+    #[cfg(windows)]
+    None
+}
+
+/// Build the new core's environment. Return whether it replaces the launcher's environment.
+pub(crate) fn core_environment(cmd: &mut std::process::Command, state: &std::path::Path, implicit: bool) -> bool {
+    #[cfg(unix)]
+    if let Some(env) = unix_login::environment(cmd.get_program(), state, implicit) {
+        if !implicit {
+            for (key, _) in std::env::vars_os() {
+                if !env.contains_key(&key) {
+                    cmd.env_remove(key);
+                }
+            }
+        }
+        cmd.envs(env);
+    }
+    #[cfg(windows)]
+    if implicit {
+        let mut env = std::collections::BTreeMap::new();
+        if let Err(error) = windows_env::refresh(&mut env) {
+            use std::io::Write;
+            if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(state.join("core.log")) {
+                let _ = writeln!(log, "core: cannot read Windows user environment: {error}");
+            }
+            for name in [
+                "SystemRoot",
+                "windir",
+                "ComSpec",
+                "PATHEXT",
+                "SystemDrive",
+                "TEMP",
+                "TMP",
+                "PATH",
+                "ProgramFiles",
+                "ProgramFiles(x86)",
+                "ProgramW6432",
+                "ProgramData",
+                "CommonProgramFiles",
+                "CommonProgramFiles(x86)",
+                "CommonProgramW6432",
+                "OS",
+                "PROCESSOR_ARCHITECTURE",
+                "NUMBER_OF_PROCESSORS",
+            ] {
+                if !env.keys().any(|key| key.eq_ignore_ascii_case(name))
+                    && let Ok(value) = std::env::var(name)
+                {
+                    env.insert(name.into(), value);
+                }
+            }
+        }
+        cmd.env_clear().envs(env);
+        for &name in CORE_INPUTS.iter().chain(&["USERPROFILE", "LOCALAPPDATA", "APPDATA", "USERNAME"]) {
+            if let Some(value) = std::env::var_os(name) {
+                cmd.env(name, value);
+            }
+        }
+    }
+    implicit
 }
 
 #[cfg(target_os = "macos")]
@@ -215,10 +320,10 @@ pub fn verify_release_bundle(path: &std::path::Path) -> std::io::Result<()> {
 
 /// macOS cores leave the app's process coalition; holders inherit the core's.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
+pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path, clean: bool) -> bool {
     #[cfg(target_os = "macos")]
     if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
-        return macos_launchd::spawn(cmd, log);
+        return macos_launchd::spawn(cmd, log, clean);
     }
     false
 }
@@ -332,20 +437,8 @@ pub(crate) fn restored_environment(
     let forwarded = SSH_LOGIN.iter().any(|name| current.contains_key(OsStr::new(name)));
     let named = environment_key_eq;
     let local = |key: &OsStr| {
-        let paths = [
-            "HOME",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "XDG_STATE_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_RUNTIME_DIR",
-            "HC_SESSION",
-            "HC_SOCKET",
-        ];
         #[allow(unused_mut)]
-        let mut keep = paths.iter().any(|name| named(key, name));
+        let mut keep = SESSION_PATHS.iter().any(|name| named(key, name));
         #[cfg(target_os = "linux")]
         {
             keep |= systemd::SERVICE.iter().any(|name| named(key, name));
@@ -369,6 +462,7 @@ pub(crate) fn restored_environment(
             "HC_LAUNCHD_DIRECT",
             "HC_LAUNCHD_DETACH",
             "_HC_RESPONSIBLE_PID",
+            LOGIN_CAPTURE,
             crate::resume::TOKEN,
         ]
         .iter()

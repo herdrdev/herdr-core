@@ -548,10 +548,10 @@ Start, stop or inspect the core
 Usage: hc server [OPTIONS] <COMMAND>
 
 Commands:
-  start    
+  start    Start a stopped core using this shell's environment
   stop     
   status   
-  restart  Restart the core (e.g. after an update); programs keep running
+  restart  Restart the core with its existing environment. Running programs stay alive
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -562,19 +562,28 @@ Options:
 ## hc server restart
 
 ```text
-Restart the core (e.g. after an update); programs keep running
+Restart the core with its existing environment. Running programs stay alive.
+
+If the core is stopped, it starts with the platform's default environment. Use --fresh to take this shell's environment.
 
 Usage: hc server restart [OPTIONS]
 
 Options:
-      --fresh  Take this shell's environment for new terminals; run from a terminal outside Herdr
-      --json   JSON output even in a terminal
-  -h, --help   Print help
+      --fresh
+          Take this shell's environment for new terminals; run from a terminal outside Herdr
+
+      --json
+          JSON output even in a terminal
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ## hc server start
 
 ```text
+Start a stopped core using this shell's environment
+
 Usage: hc server start [OPTIONS]
 
 Options:

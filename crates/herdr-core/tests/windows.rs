@@ -522,6 +522,22 @@ fn new_terminals_refresh_windows_settings_without_losing_runtime_variables() {
 }
 
 #[test]
+fn an_implicit_windows_start_uses_the_user_environment() {
+    let s = Session::new();
+    let out = cmd(&s.name, &s.root)
+        .env("PATH", r"C:\Windows\System32;HC_STALE_PATH")
+        .env("HC_PROCESS_ONLY", "should-not-leak")
+        .args(["ls"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let (code, output) = s.out(&["exec", "cmd", "/d", "/c", "set"]);
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("HC_PROCESS_ONLY") && !output.contains("HC_STALE_PATH"), "{output}");
+    assert!(output.contains(&format!("HC_SESSION={}", s.name)), "{output}");
+}
+
+#[test]
 fn an_ssh_client_uses_an_existing_core_instead_of_starting_another() {
     let s = Session::new();
     let first = s.json(&["server", "start"]);

@@ -18,7 +18,7 @@ fn wait_finished(s: &Session, t: &str) -> Value {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn default_shells_load_the_login_environment_but_explicit_programs_do_not() {
+fn default_shells_are_login_shells_and_explicit_programs_inherit_login_exports() {
     let mut s = Session::new();
     s.env.push(("SHELL".into(), "/bin/zsh".into()));
     std::fs::write(s.root.join(".zprofile"), "export HC_LOGIN_TEST=loaded\n").unwrap();
@@ -28,23 +28,31 @@ fn default_shells_load_the_login_environment_but_explicit_programs_do_not() {
 
     let t = run(&s, &["/bin/zsh", "-c", "print -r -- login=$options[login] profile=$HC_LOGIN_TEST"]);
     wait_finished(&s, &t);
-    assert!(text(&s, &t).contains("login=off profile="), "explicit argv stays unchanged");
+    assert!(text(&s, &t).contains("login=off profile=loaded"), "explicit argv stays unchanged");
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn programs_get_a_utf8_language_when_the_core_has_none() {
-    // A core the app starts from Finder has no LANG: shells would run in "C".
-    let lang = |s: &Session| {
-        let t = run(s, &["sh", "-c", "echo lang=[$LANG]"]);
-        wait_finished(s, &t);
-        s.json(&["read", &t])["text"].as_str().unwrap().to_string()
-    };
-    let s = Session::new();
-    assert!(lang(&s).contains(".UTF-8]"), "{}", lang(&s));
-    let mut s = Session::new();
-    s.env.push(("LANG".into(), "C".into()));
-    assert!(lang(&s).contains("lang=[C]"), "the user's choice stays");
+fn the_login_profile_and_programs_get_the_regions_locale_when_none_is_supplied() {
+    let expected = herdr_core::locale::for_programs(&Default::default()).unwrap();
+    for supplied in [None, Some("C")] {
+        let mut s = Session::new();
+        // The direct route keeps the launchd domain's locale out of this fixture.
+        s.env.extend([("SHELL".into(), "/bin/zsh".into()), ("SSH_CONNECTION".into(), "test".into())]);
+        if let Some(lang) = supplied {
+            s.env.push(("LANG".into(), lang.into()));
+        }
+        std::fs::write(
+            s.root.join(".zprofile"),
+            "if [ -z \"$LANG\" ]; then export LANG=C.UTF-8; fi\nexport PROFILE_LANG=\"$LANG\"\n",
+        )
+        .unwrap();
+        let t = run(&s, &["sh", "-c", "printf 'lang=[%s] profile=[%s]\\n' \"$LANG\" \"$PROFILE_LANG\""]);
+        wait_finished(&s, &t);
+        let output = text(&s, &t);
+        let lang = supplied.unwrap_or(&expected);
+        assert!(output.contains(&format!("lang=[{lang}] profile=[{lang}]")), "{output}");
+    }
 }
 
 #[test]

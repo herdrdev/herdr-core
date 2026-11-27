@@ -28,6 +28,7 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     s.env.push(("COLORTERM".into(), "".into()));
     s.env.push(("TERM_PROGRAM_VERSION".into(), "1".into()));
     s.env.push(("HC_KEEP_TEST".into(), "preserved".into()));
+    s.json(&["server", "start"]);
     let dir = s.root.join("last");
     std::fs::create_dir(&dir).unwrap();
     let canonical_dir = std::fs::canonicalize(&dir).unwrap();
@@ -139,6 +140,7 @@ fn recovery_saves_only_client_overrides_and_refreshes_the_core_environment() {
     s.json(&["server", "stop"]);
     s.env.retain(|(k, _)| k != "HC_KEEP_BASE");
     s.env.push(("HC_KEEP_BASE".into(), "fresh".into()));
+    s.json(&["server", "start"]);
     wait_until("recovery with fresh environment", || get(&s, t)["pid"].is_number());
     s.json(&["send", t, "printf 'recovery:%s:%s:%s\\n' \"$HC_KEEP_BASE\" \"$HC_KEEP_OVERRIDE\" \"$TERM\""]);
     wait_until("fresh base and saved overrides", || text(&s, t).contains("recovery:fresh:saved:vt100"));

@@ -23,13 +23,20 @@ Builds are available for Linux and macOS on x86_64 and aarch64, and Windows on x
 Linux builds are static. On Windows, templates and quoted shell commands need `sh` on PATH, such as Git for Windows provides.
 
 Run `hc update` to update. Running terminals keep running.
-Updates and `hc server restart` keep the environment the core started with;
-run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
-environment without ending programs. Stopping and starting also takes a fresh one.
-The update from an older core to 0.1.19 uses the updater's environment once,
-because older cores can't save it for the next core.
+When a command or app starts a stopped core, Linux and macOS load exports from
+your non-interactive login shell, including macOS `.zprofile` settings. Login
+PATH takes precedence. Directories available only in the calling shell are
+appended. Starts through systemd or launchd also keep settings from the user
+service manager, with login exports taking precedence. On Windows, programs
+use the user and system environment, including PATH.
 
-If saving fails, the restart still goes ahead with the launcher's environment.
+Updates and `hc server restart` keep the running core's environment.
+Use `hc server start` for a stopped core or `hc server restart --fresh` to
+adopt the environment of a shell outside Herdr.
+An update that starts the replacement implicitly without a saved environment
+uses the platform defaults.
+
+If saving fails, the restart still goes ahead using the start rules above.
 Saved settings expire after three minutes and cannot carry over to another boot
 on Linux or macOS. On Windows, a restart cut short by a fast reboot can reuse them
 once. A plain SIGTERM keeps terminals and screens, but does not save settings.

@@ -243,14 +243,21 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
-- A new Linux core started over SSH loads the account shell's non-interactive
-  login environment once, so remote terminals and commands can find programs
-  from login PATH settings. Local Linux starts, macOS and Windows are unchanged.
-  Reconnecting and crash recovery keep the loaded environment. Profiles have five
-  seconds and a combined 1 MiB output limit; remaining profile jobs are ended after
-  capture. A failed or blocked profile falls back to the incoming environment and records
-  the shell and reason in `core.log`. To refresh an existing remote core, run
-  `hc server restart --fresh` from a normal SSH login outside Herdr.
+- A command or app starting a stopped core uses the platform's default
+  environment for new terminals, kept shells and exec. On Linux and macOS,
+  the core captures exports from the non-interactive login shell in HOME,
+  including `.zprofile` on macOS. Starts through systemd or launchd also keep
+  settings from the user service manager, with login exports taking precedence.
+  Login PATH comes first, then any extra directories from the caller's PATH.
+  Profiles have five seconds and a
+  combined 1 MiB output limit. The core ends remaining profile jobs after
+  capture. A failed or blocked profile uses platform defaults plus the caller's
+  extra PATH directories. Nushell login capture also falls back to these defaults.
+  The core logs the shell and failure
+  reason in `core.log`. On Windows, the core starts from the user and system
+  environment. Reconnecting to a running core keeps its environment.
+  After a crash with no restart handoff, the replacement uses the same
+  default start rules.
 - `hc run` without a command starts this machine's own shell. On macOS,
   this is a login shell so it loads the login environment; explicit commands
   are unchanged. Recovery shells use the same rule.
@@ -332,18 +339,22 @@ paths start at your current folder. Prefer explicit paths for remote work.
   Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
   environment for new terminals without ending running programs. Existing
   programs keep their environment; kept terminals use the fresh one after
-  recovery. Stopping and starting also takes a fresh environment. Per-terminal
-  API `env` overrides still apply, as do Linux session and Windows registry
-  refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
-  by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.
+  recovery. An explicit `hc server start` also takes the calling shell's
+  environment when the core is stopped. Agents should let a normal command
+  wake the core. An explicit start from a tool shell adopts that shell's exports.
+  On Windows, a plain restart of a stopped core uses the implicit-start check
+  for elevated SSH. Per-terminal API `env` overrides still apply, as do Linux
+  session and Windows registry refreshes. On macOS, a saved SSH agent socket that
+  no longer answers is replaced by the launcher's value. SIGTERM hands over
+  terminals and screens without saving an environment.
   Preservation is best effort: a failed save never blocks a restart.
   The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:
   a requested restart interrupted by a fast reboot can reuse it once. Session
   paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
   new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
-  not by the saved environment. The update from an older core to 0.1.19 takes the
-  updater's environment once: older cores can't write the note for their successor.
+  not by the saved environment. An update that starts the replacement
+  implicitly without a saved environment uses the platform defaults.
 - On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
   processes. They hang up the terminal and end its own program and foreground
   job; deliberately detached programs can survive (background server ports may

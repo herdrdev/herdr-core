@@ -95,7 +95,18 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
         return Err(err);
     }
     platform::may_autostart(explicit)?;
+    spawn_core(paths, explicit)
+}
+
+/// Serialize client and holder starts so login hooks run once per core.
+pub(crate) fn spawn_core(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
     paths.create_dirs().map_err(|e| unavailable(format!("cannot start core: {e}")))?;
+    let start_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(paths.state.join("start.lock"))
+        .map_err(|e| unavailable(format!("cannot open core start lock: {e}")))?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -103,13 +114,20 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
         .open(paths.state.join("core.lock"))
         .map_err(|e| unavailable(format!("cannot open core lock: {e}")))?;
     let start = Instant::now();
+    let mut starting = false;
     loop {
         if let Ok(stream) = platform::connect(&paths.socket) {
             return Ok(stream);
         }
+        if !starting {
+            starting = platform::try_lock(&start_lock);
+            if !starting && platform::capturing_login() {
+                return Err(unavailable("cannot start core from its login environment capture".into()));
+            }
+        }
         // A closing connection does not mean serve has released its lock yet.
         // Starting its replacement early would make that process exit immediately.
-        if platform::try_lock(&lock) {
+        if starting && platform::try_lock(&lock) {
             break;
         }
         if start.elapsed() > START_WAIT {
@@ -118,7 +136,8 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
         std::thread::sleep(Duration::from_millis(10));
     }
     drop(lock);
-    spawn_core(paths)?;
+    spawn_with_environment(paths, &["serve"], "core.log", explicit)
+        .map_err(|e| unavailable(format!("cannot start core: {e}")))?;
     wait_for_socket(&paths.socket, "core").map_err(unavailable)
 }
 
@@ -191,33 +210,39 @@ fn the_build_is_named_by_the_linkers_build_id() {
     assert_eq!(elf_build_id(b"#!/bin/sh\n"), None);
 }
 
-pub fn spawn_core(paths: &Paths) -> Result<(), RpcError> {
-    spawn_detached(paths, &["serve"], "core.log").map_err(|e| unavailable(format!("cannot start core: {e}")))
+/// Starts a holder with the core's environment.
+pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Result<()> {
+    spawn_with_environment(paths, args, log, false)
 }
 
-/// Starts `herdr-core <args>` on its own (Linux: as a user service), logging
-/// to the state dir.
-pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Result<()> {
+fn spawn_with_environment(paths: &Paths, args: &[&str], log: &str, explicit: bool) -> std::io::Result<()> {
     paths.create_dirs()?;
     let log = paths.state.join(log);
     let exe = EXE.get().cloned().map_or_else(std::env::current_exe, Ok)?;
-    let exe = if args.first() == Some(&"serve") { platform::core_executable(&exe) } else { exe };
+    let core = args.first() == Some(&"serve");
+    let exe = if core { platform::core_executable(&exe) } else { exe };
     let mut cmd = Command::new(exe);
-    if args.first() == Some(&"serve") {
-        platform::core_environment(&mut cmd, &paths.state);
-    }
+    // Serve validates the handoff again under core.lock. If it becomes invalid
+    // during startup, serve keeps the environment it launched with.
+    let clean = core
+        && !crate::restart::has_environment(paths)
+        && platform::core_environment(&mut cmd, &paths.state, !explicit);
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.
-    cmd.args(args).env_remove(crate::sweep::VAR).env_remove(crate::resume::TOKEN).env(crate::sweep::RUNTIME, "1");
+    cmd.args(args)
+        .env_remove(crate::sweep::VAR)
+        .env_remove(crate::resume::TOKEN)
+        .env_remove(platform::LOGIN_CAPTURE)
+        .env(crate::sweep::RUNTIME, "1");
     #[cfg(target_os = "linux")]
-    if let Some(started) = platform::systemd::spawn(&cmd, &log) {
+    if let Some(started) = platform::systemd::spawn(&cmd, &log, clean) {
         return started;
     }
-    if platform::spawn_core_job(&mut cmd, &log) {
+    if platform::spawn_core_job(&mut cmd, &log, clean) {
         return Ok(());
     }
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
-    platform::spawn_detached(cmd, log)
+    platform::spawn_detached(cmd, log, clean)
 }
 
 /// How long a starting core or holder may take to answer. A busy machine (or
