@@ -322,7 +322,10 @@ paths start at your current folder. Prefer explicit paths for remote work.
   the job label, failed phase and available spawn state before cleanup.
 - On macOS, reopening Herdr after logout/login refreshes an older GUI core's
   login context while keeping surviving terminals. New terminals use the new
-  login; existing programs retain their original OS context. An explicit
+  login. Surviving terminals keep reaching macOS services (user lookup,
+  keychain, certificate checks): holders give terminals launchd's per-user
+  context, which outlives a login. Holders started by older versions keep
+  the old login's context until they end. An explicit
   `hc server restart` from a healthy login also retires holders from another
   login without ending their programs. Viewing a healthy SSH core does not
   replace it, and lock/unlock does not rotate holders. Cores installed before

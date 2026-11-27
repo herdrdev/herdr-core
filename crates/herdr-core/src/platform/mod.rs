@@ -122,11 +122,17 @@ pub fn prepare_core() {
     macos_launchd::prepare_core();
 }
 
-/// Complete the holder's background-app registration before starting threads or terminals.
+/// Complete the holder's background-app registration and give terminals a service context that
+/// survives logout, before starting threads or terminals.
 pub fn prepare_holder() {
     #[cfg(target_os = "macos")]
-    if let Err(error) = macos_appkit::check_in() {
-        eprintln!("holder: background app registration unavailable: {error}");
+    {
+        if let Err(error) = macos_appkit::check_in() {
+            eprintln!("holder: background app registration unavailable: {error}");
+        }
+        if let Err(error) = macos_session::outlive_logout() {
+            eprintln!("holder: terminals keep this login's macOS services and lose them at logout: {error}");
+        }
     }
 }
 
