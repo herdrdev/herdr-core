@@ -151,15 +151,32 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&file, b""))
         .map_err(|e| RpcError::internal(format!("cannot note the exec: {e}")))?;
-    let mut cmd = tokio::process::Command::new(&argv[0]);
     #[cfg(windows)]
-    if crate::platform::is_shell_line(&argv) {
-        cmd.args(&argv[1..4]).raw_arg(format!("\"{}\"", argv[4]));
-    } else {
+    let mut cmd = {
+        let path = std::path::Path::new(&argv[0]);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd") {
+            let mut cmd = tokio::process::Command::new("cmd.exe");
+            let tail = crate::platform::batch_cmd_tail(path, &argv[1..])
+                .map_err(|e| RpcError::new("spawn_failed", e.to_string(), ""))?;
+            cmd.raw_arg(tail);
+            cmd
+        } else if crate::platform::is_shell_line(&argv) {
+            let mut cmd = tokio::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..4]).raw_arg(format!("\"{}\"", argv[4]));
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..]);
+            cmd
+        }
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut cmd = tokio::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
-    }
-    #[cfg(unix)]
-    cmd.args(&argv[1..]);
+        cmd
+    };
     cmd.current_dir(&cwd)
         .env_clear()
         .envs(env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd))
