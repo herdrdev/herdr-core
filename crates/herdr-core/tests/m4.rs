@@ -43,7 +43,7 @@ fn a_send_into_a_starting_agent_waits_for_its_screen_to_settle() {
     ]);
     let t = t["address"].as_str().unwrap().to_string();
     wait_until("reported", || s.json(&["get", &t])["reported"] == true);
-    s.json(&["send", &t, "hello"]);
+    s.json(&["send", "--raw", &t, "hello"]);
     shows(&s, &t, "got:hello");
 }
 
