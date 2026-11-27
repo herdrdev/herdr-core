@@ -6,7 +6,16 @@ terminal multiplexer.
 # hc: programs and agents that stay alive
 
 `hc` runs programs in persistent terminals. People can attach and take over.
-It does not arrange windows; use `herdr-app --skill` for that.
+The optional Herdr app arranges windows. For window work, use
+`herdr-app --skill` if the app is installed. On a core-only machine,
+continue with `hc`. To check on Unix:
+
+```sh
+if command -v herdr-app >/dev/null 2>&1; then
+    herdr-app --skill
+fi
+```
+
 `$HC_TERMINAL_ID` is your address. Terminals you start are your children.
 They end when you end, unless started with `--outlive-parent`.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
