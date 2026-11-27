@@ -850,8 +850,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("machine rename", "machine.rename"),
     ("machine rm", "machine.rm"),
 ];
-/// Methods without a command: handshake, opaque document storage, and the
-/// pieces of a put between cores.
+/// Methods without a command: handshake, opaque document storage, the
+/// pieces of a put between cores, and key bytes for a client that writes them
+/// on its attach.
 pub const API_ONLY: &[&str] = &[
     "hello",
     "doc.get",
@@ -860,6 +861,7 @@ pub const API_ONLY: &[&str] = &[
     "terminal.put_chunk",
     "terminal.put_finish",
     "terminal.put_abort",
+    "terminal.encode",
 ];
 
 #[cfg(test)]
