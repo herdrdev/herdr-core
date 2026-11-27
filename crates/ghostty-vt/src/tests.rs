@@ -118,6 +118,24 @@ fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
 }
 
 #[test]
+fn a_paint_is_one_synchronized_update_so_a_viewer_draws_it_once_it_is_whole() {
+    let sync = |bytes: &[u8]| bytes.windows(8).filter(|w| w.starts_with(b"\x1b[?2026")).count();
+    let mut main = Terminal::new(30, 4, 1 << 20);
+    for i in 0..8 {
+        main.write(format!("line {i}\r\n").as_bytes());
+    }
+    main.write(b"\x1b]2;title\x07\x1b[?2026hprompt> ");
+    let mut alt = Terminal::new(30, 4, 1 << 20);
+    alt.write(b"main\r\n\x1b[?1049h\x1b[?2026hfull screen");
+    for (t, history) in [(&main, 0), (&main, 3), (&alt, 10)] {
+        let paint = t.paint(history);
+        assert!(paint.starts_with(b"\x1b[?2026h"), "{:?}", String::from_utf8_lossy(&paint[..16]));
+        assert!(paint.ends_with(b"\x1b[?2026l"));
+        assert_eq!(sync(&paint), 2, "no other synchronized-output mode between the bracket's ends");
+    }
+}
+
+#[test]
 fn attaching_on_alternate_screen_preserves_primary_when_the_program_exits() {
     for mode in [47, 1047, 1049] {
         for history in [0, 3] {
