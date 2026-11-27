@@ -75,7 +75,7 @@ Agent? Run: hc --skill
 ## hc attach
 
 ```text
-Put this terminal on a core terminal (detach: ctrl+\)
+Put this terminal on a core terminal (detach: ctrl+\, or the config's detach_key)
 
 Usage: hc attach [OPTIONS] [TERMINAL]
 

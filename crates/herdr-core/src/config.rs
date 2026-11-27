@@ -11,6 +11,7 @@ pub struct Config {
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.
+    /// A letter is the same key on every keyboard layout.
     pub detach_key: Option<String>,
     /// Seconds a `wait` runs before it checks in (default 180).
     pub wait_timeout: Option<f64>,

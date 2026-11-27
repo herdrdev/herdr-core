@@ -529,6 +529,23 @@ fn the_picker_takes_text_and_enter_in_one_read() {
 }
 
 #[test]
+fn an_altgr_detach_chord_detaches_and_never_reaches_the_program() {
+    let s = Session::new();
+    // Every byte the program gets is printed as hex, so a leaked chord would show.
+    let inner = run(&s, &["sh", "-c", &format!("echo inner-ready; {BYTES}")]);
+    let bin = s.bin.display().to_string();
+    let outer = run(&s, &[&bin, "attach", &inner]);
+    let mut v = Viewer::attach(&s, &outer, 90, 25, json!({}));
+    v.shows("inner-ready");
+    // A layout where `\` needs AltGr: kitty and modifyOtherKeys report it as ctrl+alt.
+    v.typed(b"\x1b[92;7u");
+    v.until("client exit", |v| v.closed.is_some());
+    assert_eq!(v.closed.as_ref().unwrap()["exit_code"], 0, "{}", s.json(&["read", &outer])["text"]);
+    let text = s.json(&["read", &inner])["text"].as_str().unwrap().to_string();
+    assert!(!text.contains(" 1b") && !text.contains(" 5b"), "the chord reached the program: {text}");
+}
+
+#[test]
 fn hc_attach_relays_both_ways_and_detaches_on_ctrl_backslash() {
     let s = Session::new();
     let inner = run(&s, &["sh", "-c", "echo inner-ready; while read l; do echo inner-got-$l; done"]);
