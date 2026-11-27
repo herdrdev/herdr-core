@@ -298,6 +298,10 @@ pub(crate) fn environment_key_eq(key: &std::ffi::OsStr, name: &str) -> bool {
     if cfg!(windows) { key.eq_ignore_ascii_case(std::ffi::OsStr::new(name)) } else { key == name }
 }
 
+pub(crate) fn path_component_eq(component: &std::ffi::OsStr, name: &str) -> bool {
+    if cfg!(windows) { component.eq_ignore_ascii_case(std::ffi::OsStr::new(name)) } else { component == name }
+}
+
 /// Application settings survive a restart; session paths and lifecycle marks do not move.
 pub(crate) fn restored_environment(
     saved: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,

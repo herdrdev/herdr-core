@@ -28,23 +28,65 @@ pub fn installed_by() -> Option<&'static str> {
 
 pub(crate) fn installed_by_path(exe: &std::path::Path) -> Option<&'static str> {
     let path = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
-    manager_of(&path.to_string_lossy()).or_else(|| (!platform::can_replace(&path)).then_some("system package manager"))
+    manager_of(&path).or_else(|| (!platform::can_replace(&path)).then_some("system package manager"))
 }
 
-fn manager_of(path: &str) -> Option<&'static str> {
-    [("/Cellar/", "homebrew"), ("/nix/store/", "nix"), ("/mise/installs/", "mise")]
-        .into_iter()
-        .find(|(mark, _)| path.contains(mark))
-        .map(|(_, manager)| manager)
+fn manager_of(path: &std::path::Path) -> Option<&'static str> {
+    use std::path::Component;
+    let comps: Vec<_> = path.components().collect();
+    let has = |seq: &[&str]| {
+        comps.windows(seq.len() + 2).any(|w| {
+            matches!(w.first(), Some(Component::RootDir | Component::Normal(_)))
+                && w[1..1 + seq.len()]
+                    .iter()
+                    .zip(seq)
+                    .all(|(c, s)| matches!(c, Component::Normal(n) if platform::path_component_eq(n, s)))
+                && matches!(w.last(), Some(Component::Normal(_)))
+        })
+    };
+    if has(&["Cellar"]) {
+        Some("homebrew")
+    } else if has(&["nix", "store"]) {
+        Some("nix")
+    } else if has(&["mise", "installs"]) {
+        Some("mise")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 #[test]
 fn the_package_manager_is_read_from_the_path() {
-    assert_eq!(manager_of("/opt/homebrew/Cellar/herdr-core/0.2.0/bin/herdr-core"), Some("homebrew"));
-    assert_eq!(manager_of("/nix/store/abc-herdr-core/bin/herdr-core"), Some("nix"));
-    assert_eq!(manager_of("/home/me/.local/share/mise/installs/herdr-core/0.2.0/herdr-core"), Some("mise"));
-    assert_eq!(manager_of("/home/me/.local/bin/herdr-core"), None);
+    use std::path::Path;
+    assert_eq!(manager_of(Path::new("/opt/homebrew/Cellar/herdr-core/0.2.0/bin/herdr-core")), Some("homebrew"));
+    assert_eq!(manager_of(Path::new("/nix/store/abc-herdr-core/bin/herdr-core")), Some("nix"));
+    assert_eq!(manager_of(Path::new("/home/me/.local/share/mise/installs/herdr-core/0.2.0/herdr-core")), Some("mise"));
+    assert_eq!(manager_of(Path::new("/home/me/.local/bin/herdr-core")), None);
+    assert_eq!(manager_of(Path::new("mise/installs/herdr-core/0.2.0/herdr-core")), None);
+    assert_eq!(manager_of(Path::new("/home/me/.local/bin/Cellar")), None);
+    #[cfg(unix)]
+    {
+        assert_eq!(manager_of(Path::new(r"/home/me/foo\mise\installs\herdr-core/bin")), None);
+        assert_eq!(manager_of(Path::new("/home/me/.local/share/Mise/installs/herdr-core/0.2.0/herdr-core")), None);
+    }
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            manager_of(Path::new(r"C:\Users\Alice\AppData\Local\mise\installs\herdr-core\0.2.0\herdr-core.exe")),
+            Some("mise")
+        );
+        assert_eq!(
+            manager_of(Path::new(r"\\?\C:\Users\Alice\AppData\Local\mise\installs\herdr-core\0.2.0\herdr-core.exe")),
+            Some("mise")
+        );
+        assert_eq!(
+            manager_of(Path::new(r"C:\Users\Alice\AppData\Local\Mise\Installs\herdr-core\0.2.0\herdr-core.exe")),
+            Some("mise")
+        );
+        assert_eq!(manager_of(Path::new(r"\\?\C:\Mise\installs\herdr-core\0.2.0\herdr-core.exe")), Some("mise"));
+        assert_eq!(manager_of(Path::new(r"C:\Users\Alice\.local\bin\herdr-core.exe")), None);
+    }
 }
 
 /// Which build this process runs: the linker's build id, so a copy of the same
