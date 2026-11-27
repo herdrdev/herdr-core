@@ -421,7 +421,8 @@ fn platform(uname: &str) -> String {
     let os = match words.next() {
         Some("Linux") => "linux",
         Some("Darwin") => "macos",
-        Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") => "windows",
+        // GnuWin32-style coreutils say `windows32` whatever the CPU; install_windows ignores the arch.
+        Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") || os == "windows32" => "windows",
         other => other.unwrap_or("?"),
     };
     let arch = match words.next() {
@@ -649,6 +650,8 @@ mod tests {
         assert_eq!(platform("Linux x86_64"), "linux x86_64");
         assert_eq!(platform("MINGW64_NT-10.0 x86_64"), "windows x86_64");
         assert_eq!(platform("MSYS_NT-10.0 x86_64"), "windows x86_64");
+        // GnuWin32-style coreutils (Chocolatey's uname.exe) on 64-bit Windows.
+        assert_eq!(platform("windows32 i686-pc"), "windows i686-pc");
     }
 
     #[test]
