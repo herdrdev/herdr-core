@@ -261,13 +261,14 @@ impl Core {
         if first_task_finished {
             t.first_task_turn = None;
         }
-        let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
+        let (status, records, turn, reported, status_ms) =
+            (t.status.clone(), t.records.clone(), t.turn, t.reported, t.status_ms);
         if change.status {
             self.emit(
                 st,
                 "status",
                 id,
-                serde_json::json!({"status": status, "records": records, "reported": reported}),
+                serde_json::json!({"status": status, "records": records, "reported": reported, "status_ms": status_ms}),
             );
         }
         if change.turn_ended {

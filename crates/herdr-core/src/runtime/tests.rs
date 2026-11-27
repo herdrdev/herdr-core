@@ -782,6 +782,7 @@ fn adopting_a_holder_announces_a_status_its_tail_changed() {
     let events = status_events_on_crash_adoption(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
     assert_eq!(events.len(), 1, "one status event for the final word, not one per replayed report: {events:?}");
     assert_eq!(events[0]["data"]["status"]["state"], "idle");
+    assert!(events[0]["data"]["status_ms"].is_u64(), "status events carry the machine timestamp");
 }
 
 #[test]

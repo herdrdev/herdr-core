@@ -134,7 +134,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `keep` | `{keep}` | set `keep` |
 | `finished` | `{reason, exit_code, signal, finished_ms}` | set `state: "finished"` and these, and drop `foreground`; status is cleared just before (a `status` event) |
 | `removed` | `{}` | drop it |
-| `status` | `{status, records, reported}`: the root status (null when cleared), every record by key, whether it ever reported | replace all three |
+| `status` | `{status, records, reported, status_ms}`: the root status (null when cleared), every record by key, whether it ever reported, and when the root state last changed (epoch ms, or null) | replace all fields present, keeping the last known timestamp for older peers that omit it |
 | `turn` | `{turn, state}`: the turn counter after a turn ended, and the word it ended on | set `turn` |
 | `title` | `{title}` | set `title` |
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |

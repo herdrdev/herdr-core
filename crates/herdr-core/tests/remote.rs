@@ -588,7 +588,7 @@ fn next_params(conn: &mut Conn, pick: impl Fn(&Value) -> bool) -> Value {
 
 #[test]
 fn events_cover_terminals_on_other_machines() {
-    let (_rohan, s) = with_rohan();
+    let (rohan, s) = with_rohan();
     let mut all = s.connect();
     all.call(1, "events.subscribe", json!({}));
     let t = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "r state=working; w go; r state=idle; sleep 100")]);
@@ -605,6 +605,9 @@ fn events_cover_terminals_on_other_machines() {
     let snap = one.call(1, "events.subscribe", json!({"terminal": t}));
     let terminals = snap["result"]["terminals"].as_array().unwrap().clone();
     assert_eq!((terminals.len(), &terminals[0]["status"]["state"]), (1, &json!("idle")), "{snap}");
+    let remote_time = get(&rohan, t.split_once('/').unwrap().1)["status_ms"].clone();
+    assert!(remote_time.is_u64(), "{remote_time}");
+    assert_eq!(terminals[0]["status_ms"], remote_time, "snapshot must use the machine's status timestamp");
     s.json(&["kill", &t]);
     next_params(&mut one, |e| e["type"] == "finished" && e["terminal"] == t.as_str());
 }
