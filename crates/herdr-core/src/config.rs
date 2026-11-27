@@ -35,6 +35,9 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+    /// Seconds a machine being dialed gets to answer hello, its login
+    /// included (default 20). Raise it for slow `--via` commands.
+    pub dial_timeout: Option<f64>,
 }
 
 fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
@@ -68,6 +71,13 @@ impl Config {
 
     pub fn machine_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs_f64(self.machine_timeout.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(30.0))
+    }
+
+    pub fn dial_timeout(&self) -> Duration {
+        self.dial_timeout
+            .filter(|s| *s > 0.0)
+            .and_then(|s| Duration::try_from_secs_f64(s).ok())
+            .unwrap_or(Duration::from_secs(20))
     }
 
     pub fn history_bytes(&self) -> usize {

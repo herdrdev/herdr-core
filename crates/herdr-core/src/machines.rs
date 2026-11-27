@@ -351,9 +351,10 @@ async fn dial_once(
             }
         }
     };
-    let reply = tokio::time::timeout(Duration::from_secs(20), reply).await;
+    let wait = crate::config::load(&paths.config).unwrap_or_default().dial_timeout();
+    let reply = tokio::time::timeout(wait, reply).await;
     let reply = match reply {
-        Err(_) => return Err(unreachable(to, "no answer within 20 s")),
+        Err(_) => return Err(unreachable(to, &format!("no answer within {} s", wait.as_secs_f64()))),
         Ok(Some(reply)) => reply,
         Ok(None) => {
             // Bounded: something it started may hold stderr open, and a dial
