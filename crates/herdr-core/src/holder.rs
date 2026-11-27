@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 const TAIL_BYTES: usize = 1 << 20;
 const EXIT_DRAIN: Duration = Duration::from_millis(200);
 /// Output queued for a core that reads slowly before programs have to wait for it.
-const BACKLOG_BYTES: usize = 8 << 20;
+/// All terminals share it, so it holds one pump read: enough to overlap reading
+/// and parsing without a quiet terminal waiting behind a busy one.
+const BACKLOG_BYTES: usize = 64 << 10;
 
 struct Term {
     pid: u32,
