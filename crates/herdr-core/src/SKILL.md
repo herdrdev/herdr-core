@@ -14,7 +14,7 @@ Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
 Use `hc ls --table` for a plain-text table in captured or piped output.
 Use `hc <command> --help` for exact arguments; `hc --help` lists commands.
 
-## Delegate a task
+## Delegate a task with hc
 
 First check `hc templates`: ready-made roles may include `reviewer`,
 `simplifier`, or implementers. Use one that fits. Templates are Markdown
