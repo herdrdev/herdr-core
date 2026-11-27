@@ -474,7 +474,9 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
 
 /// CAN first: the line may have dropped mid-sequence, which would swallow this.
 fn lost_notice(machine: &str) -> String {
-    format!("\x18\r\n[line to {machine} lost; reconnecting...]\r\n")
+    // The reconnect repaints this row. Neither line feeds nor wrapping should
+    // move any of the old screen into the viewer's scrollback meanwhile.
+    format!("\x18\x1b[?7s\x1b[?7l\r\x1b[0m\x1b[2K[line to {machine} lost; reconnecting...]\x1b[?7r")
 }
 
 /// A machine's terminals now (after a connect, or after it says we missed
