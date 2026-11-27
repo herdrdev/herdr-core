@@ -27,6 +27,9 @@ pub struct Display {
     pub cursor: Option<String>,
     /// Cell size in pixels: `[width, height]`.
     pub cell: Option<[u32; 2]>,
+    /// Whether this terminal sends in-band resize reports (DEC mode 2048).
+    /// False: while it leads, the core sends programs the terminal's size itself.
+    pub resize_reports: Option<bool>,
 }
 
 pub struct Viewer {
@@ -169,6 +172,7 @@ impl Core {
         }
         relay.expect_answers(viewers.get_mut(&id).into_iter().flatten().filter(|v| !v.observe).map(|v| &mut v.answers));
         let (replies, wait) = relay.take_replies(screen, answering(viewers.get(&id)));
+        let replies = size_reports(&replies, viewers.get(&id));
         let replies = ordered_replies(gates.entry(id).or_default(), &replies);
         if let Some(link) = holder {
             link.input(id, &replies);
@@ -336,6 +340,7 @@ impl Core {
         v.display.bg = display.bg.or(v.display.bg.take());
         v.display.cursor = display.cursor.or(v.display.cursor.take());
         v.display.cell = display.cell.or(v.display.cell);
+        v.display.resize_reports = display.resize_reports.or(v.display.resize_reports);
         let display = st.viewers[&id]
             .iter()
             .filter(|v| !v.observe)
@@ -402,6 +407,8 @@ impl Core {
         st.screens.get_mut(&id).expect("live screen").resize(cols, rows);
         rec.cols = cols;
         rec.rows = rows;
+        // The screen's report of the new size, for a 2048 program whose viewer sends none.
+        self.apply_display(st, id, None);
         if let Some(link) = st.link(id) {
             link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
         }
@@ -452,7 +459,7 @@ impl Core {
 
     fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
         let answering = answering(st.viewers.get(&id));
-        let State { screens, relays, .. } = st;
+        let State { screens, relays, viewers, .. } = st;
         let Some(screen) = screens.get_mut(&id) else { return };
         if let Some(d) = display {
             d.apply(screen);
@@ -460,6 +467,7 @@ impl Core {
         // Display changes can notify an idle program, even without a resize or output.
         // In order behind a viewer's image answer; only output begins a wait.
         let (replies, _) = relays.entry(id).or_default().take_replies(screen, answering);
+        let replies = size_reports(&replies, viewers.get(&id));
         let replies = ordered_replies(st.gates.entry(id).or_default(), &replies);
         if let Some(link) = st.link(id) {
             link.input(id, &replies);
@@ -482,6 +490,17 @@ fn ordered_replies(gate: &mut crate::input::Gate, replies: &[u8]) -> Vec<u8> {
         }
     }
     now
+}
+
+/// The screen's replies, keeping its in-band resize reports (DEC 2048) only
+/// while the leading viewer's terminal sends none: otherwise they are the viewer's.
+fn size_reports(replies: &[u8], viewers: Option<&Vec<Viewer>>) -> Vec<u8> {
+    let leader = viewers.and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
+    if leader.is_some_and(|v| v.display.resize_reports == Some(false)) {
+        replies.to_vec()
+    } else {
+        crate::relay::without_resize_reports(replies)
+    }
 }
 
 /// Whether a viewer could answer an image: observers' replies never reach the program.

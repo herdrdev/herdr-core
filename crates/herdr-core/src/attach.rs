@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Ask the outer terminal for its colors and cell size; DA1 marks the end.
-const ASK_DISPLAY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[c";
+/// Ask the outer terminal for its colors, cell size and in-band resize
+/// support (DEC 2048); DA1 marks the end.
+const ASK_DISPLAY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[?2048$p\x1b[c";
 /// Undo what the program may have changed in the outer terminal, checked
 /// against Ghostty's mode list: synchronized output first (it freezes the
 /// screen), kitty key flags on both screens (each screen keeps its own), then
@@ -141,10 +142,20 @@ fn take_replies(input: &[u8], facts: &mut Display) -> (Vec<u8>, bool) {
             i += 4 + t + 1;
             continue;
         }
+        if let Some(body) = tail.strip_prefix(b"\x1b[?2048;")
+            && let Some(y) = body.windows(2).position(|w| w == b"$y")
+        {
+            // DECRPM: 1 set, 2 reset, 3 permanently set; 0 unknown, 4 permanently reset.
+            facts.resize_reports = Some(matches!(&body[..y], b"1" | b"2" | b"3"));
+            i += 8 + y + 2;
+            continue;
+        }
         if let Some(body) = tail.strip_prefix(b"\x1b[?")
             && let Some(c) = body.iter().position(|b| !b.is_ascii_digit() && *b != b';')
             && body[c] == b'c'
         {
+            // Terminals answer in order: none to 2048 by DA1 (tmux) means no reports.
+            facts.resize_reports.get_or_insert(false);
             done = true;
             i += 3 + c + 1;
             continue;
@@ -446,5 +457,19 @@ mod tests {
         assert_eq!(facts.bg.as_deref(), Some("#ff8000"));
         assert_eq!(facts.fg.as_deref(), Some("#112233"));
         assert_eq!(facts.cell, Some([9, 18]));
+    }
+
+    #[test]
+    fn a_terminal_that_answers_da1_without_2048_sends_no_resize_reports() {
+        let mut facts = Display::default();
+        let (rest, _) = take_replies(b"\x1b[?2048;2$yx\x1b[?62;22c", &mut facts);
+        assert_eq!(rest, b"x");
+        assert_eq!(facts.resize_reports, Some(true), "supported, not yet enabled");
+        let mut facts = Display::default();
+        take_replies(b"\x1b[?2048;0$y\x1b[?62;22c", &mut facts);
+        assert_eq!(facts.resize_reports, Some(false), "not recognized");
+        let mut facts = Display::default();
+        take_replies(b"\x1b[?1;2c", &mut facts); // tmux: no answer at all, only DA1
+        assert_eq!(facts.resize_reports, Some(false));
     }
 }

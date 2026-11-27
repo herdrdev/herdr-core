@@ -155,6 +155,27 @@ fn in_band_resize_reports_belong_to_the_viewer_not_the_core() {
 }
 
 #[test]
+fn the_core_reports_the_size_when_the_viewers_terminal_cannot() {
+    let s = Session::new();
+    let probe = script(
+        &s,
+        "stty raw -echo min 0 time 2; printf '\\033[?2048h'; echo READY; w resized; \
+         echo OUTPUT; r=''; for i in 1 2 3; do r=\"$r$(dd bs=256 count=1 2>/dev/null)\"; done; \
+         printf '%s' \"$r\" | od -An -tx1; echo END; sleep 100",
+    );
+    let t = run(&s, &["sh", "-c", &probe]);
+    wait_until("2048 enabled", || text(&s, &t).contains("READY"));
+    let mut v = Viewer::attach(&s, &t, 100, 30, json!({"display": {"resize_reports": false}}));
+    v.conn.send(v.channel, wire::RESIZE, &[90, 0, 20, 0]);
+    wait_until("resized", || size(&s, &t) == (90, 20));
+    touch(&s, "resized");
+    v.shows("END");
+    let hex: String = v.text().split_whitespace().collect();
+    // CSI 48 ; 20 ; 90 ; is the size the program now has.
+    assert!(hex.contains("1b5b34383b32303b39303b"), "no report of 90x20: {}", v.text());
+}
+
+#[test]
 fn size_follows_the_last_active_typing_viewer() {
     let s = Session::new();
     let t = run(&s, &["sh", "-c", "trap 'stty size' WINCH; while :; do sleep 0.05; done"]);
