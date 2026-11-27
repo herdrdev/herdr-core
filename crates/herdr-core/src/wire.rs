@@ -30,6 +30,17 @@ pub const MAX_PENDING: usize = 4 << 20;
 pub const MAX_CONTROL: usize = 64 << 20;
 const CHUNK: usize = 16 * 1024;
 
+/// How long to wait before doing again what was last done at `last`, to do it
+/// at most once per `every`; `None`: now.
+pub fn hold(
+    last: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+    every: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let wait = every.checked_sub(now.saturating_duration_since(last?))?;
+    (!wait.is_zero()).then_some(wait)
+}
+
 pub fn encode(channel: u32, kind: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER + payload.len());
     out.extend_from_slice(&channel.to_le_bytes());
@@ -175,6 +186,8 @@ pub struct Outbox {
     overflowed: bool,
     streams: BTreeMap<u32, Stream>,
     turn: u32,
+    /// When a viewer last typed on this connection.
+    typed: Option<tokio::time::Instant>,
 }
 
 impl Outbox {
@@ -188,6 +201,17 @@ impl Outbox {
             return;
         }
         self.control.push_back(frame);
+    }
+
+    pub fn typed(&mut self, at: tokio::time::Instant) {
+        self.typed = Some(at);
+    }
+
+    /// Someone is waiting on what's queued: a reply, or the echo of a key
+    /// just typed. It goes out now rather than at the next display frame.
+    pub fn urgent(&self, now: tokio::time::Instant) -> bool {
+        const ECHO: std::time::Duration = std::time::Duration::from_millis(250);
+        !self.control.is_empty() || self.typed.is_some_and(|at| now.saturating_duration_since(at) < ECHO)
     }
 
     pub fn open(&mut self, channel: u32) {
@@ -344,6 +368,33 @@ impl Outbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pacing_waits_out_the_interval_only_right_after_the_last_time() {
+        let now = tokio::time::Instant::now();
+        let every = std::time::Duration::from_millis(16);
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(hold(None, now, every), None, "the first time goes at once");
+        assert_eq!(hold(Some(now - ms(4)), now, every), Some(ms(12)), "a burst waits for the rest");
+        assert_eq!(hold(Some(now - ms(16)), now, every), None, "after a quiet spell, at once");
+    }
+
+    #[test]
+    fn replies_and_typing_echo_are_not_held_back_for_coalescing() {
+        let now = tokio::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        let mut out = Outbox::default();
+        out.open(1);
+        out.data(1, b"spinner");
+        assert!(!out.urgent(now), "background output may wait for the next display frame");
+        out.typed(now - ms(400));
+        assert!(!out.urgent(now), "typing long ago doesn't count");
+        out.typed(now - ms(20));
+        assert!(out.urgent(now), "output right after typing is likely its echo");
+        let mut out = Outbox::default();
+        out.control(encode(0, DATA, b"{}"));
+        assert!(out.urgent(now), "a reply has a caller waiting on it");
+    }
 
     #[test]
     fn resize_replaces_stalled_and_partially_sent_paints_atomically() {

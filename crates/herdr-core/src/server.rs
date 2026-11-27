@@ -88,6 +88,7 @@ pub fn serve() -> io::Result<()> {
         tokio::spawn(core.clone().watch_foreground());
         tokio::spawn(core.clone().save_when_due());
         tokio::spawn(core.clone().expire_image_answers());
+        tokio::spawn(core.clone().send_due_titles());
         let term = platform::termination();
         tokio::pin!(term);
         loop {
@@ -348,17 +349,41 @@ pub fn heartbeat(core: Arc<Core>, conn: Arc<Conn>, channel: u32) {
     });
 }
 
+/// A writer that wrote this recently waits out the rest before writing again,
+/// so a burst of small frames (a spinner, a busy agent) leaves as one write per
+/// display frame instead of a packet each; after a quiet spell, or when someone
+/// waits on what's queued (a reply, a typed key's echo), it writes at once.
+const COALESCE: std::time::Duration = std::time::Duration::from_millis(16);
+/// Queued frames taken into one write.
+const BATCH: usize = 64 * 1024;
+
 /// Sends whatever the outbox hands out: control first, then streams by credit.
 async fn write_frames(core: Arc<Core>, conn: Arc<Conn>, mut write: Writer) -> io::Result<()> {
+    let mut last = None;
+    let mut batch = Vec::with_capacity(BATCH);
     loop {
         conn.wake.notified().await;
+        loop {
+            let now = tokio::time::Instant::now();
+            let Some(wait) = wire::hold(last, now, COALESCE).filter(|_| !conn.outbox().urgent(now)) else { break };
+            // Something urgent queued meanwhile cuts the wait short.
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => break,
+                _ = conn.wake.notified() => {}
+            }
+        }
         core.prepare_repaints(&conn);
         loop {
-            let next = conn.outbox().next_frame();
-            match next {
-                Some(frame) => write.write_all(&frame).await?,
-                None => break,
+            while batch.len() < BATCH {
+                let Some(frame) = conn.outbox().next_frame() else { break };
+                batch.extend_from_slice(&frame);
             }
+            if batch.is_empty() {
+                break;
+            }
+            write.write_all(&batch).await?;
+            batch.clear();
+            last = Some(tokio::time::Instant::now());
         }
     }
 }
@@ -370,6 +395,9 @@ async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> i
     let mut execs = Execs::default();
     let mut sends = Sends::default();
     while let Some((channel, kind, payload)) = wire::read_frame(read).await? {
+        if channel != 0 && kind == wire::DATA {
+            conn.outbox().typed(tokio::time::Instant::now());
+        }
         if channel != 0 && crate::remote::relay_in(core, conn, channel, kind, &payload) {
             continue;
         }

@@ -13,6 +13,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// Title events per terminal at most this often: agents put a spinner in the
+/// title and change it every frame. The latest title always follows.
+const TITLE_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
 #[cfg(test)]
 mod tests;
 
@@ -229,9 +233,51 @@ impl Core {
             self.report_status(st, id, &reports);
         }
         if let Some(title) = title {
-            st.reg.terminals.get_mut(&id).expect("live terminal").title = title.clone();
+            st.reg.terminals.get_mut(&id).expect("live terminal").title = title;
             self.save_soon();
-            self.emit(st, "title", id, serde_json::json!({"title": title}));
+            let now = tokio::time::Instant::now();
+            match crate::wire::hold(st.title_sent.get(&id).copied(), now, TITLE_EVERY) {
+                None => self.send_title(st, id, now),
+                Some(wait) => {
+                    st.title_due.entry(id).or_insert_with(|| {
+                        self.title_due.notify_one();
+                        now + wait
+                    });
+                }
+            }
+        }
+    }
+
+    /// The `title` event with the title it has now.
+    fn send_title(&self, st: &mut State, id: u32, now: tokio::time::Instant) {
+        st.title_sent.insert(id, now);
+        let title = st.reg.terminals[&id].title.clone();
+        self.emit(st, "title", id, serde_json::json!({"title": title}));
+    }
+
+    /// A single runtime task sends titles held back by `TITLE_EVERY`, including
+    /// for output from holder threads.
+    pub async fn send_due_titles(self: Arc<Self>) {
+        loop {
+            let next = {
+                let mut st = self.lock();
+                let now = tokio::time::Instant::now();
+                let due: Vec<u32> = st.title_due.iter().filter(|(_, at)| **at <= now).map(|(&id, _)| id).collect();
+                for id in due {
+                    st.title_due.remove(&id);
+                    if st.reg.terminals.contains_key(&id) {
+                        self.send_title(&mut st, id, now);
+                    }
+                }
+                st.title_due.values().min().copied()
+            };
+            match next {
+                Some(at) => tokio::select! {
+                    _ = tokio::time::sleep_until(at) => {}
+                    _ = self.title_due.notified() => {}
+                },
+                None => self.title_due.notified().await,
+            }
         }
     }
 
