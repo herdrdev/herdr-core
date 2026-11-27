@@ -32,8 +32,9 @@ esac
 target="$os-$arch"
 
 sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  # One that exists may still not run here (another CPU's): try the other.
+  sum=$(sha256sum "$1" 2>/dev/null) || sum=$(shasum -a 256 "$1" 2>/dev/null) || return 1
+  printf '%s\n' "${sum%% *}"
 }
 
 tmp=$(mktemp -d)
@@ -62,7 +63,8 @@ case $url in
   *) download=$url ;;
 esac
 curl -fsSL "$download" -o "$tmp/hc.tar.gz" || fail "download failed: $url"
-[ "$(sha256 "$tmp/hc.tar.gz")" = "$want" ] || fail "the download is damaged (checksum mismatch); try again"
+got=$(sha256 "$tmp/hc.tar.gz") || fail "cannot check the download: no working sha256sum or shasum"
+[ "$got" = "$want" ] || fail "the download is damaged (checksum mismatch); try again"
 tar -xzf "$tmp/hc.tar.gz" -C "$tmp"
 core=$tmp/herdr-core
 if ! "$core" --version >/dev/null 2>&1; then
