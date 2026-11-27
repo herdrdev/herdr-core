@@ -756,7 +756,8 @@ struct ConPty {
     close: ClosePc,
 }
 
-/// The ConPTY shipped beside hc (`conpty\conpty.dll`): Windows' own drops
+/// The ConPTY shipped beside hc's file, links resolved (WinGet puts a symlink
+/// to it on the PATH): `conpty\conpty.dll`. Windows' own drops
 /// input escape sequences agents answer with. Windows' own if none is there.
 /// A broken or incompatible one fails each start, never the process.
 fn conpty() -> io::Result<&'static ConPty> {
@@ -764,6 +765,7 @@ fn conpty() -> io::Result<&'static ConPty> {
     static API: std::sync::OnceLock<Result<ConPty, String>> = std::sync::OnceLock::new();
     let api = API.get_or_init(|| {
         let bundled = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
             .ok()
             .and_then(|e| Some(e.parent()?.join(r"conpty\conpty.dll")))
             .filter(|p| p.is_file());
