@@ -1208,6 +1208,23 @@ pub mod console {
         (80, 24)
     }
 
+    /// Whether ReadFile turns this key event into bytes. ReadFile would wait
+    /// for a key that does.
+    pub(crate) fn yields_bytes(is_down: bool, vk: u16, ch: u16) -> bool {
+        // Shift, Ctrl, Alt, Win or a lock key alone type nothing. (Arrows count:
+        // VT mode turns them into bytes as they are read.)
+        let is_modifier = matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5);
+        let is_alt = vk == 0x12;
+        if is_down {
+            !is_modifier
+        } else {
+            // A key's character comes with its press. Windows' built-in ConPTY
+            // sends some symbols, such as `→`, as Alt down, then Alt up with the
+            // symbol in uChar.
+            is_alt && ch != 0
+        }
+    }
+
     /// Waits up to `ms` for keys; returns what arrived (empty: nothing yet,
     /// None: input closed). Console events that aren't keys (focus, resize,
     /// mouse) wake the wait without bytes: those are taken off and skipped.
@@ -1224,14 +1241,11 @@ pub mod console {
                 if PeekConsoleInputW(h, events.as_mut_ptr(), events.len() as u32, &mut n) == 0 {
                     return None;
                 }
-                // Shift, Ctrl, Alt, Win or a lock key alone type nothing, and
-                // ReadFile would wait for a key that does. (Arrows count: VT
-                // mode turns them into bytes as they are read.)
-                let modifier = |vk: u16| matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5);
                 let key = events[..n as usize].iter().any(|e| {
-                    e.EventType == KEY_EVENT as u16
-                        && e.Event.KeyEvent.bKeyDown != 0
-                        && !modifier(e.Event.KeyEvent.wVirtualKeyCode)
+                    e.EventType == KEY_EVENT as u16 && {
+                        let k = e.Event.KeyEvent;
+                        yields_bytes(k.bKeyDown != 0, k.wVirtualKeyCode, k.uChar.UnicodeChar)
+                    }
                 });
                 if !key {
                     ReadConsoleInputW(h, events.as_mut_ptr(), n, &mut n);
@@ -1244,6 +1258,28 @@ pub mod console {
                 return None;
             }
             Some(buf[..got as usize].to_vec())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::yields_bytes;
+
+        #[test]
+        fn a_character_typed_as_alt_plus_char_code_is_read_when_alt_goes_up() {
+            assert!(yields_bytes(false, 0x12, 0x2192));
+        }
+
+        #[test]
+        fn alt_pressed_alone_is_not_read() {
+            assert!(!yields_bytes(true, 0x12, 0), "down");
+            assert!(!yields_bytes(false, 0x12, 0), "up");
+        }
+
+        #[test]
+        fn a_key_going_up_is_not_read() {
+            // Its character came with the press.
+            assert!(!yields_bytes(false, 0x41, 'a' as u16));
         }
     }
 }
