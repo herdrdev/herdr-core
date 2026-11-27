@@ -184,6 +184,42 @@ fn only_a_blocked_errored_or_exited_child_is_a_note() {
 }
 
 #[test]
+fn a_turn_the_parent_asked_for_that_ends_without_a_report_is_a_note() {
+    let s = session();
+    let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");
+    let turn = "read -r l; r state=working; r state=done";
+    let kid = run(
+        &s,
+        &["--parent", &p, "--name", "worker"],
+        &format!(
+            "stty -echo; r state=idle; {turn}; read -r l; r state=working; w reported; r state=done; w own; r state=working; r state=done; read -r l; r state=done; sleep 100"
+        ),
+    );
+    let quiet = run(&s, &["--parent", &p, "--no-notify"], &format!("stty -echo; r state=idle; {turn}; sleep 100"));
+    wait_until("idle", || get(&s, &kid)["status"]["state"] == "idle" && get(&s, &quiet)["status"]["state"] == "idle");
+
+    hc_in(&s, &p, &["send", &kid, "task one"]);
+    hc_in(&s, &p, &["send", &quiet, "task one"]);
+    wait_until("unreported note", || {
+        text(&s, &p).contains(&format!(
+            "parent-got:<hc>{kid} worker ended its turn without reporting. Read: hc read {kid}</hc>"
+        ))
+    });
+
+    hc_in(&s, &p, &["send", &kid, "task two"]);
+    hc_in(&s, &kid, &["send", &p, "my report"]);
+    touch(&s, "reported");
+    touch(&s, "own"); // then a turn it starts itself
+    wait_until("both turns ended", || get(&s, &kid)["turn"] == 3 && get(&s, &quiet)["turn"] == 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    let t = text(&s, &p);
+    assert_eq!(t.matches("without reporting").count(), 1, "a reported turn, its own turn, --no-notify: {t}");
+
+    hc_in(&s, &p, &["send", &kid, "task three"]); // answered done, never working
+    wait_until("a second note", || text(&s, &p).matches("without reporting").count() == 2);
+}
+
+#[test]
 fn a_plain_programs_end_is_a_note_with_its_last_lines_unless_the_parent_saw_it() {
     let s = session();
     let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");
