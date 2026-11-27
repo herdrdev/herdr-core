@@ -899,6 +899,28 @@ fn what_a_shell_runs_is_in_front_until_it_ends() {
 }
 
 #[test]
+fn what_a_store_powershell_runs_is_in_front_too() {
+    // PowerShell from the Microsoft Store is a packaged app: what it starts lands outside the
+    // terminal's job. Only machines that have it installed can show this.
+    let Some(pwsh) = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join(r"Microsoft\WindowsApps\pwsh.exe"))
+        .filter(|p| p.exists())
+    else {
+        eprintln!("skipped: no PowerShell from the Microsoft Store");
+        return;
+    };
+    let s = Session::new();
+    let t = s.bg(&[pwsh.to_str().unwrap(), "-NoProfile"]);
+    let front = || s.json(&["get", &t])["foreground"]["name"].as_str().unwrap_or_default().to_lowercase();
+    wait_until("the shell in front", || front() == "pwsh.exe");
+    s.out(&["send", &t, "ping -n 60 127.0.0.1"]);
+    wait_until("ping in front", || front() == "ping.exe");
+    let stop = s.json(&["interrupt", &t, "--timeout", "10"]);
+    assert_eq!(stop["outcome"], "stopped", "the shell got the terminal back: {stop}");
+    wait_until("the shell in front again", || front() == "pwsh.exe");
+}
+
+#[test]
 fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     let s = Session::new();
     let dir = s.root.join("moved here");
