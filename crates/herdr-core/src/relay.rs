@@ -44,7 +44,7 @@ pub struct Relay {
     wait_started: bool,
     graphics: graphics::Parser,
     query: u64,
-    queries: Vec<(graphics::Key, u64)>,
+    queries: Vec<(graphics::Key, std::sync::Arc<graphics::Query>)>,
     unanswered: Vec<u64>,
 }
 
@@ -98,7 +98,7 @@ impl Relay {
         let queries = std::mem::take(&mut self.queries);
         for viewer in viewers {
             for (key, query) in &queries {
-                viewer.expect(key.clone(), *query);
+                viewer.expect(key.clone(), query.clone());
             }
         }
     }
@@ -162,7 +162,7 @@ impl Relay {
                             && let Some(key) = graphics::key(&image)
                         {
                             self.query += 1;
-                            self.queries.push((key, self.query));
+                            self.queries.push((key, graphics::Query::new(self.query)));
                             self.unanswered.push(self.query);
                             if !self.waiting {
                                 self.waiting = true;
@@ -458,6 +458,25 @@ mod tests {
         assert!(relay.answered(&viewer.feed(b"\x1b_Gi=31;OK\x1b\\")).is_empty());
         assert_eq!(relay.answered(&viewer.feed(b"\x1b_Gi=32;ENOENT:no image\x1b\\")), b"\x1b[?62;22c");
         assert!(relay.expire(wait.unwrap()).is_empty());
+    }
+
+    #[test]
+    fn animation_frame_replies_with_an_assigned_number_are_forwarded_once() {
+        let mut screen = Screen::new(80, 24, 1 << 20);
+        let mut relay = Relay::default();
+        let mut first = Answers::default();
+        let mut second = Answers::default();
+        relay.feed(&mut screen, b"\x1b_Ga=t,t=d,f=24,i=31,s=1,v=1;AAAA\x1b\\");
+        relay.take_replies(&mut screen, false);
+        relay.feed(&mut screen, b"\x1b_Ga=f,i=31,t=d,f=24,s=1,v=1,z=200;/wAA\x1b\\\x1b[c");
+        relay.expect_answers([&mut first, &mut second].into_iter());
+        let (now, wait) = relay.take_replies(&mut screen, true);
+        assert!(now.is_empty() && wait.is_some());
+        let reply = b"\x1b_Gi=31,r=2;OK\x1b\\";
+        let (forwarded, answered) = first.input(reply, true);
+        assert_eq!(forwarded, reply);
+        assert_eq!(relay.answered(&answered), b"\x1b[?62;22c");
+        assert_eq!(second.input(reply, true), (Vec::new(), Vec::new()));
     }
 
     #[test]

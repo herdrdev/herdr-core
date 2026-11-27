@@ -305,7 +305,7 @@ impl Core {
             self.touch(&mut st, conn, channel, |_| {})
         };
         if let Some(id) = id {
-            let answered = Self::viewer(&mut st, conn, channel).unwrap().1.answers.feed(bytes);
+            let (bytes, answered) = Self::viewer(&mut st, conn, channel).unwrap().1.answers.input(bytes, automatic);
             let mut now = Vec::new();
             let mut from = 0;
             let viewer = Some((conn, channel));
