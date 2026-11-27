@@ -77,6 +77,10 @@ replies) use AUTOMATIC_INPUT, not DATA. Their bytes reach the program unchanged,
 including duplicates from multiple viewers, but do not take size/display ownership
 or reset the human quiet period. They follow the same input serialization as DATA.
 Tag replies at their source, never by inspecting their bytes; arbitrary splits are valid.
+Mode 2048 reports are the viewer's to send. A viewer whose terminal sends none (tmux,
+for one) says so with `resize_reports: false` in its display facts: while it is the
+last active viewer, the core sends a program with mode 2048 on its own report of the
+terminal's size. `hc attach` asks its terminal (DECRQM 2048) and says so itself.
 Cores advertise `automatic_input` in `hello.features`; `terminal.attach` confirms
 `automatic_input: true` only for a supporting path. Clients must require both before
 sending kind 6; absent/false means send DATA (legacy activity behavior). Old cores

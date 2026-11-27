@@ -63,14 +63,15 @@ impl Relay {
     /// Only DA1 after an image waits until a viewer answers or the wait ends.
     /// With no viewer to answer (`answering`
     /// false), everything goes. Returns the wait that began, which the caller
-    /// ends with `expire` after `image_answer_wait()`.
+    /// ends with `expire` after `image_answer_wait()`. In-band resize reports
+    /// stay in: whether the program gets them is the caller's to decide.
     pub fn take_replies(&mut self, screen: &mut Screen, answering: bool) -> (Vec<u8>, Option<u64>) {
         let replies = screen.take_responses();
         if !answering {
             self.queries.clear();
             self.wait_started = false;
             let mut now = self.end_wait();
-            now.extend(without_resize_reports(&replies));
+            now.extend(replies);
             return (now, None);
         }
         let split = match self.behind_from.take() {
@@ -78,8 +79,8 @@ impl Relay {
             None if self.waiting => 0,
             None => replies.len(),
         };
-        let mut now = without_resize_reports(&replies[..split]);
-        let after = without_resize_reports(&replies[split..]);
+        let mut now = replies[..split].to_vec();
+        let after = &replies[split..];
         let mut i = 0;
         while i < after.len() {
             if let Some(n) = da1_len(&after[i..]) {
@@ -241,7 +242,7 @@ pub(crate) fn da1_len(bytes: &[u8]) -> Option<usize> {
     (rest.get(n) == Some(&b'c')).then_some(3 + n + 1)
 }
 
-fn without_resize_reports(replies: &[u8]) -> Vec<u8> {
+pub(crate) fn without_resize_reports(replies: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(replies.len());
     let mut i = 0;
     while i < replies.len() {
