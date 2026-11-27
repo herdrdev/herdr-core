@@ -89,14 +89,15 @@ mod via_tests {
 /// This machine's own shell: PowerShell 7 if installed, else Windows PowerShell.
 /// PowerShell's `cd` never tells Windows, so hc couldn't see its folder: each
 /// prompt does, after the person's own prompt ran (it reads `$?`).
+pub(super) const PROMPT_HOOK: &str = "$global:__hc_prompt = $function:prompt; function global:prompt { $p = & $global:__hc_prompt; \
+     $l = $ExecutionContext.SessionState.Path.CurrentLocation; \
+     if ($l.Provider.Name -eq 'FileSystem') { try { [Environment]::CurrentDirectory = $l.ProviderPath } catch {} }; $p }";
+
 pub fn own_shell() -> Vec<String> {
     let exe = std::env::var_os("PATH")
         .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("pwsh.exe")).find(|exe| exe.is_file()))
         .map_or_else(|| "powershell.exe".into(), |exe| exe.to_string_lossy().into_owned());
-    let hook = "$global:__hc_prompt = $function:prompt; function global:prompt { $p = & $global:__hc_prompt; \
-                $l = $ExecutionContext.SessionState.Path.CurrentLocation; \
-                if ($l.Provider.Name -eq 'FileSystem') { try { [Environment]::CurrentDirectory = $l.ProviderPath } catch {} }; $p }";
-    vec![exe, "-NoExit".into(), "-Command".into(), hook.into()]
+    vec![exe, "-NoExit".into(), "-Command".into(), PROMPT_HOOK.into()]
 }
 
 /// Windows has no display to reach: nothing to drop.

@@ -56,7 +56,7 @@ fn conn(core: Ctx<'_>) -> Result<(&Arc<crate::wire::Conn>, usize), RpcError> {
 
 /// A transfer's handle: what the sender picked, checked before anything keeps it.
 fn handle(transfer: &str) -> Result<(), RpcError> {
-    match (16..=64).contains(&transfer.len()) && transfer.bytes().all(|b| b.is_ascii_hexdigit()) {
+    match put::valid_handle(transfer) {
         true => Ok(()),
         false => Err(RpcError::invalid_params("transfer must be 16 to 64 hex digits")),
     }
@@ -72,8 +72,7 @@ fn gone(handle: &str) -> RpcError {
 
 /// A begin read on `conn`, noted before its call runs (in frame order), so an
 /// abort read after it finds it pending. The call's task keeps what this
-/// returns: the begin is pending until that task ends, however it ends
-/// (answered, refused before its handler ran, cancelled).
+/// returns until the begin has an answer or its task is cancelled.
 pub fn begin_read(conn: &Arc<crate::wire::Conn>, request: &serde_json::Value) -> Option<Pending> {
     let h = request["params"]["transfer"].as_str().filter(|h| handle(h).is_ok());
     let h = h.filter(|_| request["method"] == "terminal.put_begin")?;
@@ -103,7 +102,7 @@ pub(super) async fn terminal_put_begin(core: Ctx<'_>, p: PutBeginParams) -> Resu
         return Err(too_big());
     }
     let id = live(core, &p.terminal)?;
-    let busy = || RpcError::new("unavailable", "too many puts at once here", "try again when one is done");
+    let busy = || RpcError::new("unavailable", put::BUSY, "try again when one is done");
     let taken = || RpcError::invalid_params(format!("put {} is taken", p.transfer));
     {
         let st = core.lock();

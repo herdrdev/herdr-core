@@ -171,12 +171,13 @@ fn finish_reason(killed: bool, stopping: bool, host_shutdown: bool) -> &'static 
 
 impl Core {
     pub fn start(paths: Paths, info: CoreInfo) -> io::Result<Arc<Core>> {
-        let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
+        let mut reg: Registry = read_state(&paths.state.join("terminals.json"))?;
+        crate::resume::prepare_state(&paths.state, &mut reg);
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
-            eprintln!("core: cannot load documents, starting empty: {e}");
+            let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
             if let Err(e) = std::fs::rename(&docs_path, paths.state.join("docs.json.bad")) {
-                eprintln!("core: cannot quarantine documents: {e}");
+                let _ = writeln!(io::stderr(), "core: cannot quarantine documents: {e}");
             }
             Default::default()
         });
@@ -244,18 +245,30 @@ impl Core {
 
     /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
     /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
-    /// Completed write failures are logged, as before; a stuck disk still times out.
+    /// A failed write is reported here and retried in the background.
     pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
-        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
-            .await
-            .map_err(|_| {
-                crate::rpc::RpcError::new(
-                    "unavailable",
-                    "registry persistence timed out; the operation may already have completed",
-                    "check the terminal and disk before retrying",
-                )
-            })?
-            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
+        self.wait_for_save().await?.map_err(|e| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                format!("cannot save terminals: {e}; the operation may already have completed"),
+                "check the terminal and disk before retrying",
+            )
+        })
+    }
+
+    /// Return the action's observed result even when a registry write failed.
+    pub async fn flush_observed(&self) -> Result<(), crate::rpc::RpcError> {
+        self.wait_for_save().await.map(drop)
+    }
+
+    async fn wait_for_save(&self) -> Result<io::Result<()>, crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush()).await.map_err(|_| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                "registry persistence timed out; the operation may already have completed",
+                "check the terminal and disk before retrying",
+            )
+        })
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -372,7 +385,7 @@ impl Core {
     ) -> io::Result<Vec<u32>> {
         std::io::Write::write_all(
             &mut stream,
-            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }),
+            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION, tail_offsets: true }),
         )?;
         let welcome: proto::Welcome = match proto::read(&mut stream)? {
             Some((proto::WELCOME, _, payload)) => proto::parse(&payload)?,
@@ -432,6 +445,9 @@ impl Core {
             self.save(&st);
             adopted
         };
+        for &id in &adopted {
+            self.reconcile_resume(id);
+        }
         let core = self.clone();
         let (instance, path) = (welcome.instance, path.to_path_buf());
         std::thread::spawn(move || core.read_holder(stream, instance, path));
@@ -485,6 +501,10 @@ impl Core {
                 }
             }
             let tail = tails.remove(&id).unwrap_or_default();
+            if let Some(resume) = &mut st.reg.terminals.get_mut(&id).expect("adopted").resume {
+                resume.adopt(h.pid, h.raw_offset);
+                self.resume_output(st, id, &tail, now_ms());
+            }
             let saved = if handover {
                 self.take_saved_screen(id)
             } else {
@@ -493,9 +513,11 @@ impl Core {
             };
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            let replay_from =
+                if exact { h.saved_offset.saturating_sub(h.raw_offset).min(tail.len() as u64) as usize } else { 0 };
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
-            relay.feed(&mut screen, &tail);
+            relay.feed(&mut screen, &tail[replay_from..]);
             relay.flush(&mut screen);
             // After a handover the tail is new output nobody answered yet; after a
             // crash it was answered long ago and replies would be typed as garbage.
@@ -656,7 +678,7 @@ impl Core {
                 Ok(Ok(_))
             );
         if taken {
-            eprintln!("core: lost the link to holder {instance}, reconnected");
+            let _ = writeln!(io::stderr(), "core: lost the link to holder {instance}, reconnected");
             return;
         }
         let _ = writeln!(
@@ -718,6 +740,9 @@ impl Core {
             (Ok(pid), Some(t)) if t.is_live() => {
                 let restarted = t.reason.is_some();
                 t.pid = Some(pid);
+                if let Some(resume) = &mut t.resume {
+                    resume.set_root(pid);
+                }
                 t.program_started_ms = Some(now_ms());
                 t.reason = None;
                 t.exit_code = None;
@@ -770,6 +795,9 @@ impl Core {
             reason
         };
         if let Some(t) = st.reg.terminals.get_mut(&id) {
+            if let Some(resume) = &mut t.resume {
+                crate::resume::remove_launch(&self.paths.state, resume.launch.take().as_deref());
+            }
             t.first_task_turn = None;
             let change = crate::status::reset(t);
             self.status_changed(st, id, change);
@@ -871,6 +899,11 @@ impl Core {
         {
             let mut st = self.lock();
             for &id in ids {
+                if st.killing.contains(&id)
+                    && let Some(resume) = st.reg.terminals.get_mut(&id).and_then(|t| t.resume.take())
+                {
+                    crate::resume::remove_launch(&self.paths.state, resume.launch.as_deref());
+                }
                 if st
                     .reg
                     .terminals
@@ -926,7 +959,11 @@ impl Core {
                     });
                     // The welcome may be unreadable (the reason relink failed).
                     // Shutdown needs no inventory: the holder ends its own programs.
-                    let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
+                    let hello = proto::json_frame(
+                        proto::HELLO,
+                        0,
+                        &proto::Hello { version: proto::VERSION, tail_offsets: true },
+                    );
                     if io::Write::write_all(&mut stream, &hello).is_ok()
                         && io::Write::write_all(&mut stream, &proto::json_frame(proto::GOODBYE, 0, &mode)).is_ok()
                     {

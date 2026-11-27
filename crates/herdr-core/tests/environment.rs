@@ -235,6 +235,37 @@ fn saved_restart(s: &Session) -> Vec<u8> {
 }
 
 #[test]
+fn a_restart_does_not_inherit_a_parent_panes_resume_token() {
+    use std::ffi::{OsStr, OsString};
+    let mut s = Session::new();
+    s.env.push(("OSC7577_TOKEN".into(), "dummy-parent-token".into()));
+    if cfg!(target_os = "linux") {
+        let core = s.json(&["server", "start"])["pid"].as_u64().unwrap();
+        let env = std::fs::read(format!("/proc/{core}/environ")).unwrap();
+        assert!(!env.split(|byte| *byte == 0).any(|entry| entry.starts_with(b"OSC7577_TOKEN=")));
+    }
+    let handoff = saved_restart(&s);
+    let mut note: serde_json::Value = serde_json::from_slice(&handoff).unwrap();
+    let vars: Vec<(OsString, OsString)> = serde_json::from_value(note["vars"].clone()).unwrap();
+    assert!(!vars.iter().any(|(key, _)| key == "OSC7577_TOKEN"));
+    // Old cores could leave the token in a handoff. The next core must discard it too.
+    note["vars"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value((OsStr::new("OSC7577_TOKEN"), OsStr::new("dummy-parent-token"))).unwrap());
+    std::fs::write(snapshot(&s), serde_json::to_vec(&note).unwrap()).unwrap();
+
+    let t = run(&s, &["sh", "-c", "printf 'token=%s\\n' \"${OSC7577_TOKEN-unset}\"; sleep 60"]);
+    wait_until("the pane has output", || text(&s, &t).contains("token="));
+    assert!(!text(&s, &t).contains("dummy-parent-token"));
+    if cfg!(target_os = "linux") {
+        let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+        let env = std::fs::read(format!("/proc/{holder}/environ")).unwrap();
+        assert!(!env.split(|byte| *byte == 0).any(|entry| entry.starts_with(b"OSC7577_TOKEN=")));
+    }
+}
+
+#[test]
 fn a_core_started_directly_restores_the_snapshot_before_adopting_holders() {
     use std::os::unix::ffi::OsStringExt;
     use std::process::Stdio;
