@@ -92,6 +92,14 @@ pub fn about(pid: i32) -> Option<Foreground> {
     Some(Foreground { pid, name, argv, cwd })
 }
 
+/// FreeBSD's command line (`kern.proc.args`), working folder
+/// (`kern.proc.cwd`), and name (`kern.proc`'s `ki_comm`):
+/// the same permission checks Linux carries out for `/proc`'s copies.
+#[cfg(target_os = "freebsd")]
+pub fn about(pid: i32) -> Option<Foreground> {
+    crate::platform::freebsd::about(pid)
+}
+
 #[cfg(target_os = "macos")]
 pub fn about(pid: i32) -> Option<Foreground> {
     let mut name = [0u8; 256];

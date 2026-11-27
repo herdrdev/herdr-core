@@ -160,8 +160,7 @@ impl Drop for Session {
             std::thread::sleep(Duration::from_millis(50));
         }
         for pid in procs_with(&ours) {
-            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            let cmdline = proc_cmdline(pid);
             let test = std::thread::current().name().unwrap_or("?").to_string();
             let note = format!("LEAK in {test}: pid {pid} ({}) still running after server stop\n", cmdline.trim());
             eprint!("{note}");
@@ -206,8 +205,42 @@ impl Conn {
     }
 }
 
+fn proc_cmdline(pid: i32) -> String {
+    #[cfg(target_os = "freebsd")]
+    if let Some(bytes) = freebsd_sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ARGS, pid]) {
+        return String::from_utf8_lossy(&bytes).replace('\0', " ");
+    }
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    String::from_utf8_lossy(&cmdline).replace('\0', " ")
+}
+
+#[cfg(target_os = "freebsd")]
+fn freebsd_sysctl(mib: &[libc::c_int]) -> Option<Vec<u8>> {
+    for _ in 0..4 {
+        let mut size: libc::size_t = 0;
+        if unsafe { libc::sysctl(mib.as_ptr(), mib.len() as _, std::ptr::null_mut(), &mut size, std::ptr::null(), 0) }
+            != 0
+            || size == 0
+        {
+            return None;
+        }
+        let mut cap = size.saturating_add(size / 4).saturating_add(256);
+        let mut buf = vec![0u8; cap];
+        if unsafe { libc::sysctl(mib.as_ptr(), mib.len() as _, buf.as_mut_ptr().cast(), &mut cap, std::ptr::null(), 0) }
+            == 0
+        {
+            buf.truncate(cap);
+            return (!buf.is_empty()).then_some(buf);
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOMEM) {
+            return None;
+        }
+    }
+    None
+}
+
 /// Processes (other than us) whose environment mentions `needle`. Linux
-/// only: macOS shows no other process's environment (`ps -E` prints none,
+/// and FreeBSD: macOS shows no other process's environment (`ps -E` prints none,
 /// checked on macOS 27), so there the leak check finds nothing; the ghost
 /// tests are what cover leftovers on macOS.
 fn procs_with(needle: &str) -> Vec<i32> {
@@ -215,6 +248,30 @@ fn procs_with(needle: &str) -> Vec<i32> {
         return Vec::new();
     }
     let me = std::process::id() as i32;
+    #[cfg(target_os = "freebsd")]
+    {
+        let Some(bytes) = freebsd_sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL]) else {
+            return Vec::new();
+        };
+        let stride = std::mem::size_of::<libc::kinfo_proc>();
+        if bytes.len() < stride {
+            return Vec::new();
+        }
+        let struct_size = unsafe { (bytes.as_ptr() as *const libc::kinfo_proc).read_unaligned().ki_structsize };
+        let stride = (struct_size as usize).max(stride);
+        bytes[..bytes.len() / stride * stride]
+            .chunks_exact(stride)
+            .filter_map(|entry| {
+                let record = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const libc::kinfo_proc) };
+                if record.ki_pid <= 0 || record.ki_pid == me || record.ki_stat == libc::SZOMB {
+                    return None;
+                }
+                let env = freebsd_sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ENV, record.ki_pid])?;
+                env.windows(needle.len()).any(|w| w == needle.as_bytes()).then_some(record.ki_pid)
+            })
+            .collect()
+    }
+    #[cfg(not(target_os = "freebsd"))]
     std::fs::read_dir("/proc")
         .expect("the leak check needs /proc")
         .flatten()
@@ -235,6 +292,9 @@ fn procs_with(needle: &str) -> Vec<i32> {
 /// later calls in); `noisy-` targets print a banner before anything. While
 /// `<local root>/down` exists, nothing can be reached. HC_TEST_SSH_DELAY
 /// (seconds) makes every login take that long, like a real one.
+pub const SYSTEM_PATH: &str =
+    if cfg!(target_os = "freebsd") { "/usr/bin:/bin:/sbin:/usr/local/bin" } else { "/usr/bin:/bin" };
+
 pub fn fake_ssh(local: &Session, hosts: &[(&str, &Session)]) -> (String, String) {
     let mut cases = String::new();
     for (host, s) in hosts {
@@ -242,7 +302,7 @@ pub fn fake_ssh(local: &Session, hosts: &[(&str, &Session)]) -> (String, String)
         // `<root>/fakebin` first: a test can give a machine its own `uname`.
         let bin_dir = format!("{r}/fakebin:{}", s.bin.parent().unwrap().display());
         cases.push_str(&format!(
-            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:/usr/bin:/bin HC_SESSION=test HC_SETTLE_MS=0 \
+            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:{SYSTEM_PATH} HC_SESSION=test HC_SETTLE_MS=0 \
              XDG_RUNTIME_DIR={r}/run XDG_STATE_HOME={r}/state XDG_CONFIG_HOME={r}/config sh -c \"$*\" ;;\n"
         ));
     }
@@ -251,7 +311,7 @@ pub fn fake_ssh(local: &Session, hosts: &[(&str, &Session)]) -> (String, String)
          [ -e {root}/down ] && {{ echo \"ssh: connect to host $target port 22: Connection refused\" >&2; exit 255; }}\ncase \"$target\" in otp-*)\n  \
          if [ \"$*\" = exit ]; then printf 'Verification code: '; read c; [ \"$c\" = 123456 ] || exit 255; touch $ok; exit 0; fi\n  \
          [ -e $ok ] || {{ echo \"$target: Permission denied (keyboard-interactive).\" >&2; exit 255; }} ;;\nesac\n\
-         case \"$target\" in noisy-*) echo 'Welcome to rohan!' ;; esac\ncase \"$target\" in\n{cases}  *nohc*) exec env -i HOME=/nonexistent PATH=/usr/bin:/bin sh -c \"$*\" ;;\n  \
+         case \"$target\" in noisy-*) echo 'Welcome to rohan!' ;; esac\ncase \"$target\" in\n{cases}  *nohc*) exec env -i HOME=/nonexistent PATH={SYSTEM_PATH} sh -c \"$*\" ;;\n  \
          *) echo \"ssh: Could not resolve hostname $target: Name or service not known\" >&2; exit 255 ;;\nesac\n",
         root = local.root.display()
     );
@@ -327,4 +387,24 @@ pub fn wait_until_for(what: &str, timeout: Duration, mut ok: impl FnMut() -> boo
 
 pub fn pid_alive(pid: i64) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Alive and not a zombie.
+pub fn pid_running(pid: i64) -> bool {
+    #[cfg(target_os = "freebsd")]
+    {
+        let Some(bytes) = freebsd_sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid as i32]) else {
+            return false;
+        };
+        if bytes.len() < std::mem::size_of::<libc::kinfo_proc>() {
+            return false;
+        }
+        let record = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const libc::kinfo_proc) };
+        record.ki_stat != libc::SZOMB
+    }
+    #[cfg(not(target_os = "freebsd"))]
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'),
+        Err(_) => cfg!(target_os = "macos") && pid_alive(pid),
+    }
 }

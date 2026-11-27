@@ -129,7 +129,7 @@ fn the_install_script_installs_and_then_updates_without_stopping_anything() {
     let install = |s: &Session| {
         // A PATH without the hc this machine already has: else no `hc` link is added.
         let mut cmd = s.program("sh");
-        cmd.arg(format!("{ROOT}/../../distribution/install.sh")).env("PATH", "/usr/bin:/bin");
+        cmd.arg(format!("{ROOT}/../../distribution/install.sh")).env("PATH", SYSTEM_PATH);
         let out = cmd.env("HERDR_RELEASES_URL", &r.url).env("HC_INSTALL_DIR", &bin).output().unwrap();
         assert!(
             out.status.success(),
@@ -224,7 +224,7 @@ fn a_macos_system_install_uses_the_standalone_release() {
     let out = s
         .program("sh")
         .arg(format!("{ROOT}/../../distribution/install.sh"))
-        .env("PATH", format!("{}:/usr/bin:/bin", tools.display()))
+        .env("PATH", format!("{}:{SYSTEM_PATH}", tools.display()))
         .env("HERDR_RELEASES_URL", &r.url)
         .env("HC_INSTALL_DIR", s.root.join("system-bin"))
         .output()
@@ -574,7 +574,7 @@ fn install_script_downloads(s: &Session, url: &str, releases: &str, installed: b
     Command::new("chmod").arg("755").arg(stub.join("curl")).status().unwrap();
     let out = Command::new("sh")
         .arg(format!("{ROOT}/../../distribution/install.sh"))
-        .env("PATH", format!("{}:/usr/bin:/bin", stub.display()))
+        .env("PATH", format!("{}:{SYSTEM_PATH}", stub.display()))
         .env("HERDR_RELEASES_URL", releases)
         .env_remove("HC_VERSION")
         .env("HC_INSTALL_DIR", &bin)
@@ -678,7 +678,11 @@ fn a_machine_of_another_cpu_gets_the_released_build_for_it() {
     odd.bin = odd.root.join("bin/herdr-core"); // no hc there yet
     std::fs::create_dir_all(odd.root.join("fakebin")).unwrap();
     let other = if std::env::consts::ARCH == "aarch64" { "x86_64" } else { "aarch64" };
-    let os = if std::env::consts::OS == "macos" { "Darwin" } else { "Linux" };
+    let os = match std::env::consts::OS {
+        "macos" => "Darwin",
+        "freebsd" => "FreeBSD",
+        _ => "Linux",
+    };
     let uname = odd.root.join("fakebin/uname");
     std::fs::write(&uname, format!("#!/bin/sh\necho '{os} {other}'\n")).unwrap();
     std::fs::set_permissions(&uname, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();

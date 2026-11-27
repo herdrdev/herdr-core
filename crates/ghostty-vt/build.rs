@@ -74,6 +74,8 @@ fn zig_target(triple: &str) -> String {
         "macos"
     } else if triple.contains("windows") {
         "windows"
+    } else if triple.contains("freebsd") {
+        "freebsd"
     } else {
         "linux"
     };

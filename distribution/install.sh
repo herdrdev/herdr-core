@@ -22,7 +22,8 @@ need tar
 case "$(uname -s)" in
   Linux) os=linux ;;
   Darwin) os=macos ;;
-  *) fail "hc runs on Linux and macOS for now" ;;
+  FreeBSD) os=freebsd ;;
+  *) fail "hc runs on Linux, macOS, and FreeBSD for now" ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) arch=x86_64 ;;
@@ -33,7 +34,8 @@ target="$os-$arch"
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else sha256 -q "$1"; fi
 }
 
 tmp=$(mktemp -d)

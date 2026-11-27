@@ -52,6 +52,19 @@ fn now() -> u64 {
     (ns(libc::CLOCK_MONOTONIC).min(ns(libc::CLOCK_BOOTTIME)) * ticks / 1_000_000_000) as u64
 }
 
+/// FreeBSD, in wall-clock microseconds: `kinfo_proc` keeps process starts
+/// (`ki_start`) on the wall clock, so tokens are stamped on the lower of the
+/// exact and cached wall clocks (`CLOCK_REALTIME`, `CLOCK_REALTIME_FAST`).
+#[cfg(target_os = "freebsd")]
+fn now() -> u64 {
+    let us = |clock| {
+        let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+        (unsafe { libc::clock_gettime(clock, &raw mut time) } == 0)
+            .then(|| time.tv_sec.max(0) as u128 * 1_000_000 + time.tv_nsec.max(0) as u128 / 1_000)
+    };
+    us(libc::CLOCK_REALTIME).min(us(libc::CLOCK_REALTIME_FAST)).unwrap_or(0) as u64
+}
+
 #[cfg(windows)]
 fn now() -> u64 {
     0
@@ -159,6 +172,21 @@ fn environ(pid: i32) -> Option<Vec<u8>> {
     std::fs::read(format!("/proc/{pid}/environ")).ok().filter(|env| !env.is_empty())
 }
 
+/// NUL-separated `KEY=value` entries (`kern.proc.env`), only while the
+/// process and its operator share a user (or this is root), like Linux's
+/// `/proc/pid/environ`.
+#[cfg(target_os = "freebsd")]
+fn environ(pid: i32) -> Option<Vec<u8>> {
+    crate::platform::freebsd::environ(pid)
+}
+
+/// Every live process as (pid, parent pid, start in wall-clock microseconds
+/// on `now()`'s clock); zombies left out.
+#[cfg(target_os = "freebsd")]
+fn processes() -> Vec<(i32, i32, u64)> {
+    crate::platform::freebsd::processes()
+}
+
 #[cfg(target_os = "macos")]
 fn processes() -> Vec<(i32, i32, u64)> {
     let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -208,7 +236,7 @@ mod tests {
         let tokens = [token()];
         // Like an agent running a tool shell that no longer shows the token.
         let child = "import os, subprocess; env = dict(os.environ); env.pop('HC_SCOPE'); subprocess.run(['sleep', '30'], env=env)";
-        let mut parent = python(child).env(VAR, &tokens[0]).spawn().unwrap();
+        let mut parent = spawn_with_readable_env(child, &tokens[0]);
         assert_eq!(members_settled(&tokens, 2).len(), 2, "the shell and its sleep");
         sweep(&tokens);
         parent.wait().unwrap();
@@ -263,15 +291,44 @@ mod tests {
     // On macOS, wait for the real interpreter to replace the launcher stub.
     fn spawn_sleeper(scope: &str) -> std::process::Child {
         use std::io::BufRead;
-        let mut child = python("import time; print('ready', flush=True); time.sleep(30)")
-            .env(VAR, scope)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        assert_eq!(line.trim(), "ready");
-        child
+        for _ in 0..4 {
+            let mut child = python("import time; print('ready', flush=True); time.sleep(30)")
+                .env(VAR, scope)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "ready");
+            if let Some(env) = environ(child.id() as i32)
+                && env.windows(format!("{VAR}={scope}\0").len()).any(|w| w == format!("{VAR}={scope}\0").as_bytes())
+            {
+                return child;
+            }
+            // A process whose environment cannot be read escapes the sweep
+            // for good (like one of macOS's own binaries): the test needs one
+            // the kernel shows, so try again with a fresh exec.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        panic!("no spawned program ever showed its environment")
+    }
+
+    /// Python running `code` with `HC_SCOPE=scope`, spawned until its
+    /// environment shows up in the kernel (see `spawn_sleeper`).
+    fn spawn_with_readable_env(code: &str, scope: &str) -> std::process::Child {
+        for _ in 0..4 {
+            let mut child = python(code).env(VAR, scope).spawn().unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            if let Some(env) = environ(child.id() as i32)
+                && env.windows(format!("{VAR}={scope}\0").len()).any(|w| w == format!("{VAR}={scope}\0").as_bytes())
+            {
+                return child;
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        panic!("no spawned program ever showed its environment")
     }
 
     /// `members` once it finds `n` (5 s at most): macOS's python3 is a stub
