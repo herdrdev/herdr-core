@@ -74,6 +74,8 @@ mod macos_launchd;
 #[cfg(target_os = "macos")]
 mod macos_responsibility;
 #[cfg(target_os = "macos")]
+mod macos_return;
+#[cfg(target_os = "macos")]
 mod macos_session;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
@@ -250,6 +252,15 @@ pub fn monitor_host_shutdown() -> impl Sized {
     #[cfg(target_os = "macos")]
     {
         macos_shutdown::monitor()
+    }
+}
+
+/// Calls `returned` when the person comes back to this computer (macOS only).
+#[allow(unused_variables)]
+pub fn watch_person_returns(returned: fn()) {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = macos_return::watch(returned) {
+        eprintln!("core: cannot watch for the person returning: {e}");
     }
 }
 

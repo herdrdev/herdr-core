@@ -205,6 +205,7 @@ Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -
 
 A machine whose SSH login fails shows `needs_login` and retries slowly (up to
 every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
+A locked agent retries sooner; on macOS, so does a person returning after sleep.
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows

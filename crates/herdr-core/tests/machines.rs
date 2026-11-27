@@ -425,6 +425,32 @@ fn a_box_that_asks_for_a_code_is_added_from_a_terminal() {
 }
 
 #[test]
+fn a_line_whose_agent_could_not_sign_reconnects_soon_after_it_unlocks() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+    // While `locked` exists, the agent refuses to sign.
+    let locked = s.root.join("locked");
+    let wrapper = executable(
+        &s,
+        &format!(
+            "#!/bin/sh\nif [ -e {} ]; then\n  echo 'sign_and_send_pubkey: signing failed for ED25519 \"key\" from agent: agent refused operation' >&2\n  echo \"$1: Permission denied (publickey).\" >&2\n  exit 255\nfi\nexec {ssh} \"$@\"\n",
+            locked.display()
+        ),
+    );
+    s.env.push(("HC_SSH".into(), wrapper));
+    s.env.push(("HC_RECONNECT_MS".into(), "100".into()));
+    s.json(&["machine", "add", "rohan"]);
+    wait_until("connected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+
+    std::fs::write(&locked, "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("needs login", || s.json(&["machine", "ls"])["machines"][0]["state"] == "needs_login");
+    std::fs::remove_file(&locked).unwrap();
+    wait_until("connected again", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+}
+
+#[test]
 fn a_box_without_hc_gets_this_one_when_you_say_yes() {
     let mut bare = Session::new();
     bare.bin = bare.root.join("bin/herdr-core"); // nothing there: no hc on that box

@@ -232,6 +232,22 @@ fn reconnect_max() -> Duration {
     Duration::from_millis(std::env::var("HC_RECONNECT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
 }
 
+/// Seconds between dials while a login is needed. Slow so a refused key doesn't get
+/// the person banned (fail2ban, CrowdSec); the quick steps only follow a return.
+const LOGIN_WAITS: [u64; 6] = [10, 30, 60, 120, 300, 600];
+const LOGIN_FIRST: usize = 3;
+
+fn login_wait(step: usize) -> Duration {
+    Duration::from_secs(LOGIN_WAITS[step.min(LOGIN_WAITS.len() - 1)])
+}
+
+static PERSON_RETURNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// The person is back: lines that need a login dial again now.
+pub fn person_returned() {
+    PERSON_RETURNED.notify_waiters();
+}
+
 /// Keeps the line to every added machine up.
 pub fn start_all(core: &Arc<Core>) {
     let ids: Vec<String> = core.lock().machines.iter().map(|m| m.id.clone()).collect();
@@ -272,9 +288,11 @@ pub fn forget(core: &Core, st: &mut State, id: &str) {
 
 async fn supervise(core: Arc<Core>, id: String) {
     let mut backoff = Duration::from_millis(250);
-    let mut login_backoff = Duration::ZERO;
+    let mut login_step = LOGIN_FIRST;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
+        // Before the dial, so a return during it counts.
+        let returned = PERSON_RETURNED.notified();
         let down = |st: &mut State, why: String| {
             let since_ms = match st.lines.get(&id) {
                 Some(
@@ -299,7 +317,7 @@ async fn supervise(core: Arc<Core>, id: String) {
             }
             Ok(d) => {
                 backoff = Duration::from_millis(250);
-                login_backoff = Duration::ZERO;
+                login_step = LOGIN_FIRST;
                 // It may have been updated since it was added.
                 if let Some(v) = d.hello["version"].as_str().filter(|v| *v != m.version) {
                     let mut st = core.lock();
@@ -317,14 +335,22 @@ async fn supervise(core: Arc<Core>, id: String) {
             }
             Err(e) if e.kind == "needs_login" => {
                 down(&mut core.lock(), "needs_login".into());
-                // Slow enough that a failing key doesn't get the person banned (fail2ban, CrowdSec),
-                // but an ssh-agent unlocked later still reconnects on its own.
-                login_backoff = Duration::from_secs(match login_backoff.as_secs() {
-                    0 => 120,
-                    120 => 300,
-                    _ => 600,
-                });
-                tokio::time::sleep(login_backoff).await;
+                // No bad signature reached the server: retry as for a drop.
+                let wait = if crate::machines::key_locked(&e) {
+                    let wait = backoff;
+                    backoff = (backoff * 2).min(reconnect_max());
+                    wait
+                } else {
+                    login_step += 1;
+                    login_wait(login_step - 1)
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = returned => {
+                        let _ = writeln!(io::stderr(), "core: {} needs a login; the person returned: dialing again", m.name);
+                        login_step = 0;
+                    }
+                }
                 continue;
             }
             Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into()),
