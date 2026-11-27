@@ -57,7 +57,7 @@ kill, rm, wait and interrupt pick one when it's left out.
 Options: --json (default when piped; run and read print text), -V --version,
 --licenses (what hc includes, and their licenses).
 Per command: hc <command> --help
-Settings: ~/.config/herdr-core/config.toml. notes = false: hc types nothing
+Settings: ~/.config/herdr-core/config.toml (Windows: %APPDATA%\herdr-core\config.toml). notes = false: hc types nothing
 on its own (no notes to parent agents, no <hc> tags on messages).
 shell = ["nu"] overrides the shell for new terminals and keep recovery.
 draft_wait = 60: seconds a draft holds sends and notes after your last key;
