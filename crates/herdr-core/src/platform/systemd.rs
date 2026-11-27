@@ -101,7 +101,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     env.insert("XDG_RUNTIME_DIR".into(), run.display().to_string());
     let args: Vec<&OsStr> = cmd.get_args().collect();
     let name = format!("hc-{}-{}", args.first().and_then(|a| a.to_str()).unwrap_or("run"), &super::random_hex()[..8]);
-    let here = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from("/"));
+    let here = working_directory(std::env::current_dir().ok());
     static VERSION: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let version = *VERSION.get_or_init(|| {
         Command::new("systemd-run")
@@ -233,6 +233,18 @@ pub(super) fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String,
             && !super::SSH_LOGIN.contains(&k.as_str())
     });
     env
+}
+
+/// Where a service starts: the caller's folder if this user can enter it,
+/// else `/`. `sudo -u other hc …` keeps the folder it was run from, and
+/// systemd stops a unit that can't enter its folder with 200/CHDIR (#243).
+fn working_directory(caller: Option<PathBuf>) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let enters = |d: &PathBuf| {
+        std::ffi::CString::new(d.as_os_str().as_bytes())
+            .is_ok_and(|d| unsafe { libc::access(d.as_ptr(), libc::X_OK) } == 0)
+    };
+    caller.filter(|d| d.is_dir() && enters(d)).unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// systemd-run's arguments for one hc service, without environment values.
@@ -723,6 +735,27 @@ mod tests {
                 .iter()
                 .any(|a| a == "--service-type=exec" || a.to_string_lossy().starts_with("StandardError=append:"))
         );
+    }
+
+    /// `sudo -u other hc server start` run from your own home: `other` can't
+    /// enter it, and systemd stopped the unit with 200/CHDIR (#243).
+    #[test]
+    fn services_start_in_slash_when_this_user_cannot_enter_the_callers_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root enters any folder.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let root = crate::test_tmp().join(format!("hc-workdir-{}", super::super::random_hex()));
+        let closed = root.join("home");
+        std::fs::create_dir_all(&closed).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(super::working_directory(Some(closed.clone())), Path::new("/"));
+        assert_eq!(super::working_directory(Some(root.clone())), root);
+        assert_eq!(super::working_directory(Some(root.join("gone"))), Path::new("/"));
+        assert_eq!(super::working_directory(None), Path::new("/"));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
