@@ -257,6 +257,19 @@ pub fn monitor_host_shutdown() -> impl Sized {
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// Bytes written to a PTY. Windows turns a bare LF into CRLF; other systems
+/// pass the bytes through.
+pub(crate) fn pty_input(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(windows)]
+    {
+        windows::conpty_input(bytes)
+    }
+    #[cfg(not(windows))]
+    {
+        std::borrow::Cow::Borrowed(bytes)
+    }
+}
 #[cfg(windows)]
 mod windows_exec;
 #[cfg(windows)]

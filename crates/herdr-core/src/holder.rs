@@ -359,6 +359,7 @@ impl Holder {
                 let (input, queued) = std::sync::mpsc::channel::<Vec<u8>>();
                 std::thread::spawn(move || {
                     for bytes in queued {
+                        let bytes = platform::pty_input(&bytes);
                         if writer.write_all(&bytes).is_err() {
                             break;
                         }

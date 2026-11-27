@@ -29,6 +29,29 @@ fn check(ok: BOOL) -> io::Result<()> {
     if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
+/// Cooked ConPTY input drops a bare LF, so a pasted line break has to be CR
+/// or CRLF. A CR already followed by LF stays one break.
+pub(crate) fn conpty_input(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if !bytes.contains(&b'\n') {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len() + bytes.iter().filter(|b| **b == b'\n').count());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            out.extend_from_slice(b"\r\n");
+            i += 2;
+        } else if bytes[i] == b'\n' {
+            out.extend_from_slice(b"\r\n");
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 fn event() -> io::Result<OwnedHandle> {
     let handle = unsafe { CreateEventW(null(), 1, 0, null()) };
     if handle.is_null() { Err(io::Error::last_os_error()) } else { Ok(unsafe { OwnedHandle::from_raw_handle(handle) }) }
@@ -1245,5 +1268,19 @@ pub mod console {
             }
             Some(buf[..got as usize].to_vec())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conpty_input;
+
+    #[test]
+    fn a_bare_line_feed_becomes_crlf_and_an_existing_break_stays_one() {
+        assert_eq!(conpty_input(b"P1\nLINE_A\nLINE_B").as_ref(), b"P1\r\nLINE_A\r\nLINE_B");
+        assert_eq!(conpty_input(b"P2\r\nLINE_A\r\nLINE_B").as_ref(), b"P2\r\nLINE_A\r\nLINE_B");
+        assert_eq!(conpty_input(b"P3\rLINE_A\rLINE_B").as_ref(), b"P3\rLINE_A\rLINE_B");
+        assert_eq!(conpty_input(b"a\r\nb\nc").as_ref(), b"a\r\nb\r\nc");
+        assert_eq!(conpty_input(b"\r").as_ref(), b"\r");
     }
 }
