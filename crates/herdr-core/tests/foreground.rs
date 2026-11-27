@@ -17,6 +17,8 @@ fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
     // By its argv: the OS names macOS's /bin/sh `bash`, and that's the fact we pass on.
     wait_until("the shell in front", || get(&s, &t)["foreground"]["argv"][0] == "sh");
     let fg = get(&s, &t)["foreground"].clone();
+    let first = fg["since_ms"].as_u64().unwrap();
+    assert!(first >= get(&s, &t)["created_ms"].as_u64().unwrap(), "{fg}");
     assert_eq!(canonical(fg["cwd"].as_str().unwrap()), canonical(get(&s, &t)["cwd"].as_str().unwrap()), "{fg}");
     assert!(fg["pid"].as_i64().unwrap() > 0 && !fg["name"].as_str().unwrap().is_empty(), "{fg}");
 
@@ -32,6 +34,7 @@ fn what_runs_in_a_terminal_and_where_is_on_its_record_and_evented() {
         }
     };
     assert_eq!(event["argv"], json!(["sleep", "100"]));
+    assert!(event["since_ms"].as_u64().unwrap() >= first, "{event}");
     assert_eq!(canonical(event["cwd"].as_str().unwrap()), canonical(sub.to_str().unwrap()));
     assert_eq!(get(&s, &t)["foreground"], event, "the record says the same");
 }

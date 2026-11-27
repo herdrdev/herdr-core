@@ -137,7 +137,7 @@ Each event's `data`, and how to apply it to a snapshot:
 | `title` | `{title}` | set `title` |
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |
 | `size` | `{cols, rows}` | set both |
-| `foreground` | `{pid, name, argv, cwd}`, or null: what runs in it now (the foreground process group's leader) and its folder; read about twice a second | set `foreground` |
+| `foreground` | `{pid, name, argv, cwd, since_ms}`, or null: what runs in it now (the foreground process group's leader), its folder, and since when core has seen it in front (ms since the epoch; the same process keeps it); read about twice a second | set `foreground` |
 
 Terminals on machines this core added are in the same stream, addressed as
 seen from here (`rohan/t7`), in the same order and filters (`terminal`,

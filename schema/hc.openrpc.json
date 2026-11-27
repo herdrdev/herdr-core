@@ -293,6 +293,13 @@
             "description": "The foreground process group's leader.",
             "format": "int32",
             "type": "integer"
+          },
+          "since_ms": {
+            "default": 0,
+            "description": "Since when core has seen this process in front (ms since the epoch): the\nfirst read that found it there, not the OS start time. Kept across\nrestarts of core; 0 only in a record saved before this field existed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [

@@ -17,6 +17,23 @@ pub struct Foreground {
     pub argv: Vec<String>,
     /// Its working directory now (resolved by the OS).
     pub cwd: String,
+    /// Since when core has seen this process in front (ms since the epoch): the
+    /// first read that found it there, not the OS start time. Kept across
+    /// restarts of core; 0 only in a record saved before this field existed.
+    #[serde(default)]
+    pub since_ms: u64,
+}
+
+/// What `now` becomes on the record: the same process keeps its `since_ms`
+/// (a record without one, or a read of the OS, gets `at`).
+fn stamped(prev: Option<&Foreground>, now: Option<Foreground>, at: u64) -> Option<Foreground> {
+    now.map(|f| {
+        let since_ms = match prev {
+            Some(p) if p.pid == f.pid && p.name == f.name && p.since_ms > 0 => p.since_ms,
+            _ => at,
+        };
+        Foreground { since_ms, ..f }
+    })
 }
 
 /// The facts about `pid`, if it is still there to read.
@@ -27,7 +44,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
     let argv =
         cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
     let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?.display().to_string();
-    Some(Foreground { pid, name, argv, cwd })
+    Some(Foreground { pid, name, argv, cwd, since_ms: 0 })
 }
 
 /// A pseudo console has no foreground group: this is the terminal's first
@@ -99,7 +116,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
         })
         .collect();
     unsafe { LocalFree(list.cast()) };
-    Some(Foreground { pid, name, argv, cwd })
+    Some(Foreground { pid, name, argv, cwd, since_ms: 0 })
 }
 
 #[cfg(target_os = "macos")]
@@ -114,7 +131,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
     }
     let path = unsafe { std::ffi::CStr::from_ptr(vnode.pvi_cdir.vip_path.as_ptr().cast()) };
     let (argv, _) = procargs(pid)?;
-    Some(Foreground { pid, name, argv, cwd: path.to_string_lossy().into_owned() })
+    Some(Foreground { pid, name, argv, cwd: path.to_string_lossy().into_owned(), since_ms: 0 })
 }
 
 /// KERN_PROCARGS2: argc, the executable path, the arguments, then the
@@ -159,11 +176,15 @@ impl Core {
             let live: Vec<u32> = self.lock().reg.terminals.values().filter(|t| t.is_live()).map(|t| t.id()).collect();
             for id in live {
                 let pgid = self.foreground(id).await;
-                let now = (pgid > 0).then(|| about(pgid)).flatten();
+                let read = (pgid > 0).then(|| about(pgid)).flatten();
                 let mut st = self.lock();
-                let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live() && t.foreground != now) else {
+                let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live()) else {
                     continue;
                 };
+                let now = stamped(t.foreground.as_ref(), read, crate::runtime::now_ms());
+                if t.foreground == now {
+                    continue;
+                }
                 if let Some(f) = &now {
                     t.last_cwd = Some(f.cwd.clone());
                 }
@@ -172,5 +193,33 @@ impl Core {
                 self.emit(&mut st, "foreground", id, serde_json::to_value(&now).unwrap_or_default());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fg(pid: i32, name: &str, since_ms: u64) -> Foreground {
+        Foreground { pid, name: name.into(), argv: vec![name.into()], cwd: "/".into(), since_ms }
+    }
+
+    #[test]
+    fn since_moves_only_when_another_process_takes_the_front() {
+        let prev = fg(7, "node", 100);
+        assert_eq!(stamped(Some(&prev), Some(fg(7, "node", 0)), 900), Some(fg(7, "node", 100)), "still there");
+        assert_eq!(stamped(Some(&prev), Some(fg(8, "vim", 0)), 900), Some(fg(8, "vim", 900)), "another pid");
+        assert_eq!(
+            stamped(Some(&prev), Some(fg(7, "sh", 0)), 900),
+            Some(fg(7, "sh", 900)),
+            "exec'd, or the pid came back"
+        );
+        assert_eq!(stamped(None, Some(fg(7, "node", 0)), 900), Some(fg(7, "node", 900)), "first read");
+        assert_eq!(
+            stamped(Some(&fg(7, "node", 0)), Some(fg(7, "node", 0)), 900),
+            Some(fg(7, "node", 900)),
+            "saved without one"
+        );
+        assert_eq!(stamped(Some(&prev), None, 900), None, "nothing in front");
     }
 }
