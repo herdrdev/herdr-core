@@ -548,6 +548,12 @@ impl Core {
     /// A starting agent can report before it is ready for a paste (Pi swaps its
     /// input box right after its first report and drops a paste in flight):
     /// in its first seconds, wait until its screen has been still a moment.
+    /// A full-screen program keeps negotiating after that quiet — paste mode,
+    /// keyboard protocol, status support. Input typed mid-negotiation makes a
+    /// reporter miss its status-support reply, and then it never reports
+    /// again: every turn looks like an interruption (status idle, turn 0).
+    /// So for one of those, quiet is not enough: wait for the first status
+    /// report too. Plain programs settle as before.
     async fn settle(&self, id: u32) -> Result<(), RpcError> {
         let deadline = Instant::now() + SETTLE_MAX;
         loop {
@@ -558,9 +564,12 @@ impl Core {
                     .terminals
                     .get(&id)
                     .map(|t| Duration::from_millis(crate::runtime::now_ms().saturating_sub(t.created_ms)));
+                let negotiated = st.reg.terminals.get(&id).is_some_and(|t| t.reported)
+                    || st.screens.get(&id).is_none_or(|s| !(s.alt_screen() || s.dec_mode(2004)));
                 age.is_none_or(|age| {
                     age >= Duration::from_millis(STARTUP_MS)
-                        || st.last_output.get(&id).map_or(age, Instant::elapsed) >= env_ms("HC_SETTLE_MS", 800)
+                        || (st.last_output.get(&id).map_or(age, Instant::elapsed) >= env_ms("HC_SETTLE_MS", 800)
+                            && negotiated)
                 })
             };
             if ready {
