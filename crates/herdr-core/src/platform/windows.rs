@@ -674,6 +674,11 @@ fn job_kills_on_close() -> bool {
     }
 }
 
+/// A pseudo console has no process groups; see `foreground_tracks_jobs`.
+pub fn group_has_child(_leader: u32) -> bool {
+    false
+}
+
 pub fn parent_pid() -> u32 {
     use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
     unsafe {

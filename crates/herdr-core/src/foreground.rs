@@ -182,12 +182,15 @@ impl Core {
                 self.reconcile_resume(id);
                 let pgid = self.foreground(id).await;
                 let now = (pgid > 0).then(|| about(pgid)).flatten();
+                let idle_shell = now
+                    .as_ref()
+                    .filter(|n| shell_root(n) && !crate::platform::group_has_child(n.pid as u32))
+                    .map(|n| n.pid as u32);
                 let mut st = self.lock();
                 let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.is_live()) else {
                     continue;
                 };
-                let at_shell = crate::platform::foreground_tracks_jobs()
-                    && now.as_ref().is_some_and(|n| Some(n.pid as u32) == t.pid && shell_root(n));
+                let at_shell = crate::platform::foreground_tracks_jobs() && idle_shell.is_some() && idle_shell == t.pid;
                 let change = (at_shell && (t.status.is_some() || !t.records.is_empty())).then(|| {
                     t.first_task_turn = None;
                     crate::status::reset(t)

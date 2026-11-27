@@ -119,6 +119,21 @@ fn a_shell_script_root_keeps_its_agents_status() {
     still_working_after_samples(&s, &t);
 }
 
+#[test]
+fn an_agent_started_from_an_interactive_shells_rc_file_keeps_its_status_until_it_exits() {
+    let mut s = Session::new();
+    s.env.push(("HC_FOREGROUND_MS".into(), "50".into()));
+    let agent = executable(&s, &format!("#!/bin/sh\n{}", script(&s, "r state=working; w done")));
+    // Job control starts after the rc file, so the agent shares the shell's foreground group.
+    std::fs::write(s.root.join(".bashrc"), format!("{agent}\n")).unwrap();
+    let t = run(&s, &["bash", "-i"]);
+    wait_until("agent status", || get(&s, &t)["status"]["state"] == "working");
+    wait_until("shell root is foreground", || get(&s, &t)["foreground"]["pid"] == get(&s, &t)["pid"]);
+    still_working_after_samples(&s, &t);
+    touch(&s, "done");
+    wait_until("status cleared at the prompt", || get(&s, &t)["status"].is_null());
+}
+
 /// About four foreground samples (`HC_FOREGROUND_MS` 50) after the agent reported, its status stands.
 fn still_working_after_samples(s: &Session, t: &str) {
     std::thread::sleep(std::time::Duration::from_millis(200));
