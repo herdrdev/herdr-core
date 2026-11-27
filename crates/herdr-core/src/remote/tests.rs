@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 #[tokio::test]
 async fn removing_or_replacing_a_machine_drops_its_status_poll() {
     for replacement in [false, true] {
-        let root = std::path::PathBuf::from(format!("/var/tmp/hc-poll-{}", crate::platform::random_hex()));
+        let root = crate::test_tmp().join(format!("hc-poll-{}", crate::platform::random_hex()));
         let paths = Paths {
             socket: root.join("core.sock"),
             holder_socket: root.join("holder.sock"),

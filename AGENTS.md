@@ -58,8 +58,9 @@ layout or a workspace to return to, it does not belong here.
 ## Traps
 
 - Tests and smokes run in isolated sessions (`HC_SESSION`) with scratch XDG
-  paths under `/var/tmp`. Never touch the machine's real core, Herdr, or its
-  running agents. Clean up scratch data.
+  paths under `crate::test_tmp()` (integration tests: `common::test_tmp()`).
+  Never touch the machine's real core, Herdr, or its running agents. Clean up
+  scratch data.
 - `just install` replaces the installed binary and restarts core. Running terminals are kept. It restarts through `scripts/restart-core.sh`, so a core it has to start inherits only the login variables that script lists, not the rest of your shell's. Never run a bare `hc server start` or an autostarting `hc` command from an agent shell when no core is running: that core, and every terminal it opens, takes your env.
 - Real-agent smokes (Claude Code with haiku, Pi with a cheap model) cost
   money. Ask before running them.
