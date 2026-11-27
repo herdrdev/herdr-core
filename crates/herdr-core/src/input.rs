@@ -323,6 +323,22 @@ pub enum Step {
     EndDraft(Vec<u8>),
 }
 
+/// Validate the full submission before typing, using the program's live key modes.
+pub(crate) fn submit_steps(screen: &ghostty_vt::Terminal, t: &Terminal) -> Result<Vec<Step>, RpcError> {
+    let submit = match &t.submit {
+        Some(keys) => keys.split(' ').map(|key| crate::keys::encode(screen, key)).collect::<Result<Vec<_>, _>>()?,
+        None => vec![b"\r".to_vec()],
+    };
+    let mut steps = vec![Step::Pause(t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis))];
+    for (i, key) in submit.into_iter().enumerate() {
+        if i > 0 {
+            steps.push(Step::Pause(KEY_GAP));
+        }
+        steps.push(Step::Write(key));
+    }
+    Ok(steps)
+}
+
 pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
     Duration::from_millis(std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
 }
@@ -522,14 +538,10 @@ impl Core {
                 }
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
                 // A template may say how its agent submits (default: Enter after 200 ms).
-                let submit = match &t.submit {
-                    Some(key) => crate::keys::encode(screen, key)?,
-                    None => b"\r".to_vec(),
-                };
-                let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
                 let bytes = paste(screen.dec_mode(2004), text);
                 let paste = if first_task { Step::FirstTask(bytes) } else { Step::Write(bytes) };
-                let steps = vec![paste, Step::Pause(gap), Step::Write(submit)];
+                let mut steps = vec![paste];
+                steps.extend(submit_steps(screen, t)?);
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
