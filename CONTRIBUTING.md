@@ -6,7 +6,7 @@ Core is an agent-neutral terminal runtime, not a multiplexer. We don't add per-a
 
 ## Setup
 
-Install Rust (CI pins 1.95.0), Zig 0.16.0, [just](https://just.systems/), and a C linker/toolchain for your OS. On Windows, use the MSVC toolchain and Git for Windows' `sh`.
+Install Rust (CI pins 1.95.0), Zig 0.17.1, [just](https://just.systems/), and a C linker/toolchain for your OS. On Windows, use the MSVC toolchain and Git for Windows' `sh`.
 
 ```sh
 rustup component add rustfmt clippy
