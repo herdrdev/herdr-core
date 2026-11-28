@@ -8,7 +8,8 @@ terminal multiplexer.
 `hc` runs programs in persistent terminals. People can attach and take over.
 It does not arrange windows; use `herdr-app --skill` for that.
 `$HC_TERMINAL_ID` is your address. Terminals you start are your children.
-They end when you end, unless started with `--outlive-parent`.
+They end when you end, unless started with `--outlive-parent`: then they
+keep running with no parent.
 `<t>` below means an ID (`t7`), a name (`review`), or `machine/t7`.
 Piped output is JSON except `run`, `exec`, `read`, and `file read` (text).
 Use `hc ls --table` for a plain-text table in captured or piped output.

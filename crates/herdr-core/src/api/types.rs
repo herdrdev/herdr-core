@@ -271,7 +271,7 @@ pub struct RunParams {
     #[arg(long)]
     #[serde(default)]
     pub no_notify: bool,
-    /// Keep it running when its parent's program ends (by default it ends too).
+    /// Keep it running when its parent's program ends, without a parent from then on (by default it ends too).
     #[arg(long)]
     #[serde(default)]
     pub outlive_parent: bool,

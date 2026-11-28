@@ -591,6 +591,7 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         "title" => set(record, &["title"]),
         "labels" => set(record, &["labels"]),
         "keep" => set(record, &["keep"]),
+        "parent" => set(record, &["parent"]),
         "size" => set(record, &["cols", "rows"]),
         "foreground" => record["foreground"] = data.clone(),
         _ => {}
@@ -755,24 +756,13 @@ pub fn orphaned_afar(core: &Core, st: &mut State, parent: u32) {
 }
 
 /// From a peer: its terminal `parent` finished. Children here that asked to
-/// die with it end.
+/// die with it end; the others lose their parent.
 pub async fn orphaned(core: &Arc<Core>, conn: Option<&Arc<Conn>>, params: &Value) -> Result<Value, RpcError> {
     let from_peer = conn.is_some_and(|c| core.lock().peer_lines.values().any(|(k, _)| *k == conn_key(c)));
     let Some(address) = params["parent"].as_str().filter(|_| from_peer).and_then(|p| peer_address(core, p)) else {
         return Err(RpcError::new("denied", "only a core that dialed in says its terminals finished", ""));
     };
-    let kids: Vec<u32> = {
-        let mut st = core.lock();
-        let kids: Vec<u32> = st
-            .reg
-            .terminals
-            .values()
-            .filter(|t| t.is_live() && t.die_with_parent && t.parent.as_deref() == Some(address.as_str()))
-            .map(|t| t.id())
-            .collect();
-        st.killing.extend(&kids);
-        kids
-    };
+    let kids = crate::notes::orphan(core, &mut core.lock(), &address);
     core.kill(&kids).await;
     Ok(json!({}))
 }
