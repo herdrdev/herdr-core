@@ -138,7 +138,10 @@ to `terminal.run` (both positive). It applies before the program starts. Omit it
 for the unchanged configured headless size (default 200×120); later viewers
 still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
 `terminal.attach`) likewise answers the program's color and cell-size queries
-from its start, before any viewer attaches.
+from its start, before any viewer attaches. An explicit display uses Ghostty's
+defaults for missing fields. With no display, a new terminal inherits its local
+parent's current default colors and cell size. If the parent has no local
+screen, the new terminal starts with Ghostty's defaults.
 
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code

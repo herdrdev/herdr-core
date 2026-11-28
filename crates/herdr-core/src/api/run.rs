@@ -124,6 +124,7 @@ pub(super) async fn start(
             .map(crate::terminals::address),
         _ => None,
     };
+    let parent_id = parent.as_deref().and_then(crate::terminals::parse_id);
     let (id, rx) = {
         let mut st = core.lock();
         not_stopping(&st)?;
@@ -158,6 +159,8 @@ pub(super) async fn start(
         screen.set_xtversion(&identity);
         if let Some(display) = &p.display {
             display.apply(&mut screen);
+        } else if let Some(parent) = parent_id.and_then(|id| st.screens.get(&id)) {
+            screen.inherit_display(parent);
         }
         st.screens.insert(id, screen);
         let resume = crate::resume::Resume::new(&core.paths.state);

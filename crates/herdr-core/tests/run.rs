@@ -8,6 +8,14 @@ mod common;
 
 use common::*;
 
+const QUERY_COLORS: &str = r#"
+    stty raw -echo min 0 time 10
+    printf '\033]10;?\007\033]11;?\007'
+    replies=$(dd bs=1 count=48 2>/dev/null)
+    stty sane
+    printf '%s' "$replies" | od -An -c | tr -d ' \n'
+"#;
+
 fn hc(s: &Session, args: &[&str]) -> (i32, String) {
     let out = s.hc(args);
     (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
@@ -34,17 +42,54 @@ fn initial_size_is_optional_and_applies_before_the_program_starts() {
 }
 
 #[test]
-fn initial_display_answers_the_programs_first_color_query() {
+fn explicit_display_and_parentless_runs_answer_the_first_color_queries() {
     use serde_json::json;
     let s = Session::new();
     s.json(&["server", "start"]);
     let mut conn = s.connect();
-    // Asks for the background at once, like a TUI at startup, before any viewer attaches.
-    let probe = "stty raw -echo min 0 time 10; printf '\\033]11;?\\033\\\\'; r=$(dd bs=256 count=1 2>/dev/null); \
-                 stty sane; printf '%s' \"$r\" | od -An -c | tr -d ' \\n'";
-    let params = json!({"argv": ["sh", "-c", probe], "wait": true, "display": {"bg": "#fbfcfb"}});
-    let reply = conn.call(1, "terminal.run", params);
-    assert!(reply["result"]["output"].as_str().unwrap().contains("fbfb/fcfc/fbfb"), "{reply}");
+    let mut check = |extra: serde_json::Value, bg: &str| {
+        let mut params = json!({"argv": ["sh", "-c", QUERY_COLORS], "wait": true});
+        params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let reply = conn.call(1, "terminal.run", params);
+        let output = reply["result"]["output"].as_str().unwrap();
+        assert!(output.contains("]10;rgb:ffff/ffff/ffff") && output.contains(&format!("]11;rgb:{bg}")), "{reply}");
+    };
+    check(json!({}), "2828/2c2c/3434");
+
+    let parent = run(&s, &["sleep", "100"]);
+    let _viewer = framed::Viewer::attach(&s, &parent, 80, 24, json!({"display": {"fg": "#25272c", "bg": "#ffffff"}}));
+    for (extra, bg) in [
+        (json!({}), "2828/2c2c/3434"),
+        (json!({"parent": parent, "display": {"bg": "#fbfcfb"}}), "fbfb/fcfc/fbfb"),
+        (json!({"caller": parent, "no_parent": true}), "2828/2c2c/3434"),
+        (json!({"caller": format!("peer/{parent}")}), "2828/2c2c/3434"),
+    ] {
+        check(extra, bg);
+    }
+}
+
+#[test]
+fn background_run_inherits_the_parents_updated_colors_before_attach() {
+    use serde_json::json;
+    let s = Session::new();
+    let probe = s.root.join("colors.sh");
+    std::fs::write(&probe, QUERY_COLORS).unwrap();
+    let command = script(
+        &s,
+        &format!("w launch; '{}' run --bg --name probe sh '{}'; sleep 100", s.bin.display(), probe.display()),
+    );
+    let parent = run(&s, &["sh", "-c", &command]);
+    let _first = framed::Viewer::attach(&s, &parent, 80, 24, json!({"display": {"fg": "#25272c", "bg": "#111111"}}));
+    let mut viewer = framed::Viewer::attach(&s, &parent, 80, 24, json!({}));
+    viewer.conn.send(viewer.channel, herdr_core::wire::FACTS, br##"{"bg":"#ffffff"}"##);
+    viewer.conn.call("terminal.get", json!({"terminal": parent}));
+    touch(&s, "launch");
+    wait_until("headless child replied to color queries", || {
+        let reply = s.hc(&["--json", "read", "probe"]);
+        reply.status.success() && String::from_utf8_lossy(&reply.stdout).contains("]11;rgb:")
+    });
+    let output = text(&s, "probe");
+    assert!(output.contains("]10;rgb:2525/2727/2c2c") && output.contains("]11;rgb:ffff/ffff/ffff"), "{output}");
 }
 
 #[test]

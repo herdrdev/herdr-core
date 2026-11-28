@@ -235,7 +235,9 @@ pub struct RunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<InitialSize>,
     /// The caller's colors and cell size, answering the program's display queries
-    /// from its start. Omitted: Ghostty's defaults until a viewer attaches.
+    /// from its start. Omitted fields keep Ghostty's defaults. If the whole
+    /// display is omitted, use the local parent's current display defaults
+    /// and cell size, or Ghostty's defaults when no local parent screen exists.
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<crate::viewers::Display>,
