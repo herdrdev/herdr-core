@@ -1824,7 +1824,7 @@
           }
         },
         {
-          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches.",
+          "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted fields keep Ghostty's defaults. If the whole\ndisplay is omitted, use the local parent's current display defaults\nand cell size, or Ghostty's defaults when no local parent screen exists.",
           "name": "display",
           "required": false,
           "schema": {
@@ -1836,7 +1836,7 @@
                 "type": "null"
               }
             ],
-            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted: Ghostty's defaults until a viewer attaches."
+            "description": "The caller's colors and cell size, answering the program's display queries\nfrom its start. Omitted fields keep Ghostty's defaults. If the whole\ndisplay is omitted, use the local parent's current display defaults\nand cell size, or Ghostty's defaults when no local parent screen exists."
           }
         },
         {

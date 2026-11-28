@@ -54,6 +54,23 @@ fn display_changes_do_not_report_without_a_subscription() {
 }
 
 #[test]
+fn inherited_display_uses_defaults_instead_of_program_color_overrides() {
+    let mut parent = Terminal::new(80, 24, 0);
+    parent.set_display(Some([1, 2, 3]), Some([0xfe; 3]), Some([4, 5, 6]), Some((9, 18)));
+    parent.write(b"\x1b]11;#000000\x07\x1b]11;?\x07");
+    assert_eq!(parent.take_responses(), b"\x1b]11;rgb:0000/0000/0000\x07");
+
+    let mut child = Terminal::new(40, 10, 0);
+    child.inherit_display(&parent);
+    child.write(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07\x1b[?996n\x1b[16t");
+    assert_eq!(
+        child.take_responses(),
+        b"\x1b]10;rgb:0101/0202/0303\x07\x1b]11;rgb:fefe/fefe/fefe\x07\x1b]12;rgb:0404/0505/0606\x07\x1b[?997;2n\x1b[6;18;9t"
+    );
+    assert_eq!(child.size(), (40, 10));
+}
+
+#[test]
 fn a_repaint_into_a_dirty_viewer_turns_off_modes_the_screen_no_longer_has() {
     let mut viewer = Terminal::new(40, 10, 0);
     viewer.write(b"\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?1004h");

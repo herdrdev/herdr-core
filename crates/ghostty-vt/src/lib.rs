@@ -562,6 +562,23 @@ impl Terminal {
         self.hooks.xtversion = version.to_string();
     }
 
+    fn default_color(&self, data: i32) -> Option<Rgb> {
+        let mut color: Rgb = [0; 3];
+        let rc = unsafe { ffi::ghostty_terminal_get(self.raw, data, color.as_mut_ptr().cast()) };
+        (rc == ffi::SUCCESS).then_some(color)
+    }
+
+    /// Copy the parent's default colors and cell size. OSC color overrides
+    /// belong to the program running in that terminal.
+    pub fn inherit_display(&mut self, parent: &Terminal) {
+        self.set_display(
+            parent.default_color(ffi::DATA_COLOR_FOREGROUND_DEFAULT),
+            parent.default_color(ffi::DATA_COLOR_BACKGROUND_DEFAULT),
+            parent.default_color(ffi::DATA_COLOR_CURSOR_DEFAULT),
+            Some(parent.hooks.cell),
+        );
+    }
+
     /// Display facts from a viewer: default colors and cell size in pixels.
     /// `None` keeps what was known before. Changed colors queue a mode 2031 report
     /// for subscribers, even within the same light/dark scheme (they may re-query).
@@ -573,9 +590,7 @@ impl Terminal {
             (ffi::OPT_COLOR_CURSOR, ffi::DATA_COLOR_CURSOR_DEFAULT, cursor),
         ] {
             if let Some(c) = rgb {
-                let mut old: Rgb = [0; 3];
-                let rc = unsafe { ffi::ghostty_terminal_get(self.raw, data, old.as_mut_ptr().cast()) };
-                changed |= rc != ffi::SUCCESS || old != c;
+                changed |= self.default_color(data) != Some(c);
                 unsafe { ffi::ghostty_terminal_set(self.raw, opt, c.as_ptr().cast()) };
             }
         }
