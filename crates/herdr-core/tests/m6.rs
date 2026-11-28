@@ -155,6 +155,24 @@ fn children_end_with_their_parent_unless_they_asked_to_outlive_it() {
 }
 
 #[test]
+fn a_child_that_outlives_its_parent_loses_it() {
+    let s = session();
+    let p = run(&s, &[], "sleep 100");
+    let stays = s.json(&["run", "--bg", "--parent", &p, "--outlive-parent", "sleep", "100"])["address"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut conn = s.connect();
+    conn.call(1, "events.subscribe", json!({"terminal": stays}));
+    s.json(&["kill", &p]);
+    let e = next_event(&mut conn, |m| m["method"] == "event" && m["params"]["type"] == "parent");
+    assert_eq!(e["params"]["data"], json!({"parent": null}));
+    let kid = get(&s, &stays);
+    assert_eq!((kid["state"].as_str(), kid["parent"].is_null()), (Some("live"), true));
+    assert_eq!(get(&s, &p)["state"], "finished");
+}
+
+#[test]
 fn only_a_blocked_errored_or_exited_child_is_a_note() {
     let s = session();
     let p = run(&s, &[], "stty -echo; r state=idle; while read -r l; do echo \"parent-got:$l\"; done");

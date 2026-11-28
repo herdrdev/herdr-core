@@ -12,10 +12,40 @@ use std::time::Duration;
 pub enum Job {
     /// Try to type pending notes into this parent.
     Notes(u32),
-    /// The parent finished: end children that asked to die with it.
+    /// The parent finished: end children that asked to die with it, release the rest.
     Orphaned(u32),
     /// News for a parent on a core that dialed in (`desktop/t3`).
     NotesAfar(String),
+}
+
+/// `parent` finished. Its live children that asked to die with it are marked
+/// for killing and returned; the others outlive it and lose their parent.
+pub fn orphan(core: &Core, st: &mut State, parent: &str) -> Vec<u32> {
+    let (kill, release): (Vec<&Terminal>, Vec<&Terminal>) = st
+        .reg
+        .terminals
+        .values()
+        .filter(|t| t.is_live() && t.parent.as_deref() == Some(parent))
+        .partition(|t| t.die_with_parent);
+    let (kill, release): (Vec<u32>, Vec<u32>) =
+        (kill.into_iter().map(Terminal::id).collect(), release.into_iter().map(Terminal::id).collect());
+    let was: Vec<Terminal> = release
+        .iter()
+        .map(|id| {
+            let t = st.reg.terminals.get_mut(id).expect("listed");
+            let was = t.clone();
+            t.parent = None;
+            was
+        })
+        .collect();
+    if !was.is_empty() {
+        core.save(st);
+    }
+    for was in &was {
+        core.emit_from(st, "parent", was.id(), serde_json::json!({"parent": null}), Some(was));
+    }
+    st.killing.extend(&kill);
+    kill
 }
 
 fn parent_id(t: &Terminal) -> Option<u32> {
@@ -206,21 +236,7 @@ impl Core {
                     crate::remote::tell_peer(&self, &mut st, &parent, &notes);
                 }
                 Job::Orphaned(parent) => {
-                    let address = crate::terminals::address(parent);
-                    let kids: Vec<u32> = {
-                        let mut st = self.lock();
-                        let kids: Vec<u32> = st
-                            .reg
-                            .terminals
-                            .values()
-                            .filter(|t| {
-                                t.is_live() && t.die_with_parent && t.parent.as_deref() == Some(address.as_str())
-                            })
-                            .map(Terminal::id)
-                            .collect();
-                        st.killing.extend(&kids);
-                        kids
-                    };
+                    let kids = orphan(&self, &mut self.lock(), &crate::terminals::address(parent));
                     let core = self.clone();
                     tokio::spawn(async move { core.kill(&kids).await });
                 }

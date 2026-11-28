@@ -873,7 +873,7 @@
           },
           "parent": {
             "default": null,
-            "description": "The terminal that started it (`t3`), set once at start.",
+            "description": "The terminal that started it (`t3`), set at start; cleared when that terminal finishes and this one outlives it.",
             "type": [
               "string",
               "null"
@@ -1354,7 +1354,7 @@
           },
           "parent": {
             "default": null,
-            "description": "The terminal that started it (`t3`), set once at start.",
+            "description": "The terminal that started it (`t3`), set at start; cleared when that terminal finishes and this one outlives it.",
             "type": [
               "string",
               "null"
@@ -1932,12 +1932,12 @@
           }
         },
         {
-          "description": "Keep it running when its parent's program ends (by default it ends too).",
+          "description": "Keep it running when its parent's program ends, without a parent from then on (by default it ends too).",
           "name": "outlive_parent",
           "required": false,
           "schema": {
             "default": false,
-            "description": "Keep it running when its parent's program ends (by default it ends too).",
+            "description": "Keep it running when its parent's program ends, without a parent from then on (by default it ends too).",
             "type": "boolean"
           }
         },
@@ -3975,7 +3975,7 @@
       }
     },
     {
-      "description": "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
+      "description": "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, parent, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
       "errors": [
         {
           "code": -32000,

@@ -500,7 +500,7 @@ Options:
       --parent <PARENT>    Parent terminal (default: the terminal it is started from)
       --no-parent          No parent, even when started from a terminal
       --no-notify          Don't type notes about it into its parent
-      --outlive-parent     Keep it running when its parent's program ends (by default it ends too)
+      --outlive-parent     Keep it running when its parent's program ends, without a parent from then on (by default it ends too)
       --rm                 Remove it right after it exits (once a waiting parent has the exit code)
       --keep               Recover a lost terminal in place using its OSC 7577 resume command, if available, or a shell
       --bg                 Start it and come back at once (a server, several workers)
