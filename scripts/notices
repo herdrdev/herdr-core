@@ -28,7 +28,7 @@ jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license
         fi
         while IFS= read -r file; do
             printf '\n--- %s\n\n' "$(basename "$file")"
-            cat "$file"
+            tr -d '\r' <"$file"
         done <"$work/licenses"
     done <"$work/crates"
 } >"$work/notices"

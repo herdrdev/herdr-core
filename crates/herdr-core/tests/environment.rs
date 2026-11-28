@@ -48,6 +48,7 @@ fn fresh_restart_replaces_the_base_without_losing_live_programs() {
     let mut s = Session::new();
     s.env.push(("NO_COLOR".into(), "1".into()));
     s.env.push(("FOO".into(), "dirty".into()));
+    s.json(&["server", "start"]);
     let t = run(&s, &["sleep", "100"]);
     let pid = get(&s, &t)["pid"].as_i64().unwrap();
     let core_pid = s.json(&["server", "status"])["pid"].clone();
@@ -235,6 +236,37 @@ fn saved_restart(s: &Session) -> Vec<u8> {
 }
 
 #[test]
+fn a_restart_does_not_inherit_a_parent_panes_resume_token() {
+    use std::ffi::{OsStr, OsString};
+    let mut s = Session::new();
+    s.env.push(("OSC7577_TOKEN".into(), "dummy-parent-token".into()));
+    if cfg!(target_os = "linux") {
+        let core = s.json(&["server", "start"])["pid"].as_u64().unwrap();
+        let env = std::fs::read(format!("/proc/{core}/environ")).unwrap();
+        assert!(!env.split(|byte| *byte == 0).any(|entry| entry.starts_with(b"OSC7577_TOKEN=")));
+    }
+    let handoff = saved_restart(&s);
+    let mut note: serde_json::Value = serde_json::from_slice(&handoff).unwrap();
+    let vars: Vec<(OsString, OsString)> = serde_json::from_value(note["vars"].clone()).unwrap();
+    assert!(!vars.iter().any(|(key, _)| key == "OSC7577_TOKEN"));
+    // Old cores could leave the token in a handoff. The next core must discard it too.
+    note["vars"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value((OsStr::new("OSC7577_TOKEN"), OsStr::new("dummy-parent-token"))).unwrap());
+    std::fs::write(snapshot(&s), serde_json::to_vec(&note).unwrap()).unwrap();
+
+    let t = run(&s, &["sh", "-c", "printf 'token=%s\\n' \"${OSC7577_TOKEN-unset}\"; sleep 60"]);
+    wait_until("the pane has output", || text(&s, &t).contains("token="));
+    assert!(!text(&s, &t).contains("dummy-parent-token"));
+    if cfg!(target_os = "linux") {
+        let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+        let env = std::fs::read(format!("/proc/{holder}/environ")).unwrap();
+        assert!(!env.split(|byte| *byte == 0).any(|entry| entry.starts_with(b"OSC7577_TOKEN=")));
+    }
+}
+
+#[test]
 fn a_core_started_directly_restores_the_snapshot_before_adopting_holders() {
     use std::os::unix::ffi::OsStringExt;
     use std::process::Stdio;
@@ -313,6 +345,7 @@ fn invalid_or_stale_snapshots_leave_the_fresh_environment_intact() {
         }
         s.env.retain(|(key, _)| key != "HC_RESTART_VALUE");
         s.env.push(("HC_RESTART_VALUE".into(), "fresh".into()));
+        s.json(&["server", "start"]);
         let out = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
         assert!(out.status.success(), "{bad}: {out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout), "fresh", "{bad}");
@@ -396,6 +429,7 @@ fn sigterm_leaves_no_environment_for_the_next_fresh_start() {
     assert!(!snapshot(&s).exists());
     s.env.retain(|(key, _)| key != "HC_RESTART_VALUE");
     s.env.push(("HC_RESTART_VALUE".into(), "fresh".into()));
+    s.json(&["server", "start"]);
     let out = s.hc(&["exec", "printf '%s' \"$HC_RESTART_VALUE\""]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "fresh");
 }

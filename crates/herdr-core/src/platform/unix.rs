@@ -8,6 +8,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 
+pub(super) fn account() -> Option<(std::ffi::OsString, std::ffi::OsString)> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    // getpwuid_r keeps status requests from sharing libc's buffer.
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0u8; 16384];
+    let mut result = std::ptr::null_mut();
+    let error = unsafe {
+        libc::getpwuid_r(libc::getuid(), entry.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result)
+    };
+    if error != 0 || result.is_null() {
+        return None;
+    }
+    let entry = unsafe { entry.assume_init() };
+    let field = |pointer: *const libc::c_char| {
+        if pointer.is_null() {
+            OsString::new()
+        } else {
+            OsString::from_vec(unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes().to_vec())
+        }
+    };
+    Some((field(entry.pw_name), field(entry.pw_shell)))
+}
+
 pub fn check_via(_target: &str) -> io::Result<()> {
     Ok(())
 }
@@ -116,7 +140,7 @@ pub fn remove_endpoint(path: &Path) {
 
 /// Default homes for state and config (XDG_STATE_HOME / XDG_CONFIG_HOME win).
 pub fn data_dirs() -> (PathBuf, PathBuf) {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = std::env::home_dir().unwrap_or_else(|| "/".into());
     (home.join(".local/state"), home.join(".config"))
 }
 
@@ -147,6 +171,37 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 pub fn private_file(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
+}
+
+pub(crate) fn open_state_temp(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).custom_flags(libc::O_NOFOLLOW);
+    let replace = match options.open(path) {
+        Ok(file) => {
+            let meta = file.metadata()?;
+            if meta.is_file() && meta.uid() == unsafe { libc::geteuid() } && meta.nlink() == 1 {
+                file.set_len(0)?;
+                if meta.mode() & 0o7777 != 0o600 {
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                }
+                return Ok(file);
+            }
+            true
+        }
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    };
+    if replace
+        && let Err(error) = std::fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(error);
+    }
+    let file = options.create_new(true).mode(0o600).open(path)?;
+    if file.metadata()?.mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 pub fn is_link(metadata: &std::fs::Metadata) -> bool {
@@ -227,8 +282,14 @@ mod nofile_tests {
 
 /// Starts `cmd` in its own session (ending the terminal it was started from
 /// won't end it), stdin/stdout to /dev/null, stderr to `log`.
-pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
+pub fn spawn_detached(mut cmd: Command, log: std::fs::File, clean: bool) -> io::Result<()> {
     use std::process::Stdio;
+    if clean {
+        // Retain explicit unsets until the service adapters have had their chance.
+        let vars: Vec<_> =
+            cmd.get_envs().filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned()))).collect();
+        cmd.env_clear().envs(vars);
+    }
     #[cfg(target_os = "macos")]
     cmd.env_remove("XPC_FLAGS");
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);

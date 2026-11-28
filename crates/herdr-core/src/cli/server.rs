@@ -4,10 +4,14 @@ use super::*;
 
 #[derive(Subcommand)]
 pub(super) enum ServerCmd {
+    /// Start a stopped core using this shell's environment.
     Start,
     Stop,
     Status,
-    /// Restart the core (e.g. after an update); programs keep running.
+    /// Restart the core with its existing environment. Running programs stay alive.
+    ///
+    /// If the core is stopped, it starts with the platform's default environment.
+    /// Use --fresh to take this shell's environment.
     Restart {
         /// Take this shell's environment for new terminals; run from a terminal outside Herdr.
         #[arg(long)]

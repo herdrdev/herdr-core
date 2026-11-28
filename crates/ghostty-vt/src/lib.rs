@@ -3,6 +3,9 @@
 use std::ffi::c_void;
 use std::ptr;
 
+/// The version from the vendored Ghostty manifest.
+pub const VERSION: &str = env!("GHOSTTY_VERSION");
+
 mod ffi {
     use std::ffi::c_void;
 

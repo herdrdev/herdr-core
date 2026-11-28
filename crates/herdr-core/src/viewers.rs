@@ -147,6 +147,7 @@ impl Core {
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
     pub fn output(self: &Arc<Self>, st: &mut State, id: u32, bytes: &[u8]) {
+        self.resume_output(st, id, bytes, crate::runtime::now_ms());
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {
@@ -304,7 +305,7 @@ impl Core {
             self.touch(&mut st, conn, channel, |_| {})
         };
         if let Some(id) = id {
-            let answered = Self::viewer(&mut st, conn, channel).unwrap().1.answers.feed(bytes);
+            let (bytes, answered) = Self::viewer(&mut st, conn, channel).unwrap().1.answers.input(bytes, automatic);
             let mut now = Vec::new();
             let mut from = 0;
             let viewer = Some((conn, channel));

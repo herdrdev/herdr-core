@@ -13,6 +13,18 @@ fn main() {
     for path in ["src", "build.zig", "build.zig.zon", "include"] {
         println!("cargo:rerun-if-changed={}", src.join(path).display());
     }
+    let zon = std::fs::read_to_string(src.join("build.zig.zon")).expect("cannot read vendor/ghostty/build.zig.zon");
+    let version = zon
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == ".version").then_some(value.trim())
+        })
+        .and_then(|value| value.strip_prefix('"')?.split_once('"'))
+        .map(|(version, _)| version)
+        .filter(|version| !version.is_empty())
+        .expect("expected .version in vendor/ghostty/build.zig.zon");
+    println!("cargo:rustc-env=GHOSTTY_VERSION={version}");
     println!("cargo:rerun-if-env-changed=ZIG");
 
     let (target, host) = (std::env::var("TARGET").unwrap(), std::env::var("HOST").unwrap());

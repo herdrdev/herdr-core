@@ -36,10 +36,7 @@ pub(crate) fn prepare(core: &Core, environment: Option<BTreeMap<String, String>>
     drop(state);
     discard(&core.paths);
     if let Err(error) = save(&core.paths, vars, fresh) {
-        let _ = writeln!(
-            io::stderr(),
-            "core: cannot preserve restart environment; using the next launcher's environment: {error}"
-        );
+        let _ = writeln!(io::stderr(), "core: cannot preserve restart environment; using normal start rules: {error}");
         discard(&core.paths);
     }
     Ok(())
@@ -74,7 +71,8 @@ pub(crate) fn prepare_start(paths: &Paths, environment: BTreeMap<String, String>
     save(paths, vars, true)
 }
 
-fn save(paths: &Paths, vars: Vec<(OsString, OsString)>, fresh: bool) -> io::Result<()> {
+fn save(paths: &Paths, mut vars: Vec<(OsString, OsString)>, fresh: bool) -> io::Result<()> {
+    vars.retain(|(key, _)| !crate::platform::resume_env(key));
     let env = Environment {
         machine_id: crate::platform::machine_id(),
         boot_id: crate::platform::boot_id()?,
@@ -88,6 +86,10 @@ fn save(paths: &Paths, vars: Vec<(OsString, OsString)>, fresh: bool) -> io::Resu
     file.sync_all()?;
     drop(file);
     std::fs::rename(tmp, paths.state.join(ENVIRONMENT))
+}
+
+pub(crate) fn has_environment(paths: &Paths) -> bool {
+    load(paths).is_ok_and(|env| env.is_some())
 }
 
 fn load(paths: &Paths) -> io::Result<Option<Environment>> {

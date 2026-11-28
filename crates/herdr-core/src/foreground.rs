@@ -26,7 +26,7 @@ pub fn about(pid: i32) -> Option<Foreground> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let argv =
         cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?.display().to_string();
+    let cwd = process_cwd(pid)?;
     Some(Foreground { pid, name, argv, cwd })
 }
 
@@ -97,14 +97,30 @@ pub fn about(pid: i32) -> Option<Foreground> {
     let mut name = [0u8; 256];
     let n = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
     let name = String::from_utf8_lossy(&name[..n.max(0) as usize]).into_owned();
+    let cwd = process_cwd(pid)?;
+    let (argv, _) = procargs(pid)?;
+    Some(Foreground { pid, name, argv, cwd })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn process_cwd(pid: i32) -> Option<String> {
+    Some(std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?.display().to_string())
+}
+
+#[cfg(windows)]
+pub(crate) fn process_cwd(pid: i32) -> Option<String> {
+    about(pid).map(|p| p.cwd)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_cwd(pid: i32) -> Option<String> {
     let mut vnode: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
     if unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut vnode).cast(), size) } != size {
         return None;
     }
     let path = unsafe { std::ffi::CStr::from_ptr(vnode.pvi_cdir.vip_path.as_ptr().cast()) };
-    let (argv, _) = procargs(pid)?;
-    Some(Foreground { pid, name, argv, cwd: path.to_string_lossy().into_owned() })
+    Some(path.to_string_lossy().into_owned())
 }
 
 /// KERN_PROCARGS2: argc, the executable path, the arguments, then the
@@ -163,6 +179,7 @@ impl Core {
             tokio::time::sleep(Duration::from_millis(ms)).await;
             let live: Vec<u32> = self.lock().reg.terminals.values().filter(|t| t.is_live()).map(|t| t.id()).collect();
             for id in live {
+                self.reconcile_resume(id);
                 let pgid = self.foreground(id).await;
                 let now = (pgid > 0).then(|| about(pgid)).flatten();
                 let mut st = self.lock();

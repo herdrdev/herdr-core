@@ -18,7 +18,7 @@ pub struct Terminal {
     pub labels: BTreeMap<String, String>,
     pub argv: Vec<String>,
     pub cwd: String,
-    /// Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.
+    /// Recover a lost terminal in place using its OSC 7577 resume command or a shell. Ordinary exits and kills are final.
     #[serde(default)]
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +113,9 @@ pub struct Terminal {
     /// Crash-only cleanup token: used if its holder is lost, never on a normal end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub(crate) resume: Option<crate::resume::Resume>,
     #[serde(default)]
     pub seen_ms: Option<u64>,
     /// The template that started it.
@@ -302,6 +305,7 @@ impl Registry {
                 noted: 0,
                 told_parent: false,
                 scope: None,
+                resume: None,
                 printed: 0,
                 full_screen: false,
                 win32_input: false,
@@ -349,9 +353,16 @@ impl Registry {
                 t.last_cwd = Some(f.cwd.clone());
             }
             if pending {
+                if let Some(resume) = &mut t.resume {
+                    let drop_root = reason == "signaled"
+                        && signal.is_some_and(|signal| !crate::platform::resume_shutdown_signal(signal));
+                    resume.lost(t.program_started_ms, now_ms, drop_root);
+                }
                 t.schedule_restart(now_ms);
                 t.pid = None;
                 t.holder = None;
+            } else {
+                t.resume = None;
             }
             t.exit_code = code;
             t.signal = signal;
@@ -419,6 +430,7 @@ const PRIVATE: &[&str] = &[
     "seen_ms",
     "told_parent",
     "scope",
+    "resume",
     "holder",
     "printed",
     "full_screen",

@@ -390,6 +390,10 @@ pub fn private_file(path: &Path) -> io::Result<File> {
     std::fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
+pub(crate) fn open_state_temp(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)
+}
+
 pub fn is_link(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -575,8 +579,8 @@ pub fn file_identity(m: &std::fs::Metadata) -> String {
 /// stdin/stdout to NUL and stderr to `log`. It inherits only those two
 /// handles: std's spawn hands down every inheritable one, and a pipe of an
 /// ssh session living on in the daemon keeps that session from ending.
-pub fn spawn_detached(cmd: Command, log: File) -> io::Result<()> {
-    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+pub fn spawn_detached(cmd: Command, log: File, clean: bool) -> io::Result<()> {
+    let mut env: BTreeMap<String, String> = if clean { BTreeMap::new() } else { std::env::vars().collect() };
     for (k, v) in cmd.get_envs() {
         let k = k.to_string_lossy().into_owned();
         match v {
@@ -904,7 +908,7 @@ fn batch_line(script: &Path, args: &[String]) -> io::Result<String> {
     Ok(line)
 }
 
-fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
+pub(super) fn resolve(program: &str, path: &str, exts: &str) -> Option<PathBuf> {
     let with_exts = |base: PathBuf| -> Option<PathBuf> {
         if base.extension().is_some() && base.is_file() {
             return Some(base);

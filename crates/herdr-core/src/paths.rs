@@ -2,7 +2,7 @@
 //! state files are read and written.
 
 use crate::rpc::RpcError;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// Where one core keeps its socket and state. `HC_SESSION` names an isolated core.
@@ -69,8 +69,10 @@ pub fn read_state<T: serde::de::DeserializeOwned + Default>(path: &Path) -> io::
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+    let mut file = crate::platform::open_state_temp(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(tmp, path)
 }
 

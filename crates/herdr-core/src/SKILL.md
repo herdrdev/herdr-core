@@ -243,14 +243,21 @@ paths start at your current folder. Prefer explicit paths for remote work.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
-- A new Linux core started over SSH loads the account shell's non-interactive
-  login environment once, so remote terminals and commands can find programs
-  from login PATH settings. Local Linux starts, macOS and Windows are unchanged.
-  Reconnecting and crash recovery keep the loaded environment. Profiles have five
-  seconds and a combined 1 MiB output limit; remaining profile jobs are ended after
-  capture. A failed or blocked profile falls back to the incoming environment and records
-  the shell and reason in `core.log`. To refresh an existing remote core, run
-  `hc server restart --fresh` from a normal SSH login outside Herdr.
+- A command or app starting a stopped core uses the platform's default
+  environment for new terminals, kept shells and exec. On Linux and macOS,
+  the core captures exports from the non-interactive login shell in HOME,
+  including `.zprofile` on macOS. Starts through systemd or launchd also keep
+  settings from the user service manager, with login exports taking precedence.
+  Login PATH comes first, then any extra directories from the caller's PATH.
+  Profiles have five seconds and a
+  combined 1 MiB output limit. The core ends remaining profile jobs after
+  capture. A failed or blocked profile uses platform defaults plus the caller's
+  extra PATH directories. Nushell login capture also falls back to these defaults.
+  The core logs the shell and failure
+  reason in `core.log`. On Windows, the core starts from the user and system
+  environment. Reconnecting to a running core keeps its environment.
+  After a crash with no restart handoff, the replacement uses the same
+  default start rules.
 - `hc run` without a command starts this machine's own shell. On macOS,
   this is a login shell so it loads the login environment; explicit commands
   are unchanged. Recovery shells use the same rule.
@@ -260,26 +267,35 @@ paths start at your current folder. Prefer explicit paths for remote work.
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
 - Programs get the login session's environment with the core's terminal identity:
-  TERM=xterm-256color, COLORTERM=truecolor and TERM_PROGRAM=ghostty, with no
-  TERM_PROGRAM_VERSION. The caller's identity is not forwarded. Explicit API
-  `env` overrides still apply; kept replacement shells retain that identity.
+  TERM=xterm-256color, COLORTERM=truecolor and TERM_PROGRAM=ghostty.
+  TERM_PROGRAM_VERSION and XTVERSION report the bundled Ghostty version.
+  The caller's identity is not forwarded. Explicit API `env` overrides still
+  apply, including for kept replacement shells.
   A local `DISPLAY` or `WAYLAND_DISPLAY` is left out only when its socket is
   missing or refuses connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
-- `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
-  never reruns a task. `hc keep <t> --off` disables recovery. Signal death
-  without an exit code is loss too. After a grace delay, recovery runs on
+- `hc keep <t>` (or `run --keep`) brings back a lost terminal in place.
+  It uses the running program's OSC 7577 resume command when available,
+  and starts a shell otherwise. Windows resume requires PowerShell.
+  Resume requires an unelevated core and a private state directory. On Windows the state directory must be inside the user profile.
+  Windows passes the resolved program path as `argv[0]`.
+  On Windows a program started as the terminal's first process comes back inside PowerShell from its second resume on.
+  `hc keep <t> --off` disables recovery. Signal death
+  without an exit code is loss too. When a signal ends the terminal's first process while its holder is healthy,
+  SIGHUP and SIGTERM keep that process's resume command. Other signals clear it.
+  After a grace delay, recovery runs on
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
   on Linux, systemd stops the core before its holders. Ordinary exits and
   explicit kills remain final. Set `restore_screen = true` in
   `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
-  to show the lost program's last saved screen above the new shell, separated
+  to show the lost program's last saved screen above its replacement, separated
   by a divider. It defaults to false and applies at the next recovery. On Windows,
   the old screen is in history. `hc read` includes restored text, so scripts
   reading it can match old output. Saved screens are consumed or discarded once; a power cut
   that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
+  A resume update or clear sent while the core was down for more than a minute is missed. The program's next report fixes it.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary
@@ -323,18 +339,22 @@ paths start at your current folder. Prefer explicit paths for remote work.
   Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
   environment for new terminals without ending running programs. Existing
   programs keep their environment; kept terminals use the fresh one after
-  recovery. Stopping and starting also takes a fresh environment. Per-terminal
-  API `env` overrides still apply, as do Linux session and Windows registry
-  refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
-  by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.
+  recovery. An explicit `hc server start` also takes the calling shell's
+  environment when the core is stopped. Agents should let a normal command
+  wake the core. An explicit start from a tool shell adopts that shell's exports.
+  On Windows, a plain restart of a stopped core uses the implicit-start check
+  for elevated SSH. Per-terminal API `env` overrides still apply, as do Linux
+  session and Windows registry refreshes. On macOS, a saved SSH agent socket that
+  no longer answers is replaced by the launcher's value. SIGTERM hands over
+  terminals and screens without saving an environment.
   Preservation is best effort: a failed save never blocks a restart.
   The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:
   a requested restart interrupted by a fast reboot can reuse it once. Session
   paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
   new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
-  not by the saved environment. The update from an older core to 0.1.19 takes the
-  updater's environment once: older cores can't write the note for their successor.
+  not by the saved environment. An update that starts the replacement
+  implicitly without a saved environment uses the platform defaults.
 - On Unix, exit, `hc kill`, pane close and server stop do not sweep detached
   processes. They hang up the terminal and end its own program and foreground
   job; deliberately detached programs can survive (background server ports may

@@ -48,6 +48,32 @@ fn initial_display_answers_the_programs_first_color_query() {
 }
 
 #[test]
+fn xtversion_matches_the_programs_terminal_identity() {
+    use serde_json::json;
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let mut conn = s.connect();
+    let probe = r#"
+        stty raw -echo min 0 time 10
+        printf '\033[>0q'
+        reply=$(dd bs=256 count=1 2>/dev/null)
+        stty sane
+        expected=$(printf '\033P>|%s%s\033\\' "$TERM_PROGRAM" "${TERM_PROGRAM_VERSION:+ $TERM_PROGRAM_VERSION}")
+        if [ "$reply" = "$expected" ]; then printf 'matched'; else printf 'unexpected XTVERSION reply'; fi
+        printf ' version=%s\n' "$TERM_PROGRAM_VERSION"
+    "#;
+    for (id, env, version) in [
+        (1, json!({}), ghostty_vt::VERSION),
+        (2, json!({"TERM_PROGRAM": "client"}), ""),
+        (3, json!({"TERM_PROGRAM_VERSION": "custom"}), "custom"),
+    ] {
+        let params = json!({"argv": ["sh", "-c", probe], "env": env, "wait": true});
+        let reply = conn.call(id, "terminal.run", params);
+        assert_eq!(reply["result"]["output"].as_str().unwrap().trim(), format!("matched version={version}"), "{reply}");
+    }
+}
+
+#[test]
 fn callers_use_the_cores_terminal_identity() {
     let mut s = Session::new();
     s.env.extend(
@@ -56,16 +82,17 @@ fn callers_use_the_cores_terminal_identity() {
     );
     let probe =
         r#"sh -c 'printf "identity=%s:%s:%s:%s\n" "$TERM" "$COLORTERM" "$TERM_PROGRAM" "${TERM_PROGRAM_VERSION-}"'"#;
+    let expected = format!("identity=xterm-256color:truecolor:ghostty:{}", ghostty_vt::VERSION);
     let (code, out) = hc(&s, &["run", probe]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("identity=xterm-256color:truecolor:ghostty:"), "{out:?}");
+    assert_eq!(out.trim(), expected, "{out:?}");
 
     // The outer pane supplies a real PTY to the nested CLI.
     let command =
         format!("TERM=xterm-kitty COLORTERM=24bit TERM_PROGRAM=kitty TERM_PROGRAM_VERSION=0.40 {BIN} run {probe}");
     let (code, out) = hc(&s, &["run", "sh", "-c", &command]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("identity=xterm-256color:truecolor:ghostty:"), "{out:?}");
+    assert_eq!(out.trim(), expected, "{out:?}");
 
     let reply = s.connect().call(
         1,

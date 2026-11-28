@@ -111,13 +111,7 @@ pub(super) async fn start(
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
     let env = child_env(crate::platform::program_env().await, p.env.clone());
-    let identity = format!(
-        "{} {}",
-        env.get("TERM_PROGRAM").map_or("", String::as_str),
-        env.get("TERM_PROGRAM_VERSION").map_or("", String::as_str)
-    )
-    .trim()
-    .to_string();
+    let identity = terminal_identity(&env);
     // Set once, at start: an explicit parent, else the calling terminal.
     let parent = match (&p.parent, &p.caller) {
         (Some(parent), _) => Some(crate::terminals::address(resolve(core, parent)?)),
@@ -166,13 +160,16 @@ pub(super) async fn start(
             display.apply(&mut screen);
         }
         st.screens.insert(id, screen);
-        let (env, scope) = terminal_env(core, id, &cwd, env);
-        st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
+        let resume = crate::resume::Resume::new(&core.paths.state);
+        let (env, scope) = terminal_env(core, id, &cwd, env, resume.as_ref());
+        let terminal = st.reg.terminals.get_mut(&id).expect("just created");
+        terminal.scope = Some(scope);
+        terminal.resume = resume;
+        terminal.restart_env = p.env;
+        terminal.holder = Some(instance);
         let (tx, rx) = tokio::sync::oneshot::channel();
         st.pending.insert(id, tx);
-        st.reg.terminals.get_mut(&id).expect("just created").restart_env = p.env;
         let spawn = proto::Spawn { argv: p.argv, env, cwd, cols, rows };
-        st.reg.terminals.get_mut(&id).expect("just created").holder = Some(instance);
         // Queue the snapshot before spawning; the next start kills any unrecorded spawn.
         core.save(&st);
         st.link(id).expect("assigned holder").send(&proto::json_frame(proto::SPAWN, id, &spawn));
@@ -214,6 +211,7 @@ pub(crate) fn terminal_env(
     id: u32,
     cwd: &str,
     mut env: BTreeMap<String, String>,
+    resume: Option<&crate::resume::Resume>,
 ) -> (BTreeMap<String, String>, String) {
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
     env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
@@ -221,22 +219,39 @@ pub(crate) fn terminal_env(
     env.insert(crate::sweep::VAR.into(), scope.clone());
     // Preserve the requested spelling, including symlinks.
     env.insert("PWD".into(), cwd.into());
+    if let Some(resume) = resume {
+        env.insert(crate::resume::TOKEN.into(), resume.token().into());
+    }
     (env, scope)
+}
+
+pub(crate) fn terminal_identity(env: &BTreeMap<String, String>) -> String {
+    format!(
+        "{} {}",
+        env.get("TERM_PROGRAM").map_or("", String::as_str),
+        env.get("TERM_PROGRAM_VERSION").map_or("", String::as_str)
+    )
+    .trim()
+    .to_string()
 }
 
 /// The core's environment with its own terminal identity and explicit client overrides.
 pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let identity_key =
+        |key: &str| IDENTITY_VARS.iter().copied().find(|name| crate::platform::environment_key_eq(key.as_ref(), name));
     let mut env: BTreeMap<String, String> = base
         .into_iter()
         .filter(|(k, _)| {
-            !IDENTITY_VARS.contains(&k.as_str())
+            identity_key(k).is_none()
                 && !["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME].contains(&k.as_str())
         })
         .collect();
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("TERM_PROGRAM".into(), "ghostty".into());
+    let extra = extra.into_iter().map(|(key, value)| (identity_key(&key).map_or(key, str::to_owned), value)).collect();
     crate::platform::merge_env(&mut env, extra);
+    env.retain(|key, _| !crate::platform::resume_env(key.as_ref()));
     if let Ok(session) = std::env::var("HC_SESSION") {
         env.insert("HC_SESSION".into(), session);
     }
@@ -247,11 +262,39 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
         env.insert("TERM_PROGRAM".into(), "ghostty".into());
         env.remove("TERM_PROGRAM_VERSION"); // the version belonged to whatever we replaced
     }
+    if env.get("TERM_PROGRAM").is_some_and(|p| p == "ghostty") {
+        env.entry("TERM_PROGRAM_VERSION".into()).or_insert_with(|| ghostty_vt::VERSION.into());
+    }
     env
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_env_replaces_herdr_and_preserves_an_explicit_empty_ghostty_version() {
+        let (program, version) = if cfg!(windows) {
+            ("term_program", "term_program_version")
+        } else {
+            ("TERM_PROGRAM", "TERM_PROGRAM_VERSION")
+        };
+        for (name, requested, expected) in [("herdr", "0.9.3", ghostty_vt::VERSION), ("ghostty", "", "")] {
+            let overrides = [(program.into(), name.into()), (version.into(), requested.into())].into();
+            let env = super::child_env(Default::default(), overrides);
+            assert_eq!(env["TERM_PROGRAM"], "ghostty");
+            assert_eq!(env["TERM_PROGRAM_VERSION"], expected);
+        }
+    }
+
+    #[test]
+    fn client_environment_cannot_override_the_resume_token() {
+        let mut overrides = std::collections::BTreeMap::from([(crate::resume::TOKEN.into(), "client".into())]);
+        if cfg!(windows) {
+            overrides.insert("osc7577_token".into(), "client".into());
+        }
+        let env = super::child_env(Default::default(), overrides);
+        assert!(!env.keys().any(|key| key.eq_ignore_ascii_case(crate::resume::TOKEN)));
+    }
+
     #[test]
     fn a_long_output_keeps_whole_lines_from_its_end_even_mid_character() {
         let text = "é".repeat(30_000) + "\nlast line";

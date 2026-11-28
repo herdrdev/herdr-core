@@ -20,12 +20,17 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Inherited {
     env: Vec<(Vec<u8>, Vec<u8>)>,
+    #[serde(default)]
+    overlay: bool,
+    #[serde(default)]
+    unset: Vec<Vec<u8>>,
     limits: Vec<(libc::c_int, libc::rlim_t, libc::rlim_t)>,
 }
 
 impl Inherited {
-    fn capture(cmd: &Command) -> io::Result<Self> {
-        let mut env: BTreeMap<_, _> = std::env::vars_os().collect();
+    fn capture(cmd: &Command, clean: bool) -> io::Result<Self> {
+        let mut env: BTreeMap<_, _> = if clean { BTreeMap::new() } else { std::env::vars_os().collect() };
+        let mut unset = Vec::new();
         for (key, value) in cmd.get_envs() {
             match value {
                 Some(value) => {
@@ -33,12 +38,24 @@ impl Inherited {
                 }
                 None => {
                     env.remove(key);
+                    unset.push(key.as_encoded_bytes().to_vec());
                 }
             }
         }
-        env.remove(OsStr::new(DETACH));
-        env.remove(OsStr::new(DIRECT));
-        env.remove(OsStr::new("XPC_FLAGS"));
+        for key in [DETACH, DIRECT, "XPC_FLAGS", "_HC_RESPONSIBLE_PID"] {
+            env.remove(OsStr::new(key));
+            unset.push(key.as_bytes().to_vec());
+        }
+        if clean {
+            // The launchd domain can supply defaults, but cannot pick another session.
+            unset.extend(
+                super::SESSION_PATHS
+                    .iter()
+                    .chain(super::SSH_LOGIN)
+                    .filter(|&&key| !env.contains_key(OsStr::new(key)))
+                    .map(|key| key.as_bytes().to_vec()),
+            );
+        }
         env.insert("XPC_SERVICE_NAME".into(), "0".into());
         let mut limits = Vec::new();
         // Darwin's RLIM_NLIMITS is not stable across OS versions. Ask the
@@ -54,12 +71,29 @@ impl Inherited {
             }
             limits.push((resource, limit.rlim_cur, limit.rlim_max));
         }
-        Ok(Self { env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(), limits })
+        Ok(Self {
+            env: env.into_iter().map(|(k, v)| (k.into_vec(), v.into_vec())).collect(),
+            overlay: clean,
+            unset,
+            limits,
+        })
+    }
+
+    fn environment_changes(
+        self,
+        current: impl Iterator<Item = OsString>,
+    ) -> impl Iterator<Item = (OsString, Option<OsString>)> {
+        let overlay = self.overlay;
+        current
+            .filter(move |_| !overlay)
+            .map(|key| (key, None))
+            .chain(self.unset.into_iter().map(|key| (OsString::from_vec(key), None)))
+            .chain(self.env.into_iter().map(|(key, value)| (OsString::from_vec(key), Some(OsString::from_vec(value)))))
     }
 
     /// Runs only in the newly forked core, before it creates any threads.
     fn restore(self) -> io::Result<()> {
-        for (resource, soft, hard) in self.limits {
+        for &(resource, soft, hard) in &self.limits {
             let mut current = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             if unsafe { libc::getrlimit(resource, &mut current) } != 0 {
                 return Err(io::Error::last_os_error());
@@ -83,12 +117,13 @@ impl Inherited {
                 return Err(io::Error::other(format!("resource limit {resource} was clamped instead of inherited")));
             }
         }
-        unsafe {
-            for (key, _) in std::env::vars_os() {
-                std::env::remove_var(key);
-            }
-            for (key, value) in self.env {
-                std::env::set_var(OsString::from_vec(key), OsString::from_vec(value));
+        for (key, value) in self.environment_changes(std::env::vars_os().map(|(key, _)| key)) {
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
             }
         }
         Ok(())
@@ -131,7 +166,7 @@ pub fn prepare_core() {
         paths.create_dirs()?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("serve");
-        launch(&cmd, &paths.state.join("core.log"))
+        launch(&cmd, &paths.state.join("core.log"), false)
     })();
     match result {
         Ok(()) => std::process::exit(0),
@@ -151,11 +186,11 @@ fn ssh() -> bool {
 
 /// Only `serve` uses this path. Holders and programs inherit its coalition.
 /// SSH is already outside the app, and must retain its existing lifetime.
-pub fn spawn(cmd: &mut Command, log: &Path) -> bool {
+pub fn spawn(cmd: &mut Command, log: &Path, clean: bool) -> bool {
     if ssh() {
         return false;
     }
-    match launch(cmd, log) {
+    match launch(cmd, log, clean) {
         Ok(()) => true,
         Err(error) => {
             fallback(log, &error);
@@ -174,9 +209,9 @@ fn fallback(log: &Path, error: &io::Error) {
     }
 }
 
-fn launch(cmd: &Command, log: &Path) -> io::Result<()> {
+fn launch(cmd: &Command, log: &Path, clean: bool) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let inherited = Inherited::capture(cmd)?;
+    let inherited = Inherited::capture(cmd, clean)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?;
     let domain = format!("gui/{}", unsafe { libc::getuid() });
     remove_stale(&domain, now);
@@ -577,7 +612,7 @@ mod tests {
             .env(DETACH, "old")
             .env(DIRECT, "1")
             .env("XPC_FLAGS", "0x2");
-        let captured = Inherited::capture(&cmd).unwrap();
+        let captured = Inherited::capture(&cmd, false).unwrap();
         let received: Inherited = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         assert_eq!(received.limits, captured.limits);
         assert!(received.limits.len() > libc::RLIMIT_NOFILE as usize);
@@ -587,6 +622,36 @@ mod tests {
             assert!(!env.contains_key(name));
         }
         assert_eq!(env.get(b"XPC_SERVICE_NAME".as_slice()), Some(&b"0".to_vec()));
+    }
+
+    #[test]
+    fn an_implicit_launch_overlays_the_launchd_environment() {
+        let mut cmd = Command::new("hc");
+        cmd.env("EDITOR", "login-editor").env_remove("REMOVE_ME");
+        let inherited = Inherited::capture(&cmd, true).unwrap();
+        let mut manager: BTreeMap<OsString, OsString> = [
+            ("MANAGER_ONLY", "desktop"),
+            ("EDITOR", "desktop-editor"),
+            ("HC_SOCKET", "/wrong.sock"),
+            ("SSH_CONNECTION", "old login"),
+            ("REMOVE_ME", "old value"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect();
+        let changes = inherited.environment_changes(manager.keys().cloned().collect::<Vec<_>>().into_iter());
+        for (key, value) in changes {
+            if let Some(value) = value {
+                manager.insert(key, value);
+            } else {
+                manager.remove(&key);
+            }
+        }
+        assert_eq!(manager.get(OsStr::new("MANAGER_ONLY")).unwrap(), "desktop");
+        assert_eq!(manager.get(OsStr::new("EDITOR")).unwrap(), "login-editor");
+        for key in ["HC_SOCKET", "SSH_CONNECTION", "REMOVE_ME"] {
+            assert!(!manager.contains_key(OsStr::new(key)), "{key}");
+        }
     }
 
     #[test]
@@ -652,7 +717,7 @@ mod tests {
         let log = scratch.dir.join("core.log");
         let mut cmd = Command::new(old);
         cmd.arg("serve");
-        let error = launch(&cmd, &log).unwrap_err();
+        let error = launch(&cmd, &log, false).unwrap_err();
         if error.to_string().contains("launchctl bootstrap") {
             eprintln!("skipping: bootstrap denied: {error}");
             return;

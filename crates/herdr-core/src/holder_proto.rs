@@ -39,7 +39,7 @@ pub struct Hello {
     pub tail_offsets: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Spawn {
     pub argv: Vec<String>,
     pub env: BTreeMap<String, String>,

@@ -138,6 +138,9 @@ pub fn command_names() -> Vec<String> {
 }
 
 pub fn main() -> i32 {
+    if let Some(code) = crate::platform::dump_login_environment() {
+        return code;
+    }
     let daemon = crate::platform::daemon_startup();
     client::remember_exe();
     let args: Vec<_> = if daemon { vec!["serve".into()] } else { std::env::args_os().skip(1).collect() };
@@ -153,6 +156,10 @@ pub fn main() -> i32 {
         [Some("--licenses")] => {
             print!("{}", include_str!("../THIRD-PARTY-NOTICES"));
             return 0;
+        }
+        [Some("__resume"), Some(file)] => return crate::resume::helper(std::path::Path::new(file), false),
+        [Some("__resume"), Some(file), Some("--first")] => {
+            return crate::resume::helper(std::path::Path::new(file), true);
         }
         _ => {}
     }
@@ -346,6 +353,8 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
     let pick_finished = |given: String| crate::cli::target(&paths, (!given.is_empty()).then_some(given), json, true);
     Ok(Some(match cmd {
         Cmd::Serve => {
+            // Serving starts single-threaded. Never pass this core's parent pane token on.
+            unsafe { std::env::remove_var(crate::resume::TOKEN) };
             crate::platform::prepare_core();
             crate::server::serve().map_err(|e| RpcError::internal(e.to_string()))?;
             return Ok(None);
@@ -559,16 +568,12 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             if let ServerCmd::Restart { fresh } = action {
                 restart(&paths, fresh)?;
             }
-            let r = if crate::platform::status_may_start_core() {
-                call("server.status", json!({}))?
-            } else {
-                let stream = if matches!(action, ServerCmd::Status) {
-                    client::require_existing(&paths)?
-                } else {
-                    client::connect_or_start_explicit(&paths)?
-                };
-                client::call(&stream, "server.status", json!({}))?
+            let stream = match action {
+                ServerCmd::Start | ServerCmd::Restart { fresh: true } => client::connect_or_start_explicit(&paths)?,
+                ServerCmd::Status if !crate::platform::status_may_start_core() => client::require_existing(&paths)?,
+                _ => client::connect_or_start(&paths)?,
             };
+            let r = client::call(&stream, "server.status", json!({})).map_err(|e| client::explain_closed(&paths, e))?;
             let id = r["core"]["id"].as_str().unwrap_or("?");
             let human = format!(
                 "core {} ({}) running, pid {}, up {}s",

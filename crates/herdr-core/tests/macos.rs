@@ -147,7 +147,7 @@ fn launchd_preserves_environment_bytes_and_hard_file_limit_without_its_own_varia
     }
     let s = Session::new();
     let mut cmd = s.cmd();
-    cmd.args(["server", "status"])
+    cmd.args(["server", "start"])
         .env("LESS_TERMCAP_md", "\x1b[1m\r")
         .env("HC_TEST_NONUTF8", OsString::from_vec(vec![0xff]));
     let limit = libc::rlimit { rlim_cur: 512, rlim_max: 1024 };
