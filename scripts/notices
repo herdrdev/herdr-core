@@ -12,7 +12,7 @@ jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license
     echo "Not all components are used on every platform. See distribution/notices/README.md in the source."
     for part in ghostty:"Ghostty's libghostty-vt (MIT)" simdutf:"simdutf, in libghostty-vt (MIT, or Apache-2.0)" \
         highway:"Highway, in libghostty-vt (BSD-3-Clause, or Apache-2.0)" wuffs:"Wuffs, in libghostty-vt (MIT, or Apache-2.0)" \
-        zig:"Zig's compiler_rt (MIT)" uucode:"uucode (MIT), 9d55524551411b493cca41ca06363625d90aff1e" \
+        zig:"Zig's compiler_rt (MIT)" uucode:"uucode (MIT), ea62149739404a73c202b48a33bf6dd2af4bd9b0" \
         uucode-unicode:"uucode Unicode data (Unicode-3.0)" uucode-utf8:"uucode UTF-8 decoder (MIT)" \
         musl:"musl 1.2.5, statically linked on Linux (MIT and BSD)" rust:"Rust 1.95.0 standard library and compiler runtime"; do
         printf '\n==== %s\n\n' "${part#*:}"

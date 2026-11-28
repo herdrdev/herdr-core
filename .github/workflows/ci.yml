@@ -90,7 +90,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
+          version: 0.17.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}-dev
@@ -130,9 +130,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: The last release
+        id: last
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          [ -n "$tag" ] && echo "sha=$(git rev-parse --short "$tag")" >> "$GITHUB_OUTPUT" || true
+          # The Zig its own CI built it with: a newer Zig can't build an older Ghostty.
+          [ -n "$tag" ] && echo "zig=$(git show "$tag":.github/workflows/ci.yml | grep -m1 -A2 'setup-zig' | sed -n 's/^ *version: *//p')" >> "$GITHUB_OUTPUT" || true
+          # Releases before 0.2 built Ghostty for the building CPU: a copy
+          # cached on one runner can crash on another (SIGILL).
+          echo "cpu=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - if: steps.last.outputs.zig != ''
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ steps.last.outputs.zig }}
+      - if: steps.last.outputs.zig != ''
+        run: echo "OLD_ZIG=$(command -v zig)" >> "$GITHUB_ENV"
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
+          version: 0.17.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Upgrade builds native GNU, unlike the musl test jobs.
@@ -140,15 +157,6 @@ jobs:
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHES }}
-      - name: The last release
-        id: last
-        run: |
-          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          [ -n "$tag" ] && echo "sha=$(git rev-parse --short "$tag")" >> "$GITHUB_OUTPUT" || true
-          # Releases before 0.2 built Ghostty for the building CPU: a copy
-          # cached on one runner can crash on another (SIGILL).
-          echo "cpu=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       # A release's binary never changes: built once, kept by its tag (and CPU).
       - if: steps.last.outputs.tag != ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
